@@ -1,0 +1,12 @@
+[package]
+name = "struction_gravity"
+description = "Gravity fields package: summed fields, local up."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bevy = { workspace = true }

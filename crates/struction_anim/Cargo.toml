@@ -1,0 +1,12 @@
+[package]
+name = "struction_anim"
+description = "Procedural animation: springs, IK, base poses, dataflow graphs."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bevy = { workspace = true }

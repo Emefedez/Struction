@@ -1,0 +1,17 @@
+[package]
+name = "struction_data"
+description = "JSONC sources: loading through Reflect, descendsFrom inheritance, presets, file:line errors, comment-preserving edits."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bevy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jsonc-parser = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }

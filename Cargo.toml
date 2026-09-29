@@ -1,6 +1,44 @@
 [workspace]
-members = ["tools/smoke-test"]
+members = [
+    "tools/smoke-test",
+    "crates/struction_data",
+    "crates/struction_core",
+    "crates/struction_gravity",
+    "crates/struction_physics",
+    "crates/struction_character",
+    "crates/struction_anim",
+]
 resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+# Headless-capable Bevy baseline. Applications that render add the graphics features themselves.
+bevy = { version = "=0.19.1", default-features = false, features = [
+    "std",
+    "async_executor",
+    "multi_threaded",
+    "bevy_log",
+    "bevy_asset",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+jsonc-parser = { version = "0.34", features = ["serde", "cst"] }
+schemars = "1"
+thiserror = "2"
+
+struction_data = { path = "crates/struction_data" }
+struction_core = { path = "crates/struction_core" }
+struction_gravity = { path = "crates/struction_gravity" }
+struction_physics = { path = "crates/struction_physics" }
+struction_character = { path = "crates/struction_character" }
+struction_anim = { path = "crates/struction_anim" }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
 
 [profile.dev]
 opt-level = 1

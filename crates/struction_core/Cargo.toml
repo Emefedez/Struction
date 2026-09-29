@@ -1,0 +1,13 @@
+[package]
+name = "struction_core"
+description = "Relations (descendsFrom, masterIs), action registry, queued reactions, capability grants."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bevy = { workspace = true }
+thiserror = { workspace = true }
