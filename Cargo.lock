@@ -4780,6 +4780,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "struction_assets"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "struction_character"
 version = "0.1.0"
 dependencies = [

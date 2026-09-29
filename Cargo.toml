@@ -9,6 +9,7 @@ members = [
     "crates/struction_anim",
     "crates/struction_ai",
     "crates/struction_world",
+    "crates/struction_assets",
 ]
 resolver = "3"
 
@@ -45,6 +46,7 @@ struction_character = { path = "crates/struction_character" }
 struction_anim = { path = "crates/struction_anim" }
 struction_ai = { path = "crates/struction_ai" }
 struction_world = { path = "crates/struction_world" }
+struction_assets = { path = "crates/struction_assets" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

@@ -1,0 +1,15 @@
+[package]
+name = "struction_assets"
+description = "Asset pipeline: Blender/glTF import, mesh preparation, compiled binary format."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bevy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
