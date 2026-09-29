@@ -29,6 +29,9 @@ serde_json = "1"
 jsonc-parser = { version = "0.34", features = ["serde", "cst"] }
 schemars = "1"
 thiserror = "2"
+# Physics: only what the packages need; no picking, debug rendering, mesh colliders, or joints yet.
+avian3d = { version = "0.7.0", default-features = false, features = ["3d", "f32", "parry-f32"] }
+uuid = { version = "1", default-features = false }
 
 struction_data = { path = "crates/struction_data" }
 struction_core = { path = "crates/struction_core" }

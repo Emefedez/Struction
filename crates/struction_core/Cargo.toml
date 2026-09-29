@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 bevy = { workspace = true }
 thiserror = { workspace = true }
+uuid = { workspace = true }
