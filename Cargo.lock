@@ -4763,7 +4763,10 @@ name = "struction_ai"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "serde",
+ "serde_json",
  "struction_core",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4819,7 +4822,20 @@ version = "0.1.0"
 dependencies = [
  "avian3d",
  "bevy",
+ "bevy_transform_interpolation",
  "struction_gravity",
+]
+
+[[package]]
+name = "struction_world"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "serde",
+ "serde_json",
+ "struction_core",
+ "struction_data",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
