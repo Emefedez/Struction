@@ -32,6 +32,8 @@ schemars = "1"
 thiserror = "2"
 # Physics: only what the packages need; no picking, debug rendering, mesh colliders, or joints yet.
 avian3d = { version = "0.7.0", default-features = false, features = ["3d", "f32", "parry-f32"] }
+# Avian's interpolation backend; named directly only to inspect easing state.
+bevy_transform_interpolation = "0.5"
 uuid = { version = "1", default-features = false }
 
 struction_data = { path = "crates/struction_data" }

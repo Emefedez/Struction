@@ -1,0 +1,5 @@
+{
+  "components": {
+    "Flammable": { "ignition_temperature": 300.0 }
+  }
+}

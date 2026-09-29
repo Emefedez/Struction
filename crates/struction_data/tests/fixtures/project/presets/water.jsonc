@@ -1,0 +1,6 @@
+{
+  "components": {
+    "Volume": { "half_extents": [4.0, 1.0, 4.0] },
+    "Surface": { "friction": 0.1, "drag": 2.0 }
+  }
+}

@@ -1,0 +1,16 @@
+// A big dumb brute.
+{
+  "descendsFrom": "Actor",
+  "presets": ["flammable"],
+  "transform": { "scale": [1.5, 1.5, 1.5] },
+  "components": {
+    // Bigger than the Actor default.
+    "Health": { "current": 60.0, "max": 60.0 },
+    "Loot": { "items": ["club"], "gold": 12 },
+    "Stats": { "strength": 9, "agility": 2 }
+  },
+  "reactions": [
+    { "source": "master", "after": "bosses/ogre_lord/die", "call": "minions/ogre/die" }
+  ],
+  "brain": "ai/simple_ogre"
+}

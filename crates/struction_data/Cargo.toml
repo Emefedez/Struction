@@ -9,9 +9,14 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-bevy = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-jsonc-parser = { workspace = true }
-schemars = { workspace = true }
+# `serialize` gives glam vectors, quaternions and colors their serde impls (the reflect builder
+# reads array-shaped values through them); `reflect_documentation` puts doc comments into the
+# generated schema.
+bevy = { workspace = true, features = ["serialize", "reflect_documentation"] }
+# `preserve_order` keeps field order in values the editing API writes back.
+serde_json = { workspace = true, features = ["preserve_order"] }
+jsonc-parser = { workspace = true, features = ["serde_json"] }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

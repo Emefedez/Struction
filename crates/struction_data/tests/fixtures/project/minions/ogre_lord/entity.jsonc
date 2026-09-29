@@ -1,0 +1,8 @@
+{
+  "descendsFrom": "minions/ogre",
+  // Not flammable: a null removes an inherited component.
+  "components": {
+    "Flammable": null,
+    "Health": { "current": 500.0, "max": 500.0 }
+  }
+}

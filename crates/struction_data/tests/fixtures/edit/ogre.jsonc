@@ -1,0 +1,18 @@
+// A big dumb brute.
+{
+  "descendsFrom": "Actor", // primordial base
+  "presets": ["flammable"],
+
+  /* placement is done in scenes; this is the default size */
+  "transform": { "scale": [1.5, 1.5, 1.5] },
+
+  "components": {
+    // Bigger than the Actor default.
+    "Health": { "current": 60.0, "max": 60.0 }, // hit points
+    "Loot": { "items": ["club", "rock"], "gold": 12 }
+  },
+
+  "reactions": [
+    { "source": "master", "call": "minions/ogre/die" }
+  ]
+}

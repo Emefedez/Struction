@@ -1,0 +1,11 @@
+{
+  "descendsFrom": "minions/ogre",
+  "transform": { "scale": [0.75, 0.75, 0.75] },
+  "components": {
+    // Only max is overridden: current is inherited from the ogre.
+    "Health": { "max": 25.0 },
+    "Loot": { "gold": null },
+    "Stats": { "agility": 6 },
+    "Faction": "wild"
+  }
+}

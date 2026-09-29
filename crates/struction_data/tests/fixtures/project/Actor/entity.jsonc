@@ -1,0 +1,7 @@
+// Primordial engine type: every lineage ends here.
+{
+  "components": {
+    "Health": { "current": 10.0, "max": 10.0 },
+    "Faction": "neutral"
+  }
+}

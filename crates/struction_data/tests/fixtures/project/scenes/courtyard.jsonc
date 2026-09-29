@@ -1,0 +1,13 @@
+// Scenes are not entity definitions; the store ignores them but their nodes can be
+// passed to `instantiate` as overrides.
+{
+  "spawns": {
+    "fireman1": {
+      "definition": "minions/small_ogre",
+      "overrides": {
+        "transform": { "translation": [4.0, 0.0, 6.0] },
+        "components": { "Health": { "current": 5.0 } }
+      }
+    }
+  }
+}

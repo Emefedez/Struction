@@ -1,0 +1,641 @@
+//! A project's definitions: loading, inheritance, presets, overrides and hot reload.
+//!
+//! Layout: `<root>/**/entity.jsonc` defines the entity `<dir>` (`minions/ogre/entity.jsonc` is
+//! `minions/ogre`), `<root>/presets/**.jsonc` defines presets by their path below `presets/`.
+//! Other files (scenes, assets) are ignored here. Primordial types (capitalized names) may be
+//! files too, or be declared with [`DefinitionStore::declare_primordial`].
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+
+use bevy::prelude::Resource;
+use bevy::reflect::TypeRegistry;
+
+use crate::build::{Builder, ComponentValue};
+use crate::definition::{
+    DEFAULT_EXTRA_SECTIONS, Layer, LayerKind, Resolved, is_primordial, parse_layer,
+    strip_removed_components,
+};
+use crate::error::{DataError, ErrorKind, Location};
+use crate::source::{Node, Span, parse_jsonc};
+
+const ENTITY_FILE: &str = "entity.jsonc";
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Dep {
+    Entity(String),
+    Preset(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FileKind {
+    Entity(String),
+    Preset(String),
+}
+
+impl FileKind {
+    fn dep(&self) -> Dep {
+        match self {
+            FileKind::Entity(id) => Dep::Entity(id.clone()),
+            FileKind::Preset(name) => Dep::Preset(name.clone()),
+        }
+    }
+}
+
+fn classify(rel: &str) -> Option<FileKind> {
+    if let Some(rest) = rel.strip_prefix("presets/") {
+        let name = rest.strip_suffix(".jsonc")?;
+        return (!name.is_empty()).then(|| FileKind::Preset(name.to_owned()));
+    }
+    let id = rel.strip_suffix(ENTITY_FILE)?.strip_suffix('/')?;
+    (!id.is_empty()).then(|| FileKind::Entity(id.to_owned()))
+}
+
+/// What a load or reload changed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReloadReport {
+    /// Definitions whose resolved data or lineage changed, or that are new. Includes descendants
+    /// (and users of a changed preset), so a runtime refreshes exactly these instances.
+    pub changed: Vec<String>,
+    /// Definitions whose file is gone.
+    pub removed: Vec<String>,
+    /// Problems in the reloaded file and in the definitions that depend on it. A definition that
+    /// fails to resolve keeps its last good version in the store.
+    pub errors: Vec<DataError>,
+}
+
+struct Merged {
+    body: Node,
+    lineage: Vec<String>,
+}
+
+#[derive(Resource)]
+pub struct DefinitionStore {
+    root: PathBuf,
+    primordials: BTreeSet<String>,
+    extra_sections: BTreeSet<String>,
+    entities: BTreeMap<String, Layer>,
+    presets: BTreeMap<String, Layer>,
+    /// Unreadable or malformed files, by project-relative path.
+    file_errors: BTreeMap<String, DataError>,
+    resolved: BTreeMap<String, Resolved>,
+    /// Resolution errors by entity id.
+    errors: BTreeMap<String, Vec<DataError>>,
+    deps: BTreeMap<String, BTreeSet<Dep>>,
+}
+
+impl DefinitionStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            primordials: BTreeSet::new(),
+            extra_sections: DEFAULT_EXTRA_SECTIONS.map(String::from).into(),
+            entities: BTreeMap::new(),
+            presets: BTreeMap::new(),
+            file_errors: BTreeMap::new(),
+            resolved: BTreeMap::new(),
+            errors: BTreeMap::new(),
+            deps: BTreeMap::new(),
+        }
+    }
+
+    /// Creates a store and loads every definition under `root`. Inspect [`Self::errors`] for
+    /// problems: bad definitions are left out, the rest still load.
+    pub fn open(root: impl Into<PathBuf>, registry: &TypeRegistry) -> Self {
+        let mut store = Self::new(root);
+        store.load(registry);
+        store
+    }
+
+    /// Declares an engine primordial type (`Actor`) that has no file. Call before loading.
+    pub fn declare_primordial(&mut self, id: impl Into<String>) -> &mut Self {
+        let id = id.into();
+        assert!(is_primordial(&id), "primordial names are capitalized: {id}");
+        self.primordials.insert(id);
+        self
+    }
+
+    /// Allows a top-level section other crates interpret. Call before loading.
+    pub fn allow_section(&mut self, name: impl Into<String>) -> &mut Self {
+        self.extra_sections.insert(name.into());
+        self
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Resolved> {
+        self.resolved.get(id)
+    }
+
+    /// Ids of every successfully resolved definition, sorted.
+    pub fn definitions(&self) -> impl Iterator<Item = &str> {
+        self.resolved.keys().map(String::as_str)
+    }
+
+    pub fn preset_names(&self) -> impl Iterator<Item = &str> {
+        self.presets.keys().map(String::as_str)
+    }
+
+    /// Definitions that have `ancestor` in their lineage.
+    pub fn descendants(&self, ancestor: &str) -> Vec<&str> {
+        self.resolved
+            .values()
+            .filter(|r| r.lineage.iter().any(|a| a == ancestor))
+            .map(|r| r.id.as_str())
+            .collect()
+    }
+
+    /// Every current problem: file errors and definitions that failed to resolve. Sorted and
+    /// without repeats (a bad parent would otherwise be reported once per descendant).
+    pub fn errors(&self) -> Vec<DataError> {
+        let mut all: Vec<DataError> = self
+            .file_errors
+            .values()
+            .chain(self.errors.values().flatten())
+            .cloned()
+            .collect();
+        all.sort_by(|a, b| {
+            let key = |e: &DataError| {
+                e.location
+                    .as_ref()
+                    .map(|l| (l.file.clone(), l.line, l.column))
+            };
+            key(a)
+                .cmp(&key(b))
+                .then_with(|| a.kind.to_string().cmp(&b.kind.to_string()))
+        });
+        all.dedup();
+        all
+    }
+
+    /// The entity-file schema for this project: component types from `registry`, this project's
+    /// definitions and presets as completions for `descendsFrom` and `presets`.
+    pub fn schema(&self, registry: &TypeRegistry) -> serde_json::Value {
+        let definitions = self
+            .entities
+            .keys()
+            .chain(&self.primordials)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        crate::schema::entity_schema(
+            registry,
+            &crate::schema::SchemaOptions {
+                definitions,
+                presets: self.presets.keys().cloned().collect(),
+                extra_sections: self.extra_sections.iter().cloned().collect(),
+            },
+        )
+    }
+
+    /// Writes [`Self::schema`] to `path`; entity files point at it with `"$schema"`.
+    pub fn write_schema(&self, registry: &TypeRegistry, path: &Path) -> std::io::Result<()> {
+        let text = serde_json::to_string_pretty(&self.schema(registry))?;
+        fs::write(path, text + "\n")
+    }
+
+    /// Scans the project directory and resolves everything, replacing previous contents.
+    pub fn load(&mut self, registry: &TypeRegistry) -> ReloadReport {
+        self.entities.clear();
+        self.presets.clear();
+        self.file_errors.clear();
+        let mut files = Vec::new();
+        walk(&self.root, &self.root, &mut files);
+        files.sort();
+        for rel in files {
+            if let Some(kind) = classify(&rel) {
+                self.read_layer(&rel, &kind);
+            }
+        }
+        let old_ids: Vec<String> = self.resolved.keys().cloned().collect();
+        let ids = self
+            .entities
+            .keys()
+            .chain(&self.primordials)
+            .cloned()
+            .collect();
+        let mut report = self.resolve(ids, registry);
+        for id in old_ids {
+            if !self.entities.contains_key(&id) && !self.primordials.contains(&id) {
+                self.resolved.remove(&id);
+                report.removed.push(id);
+            }
+        }
+        report.errors = self.errors();
+        report
+    }
+
+    /// Re-reads one changed file (absolute, or relative to the root) and re-resolves what depends
+    /// on it. A deleted file removes its definition; a file that no longer parses keeps its
+    /// previous contents and reports the error.
+    pub fn reload_file(&mut self, path: &Path, registry: &TypeRegistry) -> ReloadReport {
+        let rel = if path.is_absolute() {
+            match path.strip_prefix(&self.root) {
+                Ok(rel) => rel,
+                Err(_) => return ReloadReport::default(),
+            }
+        } else {
+            path
+        };
+        let rel = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let Some(kind) = classify(&rel) else {
+            return ReloadReport::default();
+        };
+
+        let mut report = ReloadReport::default();
+        if self.root.join(&rel).exists() {
+            self.read_layer(&rel, &kind);
+        } else {
+            self.file_errors.remove(&rel);
+            match &kind {
+                FileKind::Entity(id) => {
+                    self.entities.remove(id);
+                    if self.resolved.remove(id).is_some() {
+                        report.removed.push(id.clone());
+                    }
+                    self.errors.remove(id);
+                    self.deps.remove(id);
+                }
+                FileKind::Preset(name) => {
+                    self.presets.remove(name);
+                }
+            }
+        }
+
+        let dep = kind.dep();
+        let mut affected: BTreeSet<String> = self
+            .deps
+            .iter()
+            .filter(|(_, deps)| deps.contains(&dep))
+            .map(|(id, _)| id.clone())
+            .collect();
+        if let FileKind::Entity(id) = &kind
+            && self.entities.contains_key(id)
+        {
+            affected.insert(id.clone());
+        }
+        let resolved = self.resolve(affected.into_iter().collect(), registry);
+        report.changed = resolved.changed;
+        report.errors = self.file_errors.get(&rel).cloned().into_iter().collect();
+        report.errors.extend(resolved.errors);
+        report
+    }
+
+    fn read_layer(&mut self, rel: &str, kind: &FileKind) {
+        let result = fs::read_to_string(self.root.join(rel))
+            .map_err(|e| {
+                DataError::new(
+                    ErrorKind::Io(format!("cannot read {rel}: {e}")),
+                    Some(Location {
+                        file: rel.into(),
+                        line: 1,
+                        column: 1,
+                    }),
+                )
+            })
+            .and_then(|text| parse_jsonc(rel, &text))
+            .and_then(|node| {
+                let layer_kind = match kind {
+                    FileKind::Entity(_) => LayerKind::Entity,
+                    FileKind::Preset(_) => LayerKind::Preset,
+                };
+                parse_layer(node, layer_kind, &self.extra_sections)
+            });
+        match result {
+            Ok(layer) => {
+                self.file_errors.remove(rel);
+                match kind {
+                    FileKind::Entity(id) => self.entities.insert(id.clone(), layer),
+                    FileKind::Preset(name) => self.presets.insert(name.clone(), layer),
+                };
+            }
+            Err(e) => {
+                self.file_errors.insert(rel.to_owned(), e);
+            }
+        }
+    }
+
+    /// Everything a definition's resolution reads, computed from the parsed files alone so it is
+    /// right even when resolution fails.
+    fn collect_deps(&self, id: &str) -> BTreeSet<Dep> {
+        let mut deps = BTreeSet::new();
+        let mut entity_queue = vec![id.to_owned()];
+        let mut preset_queue = Vec::new();
+        while let Some(current) = entity_queue.pop() {
+            if !deps.insert(Dep::Entity(current.clone())) {
+                continue;
+            }
+            if let Some(layer) = self.entities.get(&current) {
+                entity_queue.extend(layer.descends_from.iter().map(|(p, _)| p.clone()));
+                preset_queue.extend(layer.presets.iter().map(|(p, _)| p.clone()));
+            }
+        }
+        while let Some(current) = preset_queue.pop() {
+            if !deps.insert(Dep::Preset(current.clone())) {
+                continue;
+            }
+            if let Some(layer) = self.presets.get(&current) {
+                preset_queue.extend(layer.presets.iter().map(|(p, _)| p.clone()));
+            }
+        }
+        deps
+    }
+
+    fn resolve(&mut self, ids: Vec<String>, registry: &TypeRegistry) -> ReloadReport {
+        let mut resolver = Resolver::new(self);
+        let mut outcomes = Vec::new();
+        for id in ids {
+            let outcome = resolver.entity_resolved(&id, registry);
+            outcomes.push((id, outcome));
+        }
+        drop(resolver);
+
+        let mut report = ReloadReport::default();
+        for (id, outcome) in outcomes {
+            self.deps.insert(id.clone(), self.collect_deps(&id));
+            match outcome {
+                Ok(new) => {
+                    self.errors.remove(&id);
+                    let changed = self
+                        .resolved
+                        .get(&id)
+                        .is_none_or(|old| !old.same_data(&new));
+                    if changed {
+                        report.changed.push(id.clone());
+                    }
+                    self.resolved.insert(id, new);
+                }
+                Err(errors) => {
+                    report.errors.extend(errors.iter().cloned());
+                    self.errors.insert(id, errors);
+                }
+            }
+        }
+        report.errors.sort_by_key(|e| e.to_string());
+        report.errors.dedup();
+        report
+    }
+
+    /// Resolves `id` and applies scene/spawn overrides on top, without storing anything.
+    ///
+    /// `overrides` has the shape of a definition minus `descendsFrom`: `presets`, `transform`,
+    /// `components` (deep-merged over the definition's), extra sections. Parse it with
+    /// [`parse_jsonc`], or take the node from a larger scene file so errors point there.
+    pub fn instantiate(
+        &self,
+        id: &str,
+        overrides: Option<&Node>,
+        registry: &TypeRegistry,
+    ) -> Result<Resolved, Vec<DataError>> {
+        let base = self.resolved.get(id).ok_or_else(|| {
+            vec![DataError::new(
+                ErrorKind::MissingDefinition(id.into()),
+                None,
+            )]
+        })?;
+        let mut body = base.body.clone();
+        if let Some(overrides) = overrides {
+            let layer = parse_layer(overrides.clone(), LayerKind::Override, &self.extra_sections)
+                .map_err(|e| vec![e])?;
+            Resolver::new(self)
+                .apply_layer(&mut body, &layer, &mut Vec::new())
+                .map_err(|e| vec![e])?;
+            strip_removed_components(&mut body);
+        }
+        let components = build_components(&body, registry)?;
+        Ok(Resolved::new(
+            id.into(),
+            base.lineage.clone(),
+            components,
+            body,
+        ))
+    }
+}
+
+/// Memoizes merged bodies within one pass, so a shared ancestor merges once.
+struct Resolver<'a> {
+    store: &'a DefinitionStore,
+    entities: HashMap<String, Result<Rc<Merged>, DataError>>,
+    presets: HashMap<String, Result<Rc<Merged>, DataError>>,
+}
+
+impl<'a> Resolver<'a> {
+    fn new(store: &'a DefinitionStore) -> Self {
+        Self {
+            store,
+            entities: HashMap::new(),
+            presets: HashMap::new(),
+        }
+    }
+
+    fn entity_resolved(
+        &mut self,
+        id: &str,
+        registry: &TypeRegistry,
+    ) -> Result<Resolved, Vec<DataError>> {
+        let merged = self.entity(id, &mut Vec::new()).map_err(|e| vec![e])?;
+        let components = build_components(&merged.body, registry)?;
+        Ok(Resolved::new(
+            id.into(),
+            merged.lineage.clone(),
+            components,
+            merged.body.clone(),
+        ))
+    }
+
+    fn entity(&mut self, id: &str, stack: &mut Vec<String>) -> Result<Rc<Merged>, DataError> {
+        if let Some(done) = self.entities.get(id) {
+            return done.clone();
+        }
+        stack.push(id.to_owned());
+        let result = self.compute_entity(id, stack).map(Rc::new);
+        stack.pop();
+        self.entities.insert(id.to_owned(), result.clone());
+        result
+    }
+
+    fn compute_entity(&mut self, id: &str, stack: &mut Vec<String>) -> Result<Merged, DataError> {
+        let store = self.store;
+        let Some(layer) = store.entities.get(id) else {
+            if store.primordials.contains(id) {
+                let file = format!("<primordial {id}>");
+                let span = synthetic_span(&file);
+                return Ok(Merged {
+                    body: Node::empty_object(span),
+                    lineage: Vec::new(),
+                });
+            }
+            return Err(DataError::new(
+                ErrorKind::MissingDefinition(id.into()),
+                None,
+            ));
+        };
+
+        let (mut body, lineage) = match &layer.descends_from {
+            Some((parent, span)) => {
+                if let Some(start) = stack.iter().position(|s| s == parent) {
+                    let mut chain = stack[start..].to_vec();
+                    chain.push(parent.clone());
+                    return Err(DataError::at(ErrorKind::DefinitionCycle(chain), span));
+                }
+                if !store.entities.contains_key(parent) && !store.primordials.contains(parent) {
+                    return Err(DataError::at(
+                        ErrorKind::MissingDefinition(parent.clone()),
+                        span,
+                    ));
+                }
+                let parent_merged = self.entity(parent, stack)?;
+                let mut lineage = vec![parent.clone()];
+                lineage.extend(parent_merged.lineage.iter().cloned());
+                (parent_merged.body.clone(), lineage)
+            }
+            None => {
+                if !is_primordial(id) {
+                    return Err(DataError::at(
+                        ErrorKind::NotPrimordial(id.into()),
+                        &layer.root_span,
+                    ));
+                }
+                (Node::empty_object(layer.root_span.clone()), Vec::new())
+            }
+        };
+        self.apply_layer(&mut body, layer, &mut Vec::new())?;
+        strip_removed_components(&mut body);
+        Ok(Merged { body, lineage })
+    }
+
+    /// Merges the layer's presets, then its own data, over `body`: inherited < presets < own.
+    fn apply_layer(
+        &mut self,
+        body: &mut Node,
+        layer: &Layer,
+        preset_stack: &mut Vec<String>,
+    ) -> Result<(), DataError> {
+        for (name, span) in &layer.presets {
+            let preset = self.preset(name, span, preset_stack)?;
+            body.merge(preset.body.clone());
+        }
+        body.merge(layer.body.clone());
+        Ok(())
+    }
+
+    fn preset(
+        &mut self,
+        name: &str,
+        used_at: &Span,
+        stack: &mut Vec<String>,
+    ) -> Result<Rc<Merged>, DataError> {
+        if let Some(start) = stack.iter().position(|s| s == name) {
+            let mut chain = stack[start..].to_vec();
+            chain.push(name.to_owned());
+            return Err(DataError::at(ErrorKind::PresetCycle(chain), used_at));
+        }
+        if let Some(done) = self.presets.get(name) {
+            return done.clone();
+        }
+        let store = self.store;
+        let Some(layer) = store.presets.get(name) else {
+            return Err(DataError::at(
+                ErrorKind::MissingPreset(name.into()),
+                used_at,
+            ));
+        };
+        stack.push(name.to_owned());
+        let mut body = Node::empty_object(layer.root_span.clone());
+        let result = self.apply_layer(&mut body, layer, stack).map(|()| {
+            Rc::new(Merged {
+                body,
+                lineage: Vec::new(),
+            })
+        });
+        stack.pop();
+        // A cycle error depends on where resolution entered it; only cache successes.
+        if let Ok(ok) = &result {
+            self.presets.insert(name.to_owned(), Ok(ok.clone()));
+        }
+        result
+    }
+}
+
+fn synthetic_span(file: &str) -> Span {
+    let pos = crate::source::Pos {
+        offset: 0,
+        line: 1,
+        column: 1,
+    };
+    Span {
+        file: file.into(),
+        start: pos,
+        end: pos,
+    }
+}
+
+/// Builds every component of a merged body, collecting one error per bad component.
+fn build_components(
+    body: &Node,
+    registry: &TypeRegistry,
+) -> Result<Vec<ComponentValue>, Vec<DataError>> {
+    let builder = Builder { registry };
+    let mut out: Vec<ComponentValue> = Vec::new();
+    let mut errors = Vec::new();
+    let Some(components) = body.get("components").and_then(Node::as_object) else {
+        return Ok(out);
+    };
+    for member in components {
+        let built = builder
+            .component_registration(&member.key, &member.key_span)
+            .and_then(|registration| {
+                if out.iter().any(|c| c.type_id == registration.type_id()) {
+                    Err(DataError::at(
+                        ErrorKind::DuplicateComponent(member.key.clone()),
+                        &member.key_span,
+                    ))
+                } else {
+                    builder.component(registration, &member.value)
+                }
+            });
+        match built {
+            Ok(component) => out.push(component),
+            Err(e) => errors.push(e),
+        }
+    }
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(errors)
+    }
+}
+
+fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            if !name.starts_with('.') && name != "build" && name != "target" {
+                walk(root, &path, out);
+            }
+        } else if name.ends_with(".jsonc")
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            out.push(
+                rel.components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+            );
+        }
+    }
+}

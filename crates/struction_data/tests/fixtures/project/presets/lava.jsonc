@@ -1,0 +1,8 @@
+// Lava is water that hurts and drags harder.
+{
+  "presets": ["water"],
+  "components": {
+    "Surface": { "drag": 8.0 },
+    "Damage": { "per_second": 25.0, "kind": "Fire" }
+  }
+}
