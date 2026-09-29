@@ -9,4 +9,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-bevy = { workspace = true }
+# `serialize` gives Vec3/Quat/Transform serde impls for the data layer.
+bevy = { workspace = true, features = ["serialize"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

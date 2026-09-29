@@ -2,6 +2,8 @@
 
 El [README](../README.md) contiene el diseño y el plan. Este documento recoge solo el porqué de las decisiones, las recomendaciones pendientes y algunas aclaraciones. Última revisión: 2026-09-30.
 
+El propio Engine debe estar hecho en inglés, este es el único documento escrito en castellano.
+
 ## Puntos fuertes del diseño
 
 - **Base Bevy fijada:** es lo que hace viable el proyecto para una persona.

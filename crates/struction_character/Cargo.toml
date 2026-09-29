@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-bevy = { workspace = true }
+avian3d = { workspace = true }
+bevy = { workspace = true, features = ["keyboard", "mouse"] }
 struction_physics = { workspace = true }
 struction_gravity = { workspace = true }

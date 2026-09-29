@@ -9,5 +9,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+avian3d = { workspace = true }
 bevy = { workspace = true }
 struction_gravity = { workspace = true }
+
+[dev-dependencies]
+bevy_transform_interpolation = { workspace = true }
