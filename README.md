@@ -1,105 +1,218 @@
 # Struction
 
-A data-driven game engine designed for fast authoring through composition, exclusively procedural animation, and small integrated tools.
+A data-driven game engine derived from Bevy, focused on fast authoring through composition, procedural animation, and small integrated tools.
 
-This document describes the intended architecture and development sequence, not implemented features. Keep the scope manageable for a solo developer: reuse mature infrastructure and spend custom work on gameplay composition and authoring.
+This describes the intended design; only a graphics smoke test exists ([development setup](docs/development.md)). Rationale and pending recommendations are in the [design review](docs/design-review.md). Scope is sized for a solo developer. The first version targets Linux only.
 
 ## Core model
 
-Entities contain identity and components. Components describe capabilities; systems implement behavior. Relationships and constraints connect entities, while volumes define regions where effects apply. Resources hold shared data, actions express gameplay intent, presets package reusable configurations, and packages extend the engine.
-
-Built-in and user-defined content use the same mechanisms:
+Entities hold components (states and capabilities); systems implement continuous behavior; actions implement discrete behavior. Volumes define regions where effects apply, constraints bind entities spatially, and presets package reusable component sets. Built-in and user content use the same mechanisms:
 
 | Concept | Composition |
 | --- | --- |
 | Water | Volume, surface properties, buoyancy, particles, audio |
-| Lava | Water-like preset with damage and different surface properties |
+| Lava | Water preset with damage and different surface properties |
 | Camera zone | Volume and camera constraints |
-| Gravity planet | Collider, gravity source, surface |
+| Scene gravity | Gravity field with an infinite volume |
+| Gravity planet | Collider, radial gravity field, surface |
 | Grabbable object | Physics body and grip targets |
 
-An entity without health simply has no `Health` component. Surfaces describe friction, drag, movement modifiers, and interaction responses instead of relying on hardcoded material types. Presets expose their components for inspection and customization.
+- An entity without health has no `Health` component. Surfaces describe friction, drag, and interaction responses instead of hardcoded material types. Cross-cutting traits such as `Flammable` are components.
+- Gravity is not a global constant: bodies sum the gravity fields affecting them, which also defines each character's local up.
+- **Constraints** share one authoring model (source, target, property, weight, priority, falloff) with domain-specific solvers: attachment (sword in hand, rider on mount), grip alignment, foot contact, gaze, gravity alignment, and camera positioning. Camera presets are ordinary constraints.
+- Systems iterate components in batches; relations do not drive the update loop.
 
-Constraints share an authoring model—source, target, property, weight, priority, and falloff—while using appropriate solvers for each domain. They support grip alignment, foot contact, gaze, gravity alignment, and camera positioning. Camera presets combine ordinary constraints, with spatial influences blending by weight, priority, and falloff.
+### Relations
 
-## Exclusively procedural animation
+Struction's own vocabulary, independent of Bevy's `ChildOf`:
+
+| Relation | Between | Meaning |
+| --- | --- | --- |
+| `descendsFrom` | Definitions | Type lineage, like `extends` in Java. Single parent, transitive (`small_ogre` → `ogre` → `Actor`), inherits defaults. Never changes at runtime |
+| `masterIs` | Instances | The ward is at its master's disposal. Changes at runtime (adoption, `join_party`) |
+
+Definitions are classes; spawned instances are objects. Primordial engine types are capitalized (`Actor`, `Terrain`), user types lowercase. A master can:
+
+- **Notify** its wards by invoking an action on all of them; wards can react to the master's actions.
+- **Order** its wards; orders feed the ward's decision tree, which may still override them.
+- **Grant capabilities**, declared in the master's definition and filtered by lineage. Granted components, and the actions that require them, are added when the relation starts and removed when it ends. They are derived, not saved. A ward may refuse or override grants.
+
+```jsonc
+// player/entity.jsonc
+"grantsToWards": [
+  { "to": "minions/ogre", "components": { "Follower": { "distance": 3 } }, "actions": ["fetch", "guard"] }
+]
+```
+
+Groups (squads, encounters, fish schools) are master entities. Queries combine both relations: "wards of this player that descend from `minions/ogre`". Streaming residency is tracked separately, so crossing a streaming boundary never changes a relation.
+
+## Actions and reactions
+
+Actions are registered Rust functions referenced by entity data. They can update components, invoke other actions, or change relations; `die` and `join_party` are behaviors, not built-in states. Reactions bind to another entity's action:
+
+```jsonc
+"reactions": [
+  // After my master's `die` completes, run my own `die`.
+  { "source": "master", "after": "bosses/ogre_lord/die", "call": "minions/ogre/die" }
+]
+```
+
+- The compiler resolves references and validates signatures; registered actions expose metadata to the editor.
+- Reactions fire on action invocation, not on state changes: setting health to zero is not `die`.
+- Death, removal, and streaming unload are distinct; unloading a boss never triggers its death.
+- Reactions are queued and run at defined points, never while systems iterate.
+
+## Procedural animation
 
 ```text
 Gameplay state → animation intent → pose requests and constraints → solvers → pose
 ```
 
-Animation uses no authored animation clips. Reusable dataflow graphs combine state, curves, springs, math, blending, bone masks, IK, and deformation controls.
+No animation clips. Authored **base poses** (idle, grip, fist, seated, aim) act as attractors: solvers move the body away from them and springs snap it back. Reusable dataflow graphs combine curves, springs, blending, bone masks, IK, and deformation. Objects expose affordances (`Grabbable` grips, `Sittable` targets, `Climbable` holds) that characters solve against. Locomotion derives from velocity, ground contact, gravity, and predicted landings; squash, stretch, and secondary motion respond to acceleration and impacts. Gameplay expresses intent (`player.hold(object)`), never bones.
 
-Objects describe their interaction affordances: `Grabbable` exposes grips, `Sittable` exposes body targets, and `Climbable` exposes handholds and footholds. Characters solve interactions from these targets rather than requiring object-specific animations.
+## AI and sensing
 
-Locomotion derives from velocity, ground contact, gravity, and predicted landings. Squash, stretch, and secondary motion respond to acceleration and impacts through dedicated deformation controls. Gameplay APIs express intent, such as `player.hold(object)`, rather than manipulating bones directly.
+Definitions reference a decision tree asset (`"brain"`), shared by simple enemies or unique to a boss. Leaves invoke registered actions; conditions read components, sensing, and orders from the master. Sensing filters by lineage, including descendants:
 
-## Authoring and runtime data
-
-Use existing formats wherever they fit. Create a custom format only when an existing one cannot meet a concrete requirement. The editor modifies readable, diff-friendly source files, which remain the authoring source of truth.
-
-```text
-Editable sources → asset compiler → compiled assets → runtime ECS
+```jsonc
+// minions/small_ogre/entity.jsonc
+{
+  "descendsFrom": "minions/ogre",
+  "brain": "ai/simple_ogre",
+  "sensing": { "sees": ["player"], "flocksWith": ["minions/ogre"] }
+}
 ```
 
-Compiled entity/component data uses schema-defined layouts with known field offsets and fixed strides where practical. Variable-sized data lives in separate payloads referenced by offsets, counts, and layout metadata. A schema can reserve a reference field for extension data; readers must be able to distinguish references from inline values. Serialized references are file-relative offsets, not process memory pointers.
+## Input
 
-Addon components can use fixed layouts when their schemas permit; extensions do not force ordinary fields into sequential parsing. Compiled layouts are versioned and validated during loading. Runtime ECS storage remains independent and optimized for component iteration. Parse or decode assets during loading and hot reload, rather than repeatedly reading serialized records during simulation.
+Devices produce raw input that a mapping turns into input actions (`Jump`, `Move`); gameplay only sees input actions. The first version maps the keyboard (and mouse in the editor); gamepads are another device mapping.
 
-Hot reload is a core workflow for entities, presets, models, textures, materials, animation graphs, and levels. Keep shared resources separate from instance state so updates can reach existing instances where feasible.
+## Data
+
+```text
+JSONC sources → asset compiler → compiled binary → runtime ECS
+```
+
+- **Schemas:** Rust component structs with `Reflect` are the source of truth; JSON Schema is generated for validation and editor completion.
+- **Sources:** JSONC with comments and a canonical field order (identity and `descendsFrom`, transform, components, constraints, reactions). The order is a convention, not execution semantics. The editor writes through a syntax-preserving parser that keeps comments and formatting. Non-entity assets use existing formats.
+- **Compiled binary:** versioned layouts with fixed field offsets and strides, read in place by offset instead of parsed; variable-sized data lives in payloads referenced by file-relative offsets. Components are copied into ECS storage at spawn. The format is designed once schemas stabilize; until then the runtime loads JSONC directly.
+- **Identity:** authored files, zones, spawners, and named spawns are identified by path (`Fortress/LeftCourtYard/courtyard_guards`); runtime-created entities by UUID. Spawners record internally which UUIDs they created, so saves restore them and dead spawns do not reappear.
+- **Errors** point to `file:line`. When a schema changes incompatibly, loading old data fails with a clear error; automated migrations come later.
+- **Hot reload** covers entities, presets, models, textures, materials, animation graphs, and levels.
+
+| Layer | Holds |
+| --- | --- |
+| Definition | Shared components, defaults, constraints, action references |
+| Scene / spawn | Placement, instance identity, overrides |
+| Runtime state | Current health, position, targets |
+| Save data | Persistent state, stable IDs, created and removed entities |
+
+Many minions share one definition; taking damage changes memory only.
+
+## Spawners
+
+A definition says what an entity is; a spawn description says where, when, and how many. Players, bosses, and single objects use the same system. Spawners are organized under named zones and each spawn has a local offset rotated by the spawner:
+
+```jsonc
+"spawnerList": {
+  "courtyard_guards": {
+    "zone": "Fortress/LeftCourtYard",
+    "tile": [0, 2, 3],
+    "position": [4, 0, 6],
+    "spawns": {
+      "fireman1": {
+        "definition": "minions/fireman",
+        "offset": [0.5, -0.2, 0.0],
+        "masterIs": "Fortress/Keep/ogre_lord"
+      }
+    }
+  }
+}
+```
+
+Several spawners may share a tile. The editor shows **draggable translucent model previews** (drag a preview to edit its offset, drag the origin to move the group) plus XYZ fields and sliders, all editing the same source values. Spawned entities move independently unless a constraint attaches them.
+
+## Project layout
+
+```text
+project/
+├ project.toml
+├ minions/ogre/
+│  ├ entity.jsonc
+│  ├ scripting/actions.rs
+│  └ assets/
+├ bosses/ogre_lord/
+├ scenes/
+├ menus/
+├ templates/
+└ build/generated/
+```
+
+Templates scaffold enemies, spawners, and menus with ordered definitions, comments, and starter functions; scaffolded files become user-owned. Generated action descriptors live in `build/generated/`.
 
 ## Foundation and packages
 
-Use Rust and a pinned Bevy revision. Retain useful infrastructure such as ECS, scheduling, reflection, tasks, asset handling, rendering, windows, and input. Modify or replace subsystems when necessary; future upstream compatibility is optional.
-
-Ordinary authoring uses the engine's vocabulary. Advanced integrations may access the underlying Bevy world. A runtime scripting language remains undecided and should be added only if it improves iteration.
-
-Packages can provide components, systems, constraints, presets, importers, build steps, script APIs, and editor extensions. An engine-specific manifest can register Bevy plugins internally. Systems declare explicit scheduling phases and dependencies; ordering must not depend on plugin registration order.
-
-Reuse C/C++ libraries for expensive operations such as UV unwrapping, mesh simplification, compression, and import. Use coarse operations over buffers through C-compatible interfaces, with explicit ownership and errors, minimal copying, and no panics or exceptions crossing the boundary. Import and build tools may run as subprocesses.
+- Rust with a pinned Bevy version, reusing its ECS, scheduling, reflection, assets, rendering, windowing, and input. Subsystems may be replaced; upstream compatibility is not a goal.
+- A **package** is a Rust crate with assets and a manifest, compiled with the game. It bundles components with the actions and systems that apply to them, plus presets, constraints, importers, build steps, and editor extensions. Systems declare explicit phases and dependencies, never relying on registration order.
+- Physics comes from an existing library wrapped as a package; gravity fields are a separate package.
+- C/C++ libraries (UV unwrapping, simplification, compression) are called through coarse buffer-level interfaces with explicit ownership and no unwinding across the boundary, or run as subprocesses.
+- Coordinates follow Godot and Bevy: Y up, right-handed, −Z forward, meters. Blender's Z-up is converted on import.
 
 ## Editor and toolboxes
 
-The native editor targets **Linux, Windows, and macOS**. It integrates filesystem access, file watching, compilers, and external applications.
+Native editor, Linux first. Edits are recorded as undoable changes (file, field, previous and next value); continuous edits such as a gizmo drag form one transaction. Play mode runs on a copy of the world and is excluded from history. **Open in…** hands a source file to the full application; saving triggers reimport and hot reload. `.blend` files are converted through headless Blender and glTF; shipped games do not need Blender.
 
-A toolbox brings the main or simplest functions of a full creative tool into the editor:
+| Toolbox | Tasks | Version |
+| --- | --- | --- |
+| Animation and constraints | Base poses, procedural graphs, interaction targets, constraints | First |
+| Mesh preparation | UVs, collision shapes, LODs | First |
+| World properties | Surfaces, camera behavior | First |
+| Texture painting | Auto-unwrap, paint on model, brushes, layers | Later |
+| Audio | Volume, sound zones, clip trimming | Later |
 
-| Toolbox | Common tasks |
-| --- | --- |
-| Texture painting | Create a texture, auto-unwrap, paint on a model; basic brushes, erase, and layers |
-| Mesh preparation | Generate UVs, collision shapes, and LODs |
-| Animation and constraints | Edit procedural graphs, interaction targets, and constraints |
-| World properties | Edit surfaces and camera behavior |
-| Audio | Trim clips |
+## Menus
 
-When a toolbox is insufficient, **Open in…** launches the appropriate full application with the working source file. Prefer compatible formats and shared source assets so users can continue their work externally. Saving triggers reimport and hot reload. Toolboxes may reuse libraries or external processes rather than reimplementing mature algorithms.
+Menus are entities with layout, visibility, labels, focus, input scope, and action bindings. Buttons invoke registered actions such as `resume_game`. UI containment propagates layout, visibility, and lifetime without world transforms.
 
-Support `.blend` sources through a headless Blender exporter, initially using glTF as an intermediate if suitable. Ship compiled assets; release games do not require Blender.
+## Streaming, web, and multiplayer
 
-## Streaming and exports
+- Streaming uses spatial cells and explicit asset demand. Cells organize loading only, never gameplay relations. Volumes can prefetch teleport destinations and encounters. Bundles are dependency-aware, with hysteresis and LRU eviction.
+- Native and browser builds share game code; the asset layer abstracts disk, packages, and browser caches.
+- Multiplayer is not in the first version, but the structure must allow it: fixed-timestep simulation with render interpolation, stable IDs, input converted to commands before reaching the simulation, no simulation reads from presentation, and seeded randomness. Headless builds need no window, GPU, or audio.
 
-Support native desktop and browser games through shared game code. The asset layer abstracts disk, package files, and browser/network caches.
+## Open decisions
 
-Streaming uses spatial cells and explicit asset demand rather than checking every entity's distance each frame. Volumes and gameplay events can prefetch teleport destinations, encounters, or other resources. Request dependency-aware bundles, retain shared assets while needed, and cache unused assets until memory pressure warrants eviction. Use hysteresis and least-recently-used eviction for eligible resources.
-
-Separate simulation from presentation from the start. Headless servers must not require a window, GPU, audio, or editor. Add replication, snapshots, prediction, and interpolation after the core engine works. Component schemas may describe network roles, but wire formats remain separate from runtime layouts and handle versioning, quantization, and endianness explicitly. Clients derive cosmetic poses from gameplay state; gameplay-relevant pose information needs authoritative treatment. Single-player simulation requires no network transport.
+- Whether every definition must descend from a primordial type.
+- What happens to wards when their master dies or is removed (orphaned, despawned, or reassigned), and how orders are weighted against the ward's own tree.
+- Whether actions are instantaneous, with durations modeled as state components; this settles the start vs. completion hook for reactions.
+- Whether spawners author tile coordinates or world/zone positions with derived tiles.
+- How renaming a path preserves references and saves.
+- Editor UI toolkit.
+- Runtime scripting language, if any.
+- Exact schema and reference syntax; one descriptor per action or a combined catalog; save format.
 
 ## Development sequence
 
-1. **Foundation:** pinned Bevy base, component schemas, source loading, inspector, presets, volumes, constraints, and hot reload.
-2. **Procedural character:** skeleton access, arm/leg IK, gaze, grabbing, gait, jumping, springs, and squash/stretch.
-3. **World systems:** surfaces, camera volumes, gravity, teleporters, interaction particles, and user presets.
-4. **Asset pipeline and toolboxes:** Blender import, compilation, painting, UVs, collision generation, graph editing, and external-tool handoff.
-5. **Streaming and web:** world cells, bundles, residency, eviction, semantic prefetch, and browser export.
-6. **Package validation:** move planetary gravity into an external package containing components, constraints, systems, editor tools, and presets.
-7. **Multiplayer:** headless server, replication, snapshots, prediction, interpolation, and network metadata.
+Each milestone ends in something runnable on Linux.
 
-Validate the design in a small playground with a player, cube, chair, water, slippery floor, gravity planet, camera zone, and teleporter. Demonstrate procedural walking, jumping, looking, grabbing, carrying, and dropping, alongside surface effects, camera blending, gravity, and streaming hints. Important behavior must remain inspectable and editable through data.
+0. **Risk spikes:** procedural legs with IK, springs, and base poses; Bevy hotpatching; comment-preserving JSONC edits; physics library compatibility.
+1. **Physics playground:** physics and gravity-field packages, character controller with variable up, keyboard input, cube, slippery floor, water, camera zone, fixed timestep with interpolation, headless tests.
+2. **Data:** JSONC loading through `Reflect`, `descendsFrom` inheritance, presets, overrides, hot reload, `file:line` errors.
+3. **Actions, AI, and encounters:** action registry and reactions, `masterIs` with grants, decision trees and sensing, spawners, boss and minions, save/load.
+4. **Editor:** hierarchy, inspector, gizmos, undo/redo, play mode, spawn previews, templates.
+5. **Character and animation toolbox:** base poses, gaze, grab/carry/drop, jumping, squash/stretch, sitting.
+6. **Asset pipeline:** Blender import, compiled binary format, generated collision and LODs, Open in….
+7. **Package validation:** move planetary gravity into an external package.
+8. **Streaming.**
+
+After the first version: web, Windows and macOS, multiplayer, texture painting, audio toolbox, video playback.
+
+The validation playground has a player, cube, chair, water, slippery floor, gravity planet, camera zone, teleporter, a boss/minion encounter, and a menu. It must demonstrate procedural walking, jumping, looking, grabbing, carrying, and dropping, with important behavior inspectable and editable as data.
 
 ## Scope
 
-Prefer composition before adding primitives, events and change detection where appropriate, and existing libraries before custom infrastructure. Introduce abstractions when they solve a current problem.
+Prefer composition over new primitives and existing libraries over custom infrastructure; add abstractions only for a current problem.
 
-Initial non-goals: AAA rendering, full creative-tool replacements, stable binary plugin ABI, giant-world technology, general visual scripting, deterministic multiplayer lockstep, custom GPU backends, and compatibility with every future Bevy release.
+Non-goals: AAA rendering, full creative-tool replacements, stable binary plugin ABI, giant worlds, general visual scripting, lockstep multiplayer, custom GPU backends, tracking every Bevy release.
 
 Success means building unusual interactive scenes substantially faster by combining inspectable data and reusable behavior.

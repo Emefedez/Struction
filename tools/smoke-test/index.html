@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Struction environment check</title>
+<style>
+  body { margin: 0; background: #20242a; color: white; font-family: sans-serif; }
+  p { margin: 1rem; }
+  canvas { display: block; max-width: 100%; }
+</style>
+<p id="status">Loading the WebGPU environment check…</p>
+<script type="module">
+  import init from './struction.js';
+  const status = document.getElementById('status');
+  try {
+    if (!navigator.gpu) throw new Error('This browser does not expose WebGPU.');
+    if (!await navigator.gpu.requestAdapter()) {
+      throw new Error('No WebGPU adapter is available in this browser. Use the native test or a browser with WebGPU support.');
+    }
+    await init();
+    status.textContent = 'Struction environment check';
+  } catch (error) {
+    status.textContent = `Could not start: ${error.message}`;
+    console.error(error);
+  }
+</script>
+</html>

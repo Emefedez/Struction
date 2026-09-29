@@ -1,0 +1,34 @@
+[package]
+name = "struction-smoke-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bevy = { version = "=0.19.1", default-features = false, features = [
+    "std",
+    "async_executor",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_color",
+    "bevy_camera",
+    "bevy_core_pipeline",
+    "bevy_image",
+    "bevy_light",
+    "bevy_material",
+    "bevy_mesh",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_shader",
+    "bevy_window",
+    "bevy_winit",
+    "keyboard",
+    "mouse",
+    "multi_threaded",
+    "png",
+    "tonemapping_luts",
+    "zstd_rust",
+    "wayland",
+    "x11",
+    "webgpu",
+] }
