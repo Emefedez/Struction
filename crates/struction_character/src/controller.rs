@@ -3,8 +3,8 @@ use bevy::prelude::*;
 use struction_gravity::{LocalGravity, LocalUp};
 use struction_physics::{EnvironmentSystems, Submersion, Surface};
 
-/// Speed (m/s) along up above which a character counts as airborne even if the ground probe
-/// still reaches: it is leaving the ground, not standing on it.
+/// Speed (m/s) away from the ground above which a character counts as airborne even if the
+/// ground probe still reaches: it is leaving the ground, not standing on it.
 const LEAVING_GROUND_SPEED: f32 = 1.0;
 const PITCH_LIMIT: f32 = 1.5;
 /// Gravity assumed for jump speed when there is none to derive it from.
@@ -291,8 +291,11 @@ fn control_characters(
         let mut vertical = velocity.0.dot(up);
         let mut tangent = velocity.0 - up * vertical;
 
-        // A probe that still reaches the ground while the body shoots up means leaving it.
-        state.grounded &= vertical <= LEAVING_GROUND_SPEED;
+        // A probe that still reaches the ground while the body shoots away from it means leaving
+        // it. Measured along the ground normal: walking up a ramp, or across a planet whose up
+        // is tilted by other fields, moves along up without leaving the surface.
+        let normal = state.ground_normal.normalize_or(up);
+        state.grounded &= velocity.0.dot(normal) <= LEAVING_GROUND_SPEED;
         let swimming = submersion.0 >= controller.swim_threshold;
         state.swimming = swimming;
 
@@ -312,8 +315,6 @@ fn control_characters(
                 target,
                 controller.traction * state.ground_friction * dt,
             );
-            // Stay on the ground when the surface curves away or the probe was mid-hop.
-            vertical = vertical.min(0.0);
         } else if wish != Vec3::ZERO {
             let target = wish * controller.move_speed;
             tangent = step_toward(tangent, target, controller.air_acceleration * dt);
@@ -330,7 +331,14 @@ fn control_characters(
             state.grounded = false;
         }
 
-        let linear = tangent + up * vertical;
+        let mut linear = tangent + up * vertical;
+        if state.grounded && !swimming {
+            // Stay on the ground when the surface curves away or the probe was mid-hop.
+            let away = linear.dot(normal);
+            if away > 0.0 {
+                linear -= normal * away;
+            }
+        }
         if linear != velocity.0 {
             velocity.0 = linear;
         }

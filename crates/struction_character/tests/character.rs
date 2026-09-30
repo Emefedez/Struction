@@ -607,3 +607,29 @@ fn slippery_slopes_still_slide() {
     let drift = drift_on_slope(Surface::slippery());
     assert!(drift.x < -1.0, "slid {drift}");
 }
+
+#[test]
+fn walking_up_a_ramp_stays_grounded() {
+    let mut app = app();
+    scene_gravity(&mut app);
+    // Rises toward -Z, the default heading.
+    let tilt = Quat::from_rotation_x(20f32.to_radians());
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(40.0, 1.0, 40.0),
+        Transform::from_translation(tilt * Vec3::NEG_Y * 0.5).with_rotation(tilt),
+    ));
+    let hero = player(&mut app, Vec3::new(0.0, FEET + 0.1, 0.0));
+    frames(&mut app, 30);
+    let start = position(&app, hero);
+    press(&mut app, KeyCode::KeyW);
+    for tick in 0..90 {
+        frame(&mut app);
+        assert!(
+            state(&app, hero).grounded,
+            "airborne on the ramp at tick {tick}"
+        );
+    }
+    let climbed = position(&app, hero) - start;
+    assert!(climbed.z < -4.0 && climbed.y > 1.4, "climbed {climbed}");
+}
