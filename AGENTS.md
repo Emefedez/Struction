@@ -44,10 +44,15 @@ From the design review's pending recommendations, treated as decided:
 | `struction_data` | Done, 64 tests. Defines its own `Lineage`, to be replaced by core's `Definition` in `struction_world` step 0 |
 | gravity / physics / character | Done, 40 tests. Own input mapping instead of `bevy_enhanced_input`; dynamic capsule controller |
 | `struction_anim` | Written, interrupted before verification: build, test, review, write the spike go/no-go report |
-| `struction_ai` | Partial (behavior, condition, definition modules); sensing, boids, plugin, tests missing |
+| `struction_ai` | Done, 23 tests. Loading `brain`/`sensing` from definitions and a physics line-of-sight are left to integration |
 | `struction_world` | Not started |
 | `struction_assets` | Not started |
 | `apps/playground` | In progress (Codex): milestone 1 visual scene |
+
+## Follow-ups
+
+- Brain arguments use tagged values (`{ "Float": 0.25 }`); switch to plain JSON values typed by the condition/action parameter metadata.
+- Hot reload of a master's `grantsToWards` does not update existing wards.
 
 ## Next
 
