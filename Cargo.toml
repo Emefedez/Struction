@@ -11,6 +11,8 @@ members = [
     "crates/struction_ai",
     "crates/struction_world",
     "crates/struction_assets",
+    "crates/struction_editor",
+    "apps/editor",
 ]
 resolver = "3"
 
@@ -38,6 +40,15 @@ avian3d = { version = "0.7.0", default-features = false, features = ["3d", "f32"
 # Avian's interpolation backend; named directly only to inspect easing state.
 bevy_transform_interpolation = "0.5"
 uuid = { version = "1", default-features = false }
+# Asset pipeline: zero-copy compiled format, glTF parsing, simplification (meshoptimizer), hulls.
+rkyv = "0.8"
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+meshopt = "0.6"
+parry3d = { version = "0.27", default-features = false, features = ["required-features", "std", "alloc"] }
+base64 = "0.22"
+twox-hash = { version = "2", default-features = false, features = ["std", "xxhash3_64"] }
+memmap2 = "0.9"
+tempfile = "3"
 
 struction_data = { path = "crates/struction_data" }
 struction_core = { path = "crates/struction_core" }
@@ -48,6 +59,9 @@ struction_anim = { path = "crates/struction_anim" }
 struction_ai = { path = "crates/struction_ai" }
 struction_world = { path = "crates/struction_world" }
 struction_assets = { path = "crates/struction_assets" }
+struction_editor = { path = "crates/struction_editor" }
+# Editor UI (adopted decision). 0.42 is the release for Bevy 0.19; 0.43 targets Bevy 0.20.
+bevy_egui = { version = "=0.42.0", default-features = false, features = ["render", "default_fonts", "manage_clipboard"] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

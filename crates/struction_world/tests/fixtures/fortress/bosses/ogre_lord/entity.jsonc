@@ -1,0 +1,8 @@
+{
+  "descendsFrom": "Actor",
+  "components": { "Health": { "current": 500.0, "max": 500.0 } },
+  // The lord's presence emboldens his ogres.
+  "grantsToWards": [
+    { "to": "minions/ogre", "components": { "Emboldened": { "bonus": 2 } }, "actions": ["rally"] }
+  ]
+}

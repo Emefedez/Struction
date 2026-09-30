@@ -1,0 +1,19 @@
+[package]
+name = "struction_editor"
+description = "Editor logic: undo/redo over source edits, scene and spawn previews, gizmo math, templates."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# `serialize` gives glam types the serde impls the inspector writes values through.
+bevy = { workspace = true, features = ["serialize"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror = { workspace = true }
+struction_data = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

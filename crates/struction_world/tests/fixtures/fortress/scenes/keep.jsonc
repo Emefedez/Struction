@@ -1,0 +1,12 @@
+{
+  "spawnerList": {
+    // Far from the courtyard: another streaming cell.
+    "Keep": {
+      "zone": "Fortress",
+      "position": [200, 0, 0],
+      "spawns": {
+        "ogre_lord": { "definition": "bosses/ogre_lord" }
+      }
+    }
+  }
+}

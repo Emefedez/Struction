@@ -8,8 +8,20 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "struction-assets"
+path = "src/bin/struction-assets.rs"
+
 [dependencies]
-bevy = { workspace = true }
+bevy = { workspace = true, features = ["bevy_mesh"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+rkyv = { workspace = true }
+gltf = { workspace = true }
+meshopt = { workspace = true }
+parry3d = { workspace = true }
+base64 = { workspace = true }
+twox-hash = { workspace = true }
+memmap2 = { workspace = true }
+tempfile = { workspace = true }

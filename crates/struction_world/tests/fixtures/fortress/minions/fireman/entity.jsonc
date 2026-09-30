@@ -1,0 +1,5 @@
+{
+  "descendsFrom": "minions/ogre",
+  "presets": ["flammable"],
+  "components": { "Health": { "current": 40.0, "max": 40.0 } }
+}

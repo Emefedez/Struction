@@ -1,0 +1,8 @@
+{
+  "descendsFrom": "Actor",
+  "components": { "Health": { "current": 100.0, "max": 100.0 } },
+  // Ogres that follow the player trail behind and can fetch and guard.
+  "grantsToWards": [
+    { "to": "minions/ogre", "components": { "Follower": { "distance": 3 } }, "actions": ["fetch", "guard"] }
+  ]
+}

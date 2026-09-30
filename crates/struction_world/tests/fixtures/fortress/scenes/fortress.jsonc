@@ -1,0 +1,40 @@
+// The courtyard guards serve the ogre lord, who is spawned from another file.
+{
+  "zones": {
+    // Zone coordinates: spawner positions below are relative to this origin.
+    "Fortress/LeftCourtYard": { "position": [10, 0, 0] }
+  },
+  "spawnerList": {
+    "courtyard_guards": {
+      "zone": "Fortress/LeftCourtYard",
+      "position": [4, 0, 6],
+      "rotation": [0, 90, 0],
+      "spawns": {
+        "fireman1": {
+          "definition": "minions/fireman",
+          "offset": [0.5, -0.2, 0.0],
+          "masterIs": "Fortress/Keep/ogre_lord"
+        },
+        "fireman2": {
+          "definition": "minions/fireman",
+          "offset": [-0.5, 0.0, 0.0],
+          "masterIs": "Fortress/Keep/ogre_lord",
+          // Already wounded.
+          "overrides": { "components": { "Health": { "current": 5 } } }
+        },
+        "brute": {
+          "definition": "minions/ogre",
+          "offset": [0, 0, 2],
+          "masterIs": "Fortress/Keep/ogre_lord"
+        }
+      }
+    },
+    "start": {
+      "zone": "Fortress",
+      "position": [0, 0, 0],
+      "spawns": {
+        "player": { "definition": "player" }
+      }
+    }
+  }
+}

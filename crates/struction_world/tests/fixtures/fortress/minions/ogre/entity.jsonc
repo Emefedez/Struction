@@ -1,0 +1,10 @@
+// A big dumb brute.
+{
+  "descendsFrom": "Actor",
+  "transform": { "scale": [1.5, 1.5, 1.5] },
+  "components": { "Health": { "current": 60.0, "max": 60.0 } },
+  "reactions": [
+    // After my master's `die` completes, run my own `die`.
+    { "source": "master", "after": "bosses/ogre_lord/die", "call": "minions/ogre/die" }
+  ]
+}

@@ -1,0 +1,41 @@
+[package]
+name = "struction-editor"
+description = "The Struction editor: hierarchy, inspector, viewport with gizmos, play mode."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_color",
+    "bevy_camera",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_image",
+    "bevy_light",
+    "bevy_material",
+    "bevy_mesh",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_shader",
+    "bevy_window",
+    "bevy_winit",
+    "keyboard",
+    "mouse",
+    "png",
+    "tonemapping_luts",
+    "zstd_rust",
+    "wayland",
+    "x11",
+] }
+bevy_egui = { workspace = true }
+serde_json = { workspace = true }
+struction_data = { workspace = true }
+struction_editor = { workspace = true }
+struction_gravity = { workspace = true }
+struction_physics = { workspace = true }
+struction_character = { workspace = true }
