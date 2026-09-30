@@ -44,14 +44,11 @@ Build natively for the host (`aarch64-apple-darwin` on Apple Silicon); the pinne
    export STRUCTION_BLENDER=/Applications/Blender.app/Contents/MacOS/Blender
    ```
 
-   `struction_assets` and its Blender tests read `STRUCTION_BLENDER`, and so does `./tools/check-environment.sh`.
+   `struction_assets` (importing, its Blender tests and **Open in…** for `.blend` files) reads `STRUCTION_BLENDER`, and so does `./tools/check-environment.sh`. Other files open with `open` on macOS and `xdg-open` on Linux.
 
 Then follow [Native check](#native-check). No Linux packages, `pkg-config`, `cmake` or `ninja` are required.
 
-Known gaps on macOS:
-
-- **Open in…** defaults to `xdg-open` and `blender` (`OpenIn` in `crates/struction_assets/src/watch.rs`), but `xdg-open` is Linux-only and the Blender app bundle is not on `PATH`. Until it gets platform defaults, set `default_command` to `open` and the `blend` entry to `STRUCTION_BLENDER`'s path when constructing `OpenIn`.
-- The `wasm-bindgen` version lookup under [WebAssembly](#webassembly) needs Python 3.11 or newer (`tomllib`). If the system `python3` is older, install a current Python, for example with Homebrew.
+Known gap on macOS: the `wasm-bindgen` version lookup under [WebAssembly](#webassembly) needs Python 3.11 or newer (`tomllib`). If the system `python3` is older, install a current Python, for example with Homebrew.
 
 Verification status: the workspace type-checks for `aarch64-apple-darwin` from Linux (`cargo check --workspace --all-targets`, excluding `struction_assets`, whose `meshopt` C++ build needs the macOS SDK). Building, running and the Blender tests have not yet been verified on a Mac; record the first native run here.
 
