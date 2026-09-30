@@ -10,8 +10,16 @@ use std::time::{Duration, Instant, SystemTime};
 use bevy::asset::AssetPath;
 use bevy::prelude::*;
 
+use crate::blender::Blender;
 use crate::compile::{CompileSettings, CompileStatus, compile_asset_with};
 use crate::error::AssetError;
+
+/// The desktop's handler for files without a per-extension command.
+const DEFAULT_OPENER: &str = if cfg!(target_os = "macos") {
+    "open"
+} else {
+    "xdg-open"
+};
 
 /// Which program opens a source file: a per-extension command, else the default.
 #[derive(Resource, Debug, Clone)]
@@ -25,8 +33,12 @@ pub struct OpenIn {
 impl Default for OpenIn {
     fn default() -> Self {
         Self {
-            default_command: vec!["xdg-open".into()],
-            by_extension: HashMap::from([("blend".into(), vec!["blender".into()])]),
+            default_command: vec![DEFAULT_OPENER.into()],
+            // The same executable the import pipeline runs; the macOS app bundle is not on `PATH`.
+            by_extension: HashMap::from([(
+                "blend".into(),
+                vec![Blender::default().executable.to_string_lossy().into_owned()],
+            )]),
         }
     }
 }
@@ -252,8 +264,12 @@ mod tests {
     #[test]
     fn chooses_command_by_extension() {
         let open_in = OpenIn::default();
-        assert_eq!(open_in.command_for(Path::new("a/ogre.BLEND")), ["blender"]);
-        assert_eq!(open_in.command_for(Path::new("notes.txt")), ["xdg-open"]);
+        let blender = Blender::default().executable.to_string_lossy().into_owned();
+        assert_eq!(open_in.command_for(Path::new("a/ogre.BLEND")), [blender]);
+        assert_eq!(
+            open_in.command_for(Path::new("notes.txt")),
+            [DEFAULT_OPENER]
+        );
     }
 
     #[test]
