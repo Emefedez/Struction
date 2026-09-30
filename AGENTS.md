@@ -24,7 +24,7 @@ Check this table before proceeding with changes. An active claim covers only its
 | Asset pipeline verification | **MOON** | Landed: 23 tests, including actual Blender import/export, and Clippy verified; implementation predates this verification |
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
 | Planet gravity and camera obstruction | **MOON** | Active: gravity entry/exit hysteresis and escape tests; separate playground occlusion module for transparent blocking ground. SUN retains rig/animation work in playground; only minimal camera module wiring and planet tuning will overlap |
-| Character animation integration | **SUN** | Active: character↔`struction_anim` bridge (motion, local up, physics-raycast ground, rig root following the body), animated player in `apps/playground`; small `struction_anim` hook for externally stepped locomotion |
+| Character animation integration | **SUN** | Landed (implemented and verified by **SUN**): `CharacterAnimationPlugin` bridge, `CustomGround` hook, slope fixes in the controller and locomotion, animated player and working HUD in `apps/playground`; native Vulkan smoke run verified |
 
 ## Adopted decisions
 
@@ -58,19 +58,19 @@ From the design review's pending recommendations, treated as decided:
 | --- | --- |
 | `struction_core` | Done, 53 tests |
 | `struction_data` | Done, 69 tests. **MOON** added candidate-source validation without disk writes; inherited definitions, presets and source errors verified |
-| gravity / physics / character | Done, 43 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity. Only buoyant volumes cause submersion; camera zones remain dry |
-| `struction_anim` | Done, 52 tests. Spike verdict: go on mechanics (planted feet, planets, hold/gaze/sit); visual quality unproven until rendered. Runtime uses a fixed solve pipeline, not the dataflow graph yet |
+| gravity / physics / character | Done, 49 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity. Only buoyant volumes cause submersion; camera zones remain dry. Grounded characters hold on walkable slopes (friction-scaled). `CharacterAnimationPlugin` drives `struction_anim` rigs with physics-raycast feet (**SUN**) |
+| `struction_anim` | Done, 54 tests. Spike verdict: go on mechanics (planted feet, planets, hold/gaze/sit); rendered in the playground, looks still rough (see follow-ups). Runtime uses a fixed solve pipeline, not the dataflow graph yet. `CustomGround` lets bridges step locomotion with their own ground; feet no longer re-step at the reach limit on slopes (**SUN**) |
 | `struction_ai` | Done, 23 tests. Loading `brain`/`sensing` from definitions and a physics line-of-sight are left to integration |
 | `struction_world` | Verified, 22 tests. Spawners, save/load, aliases and boss/minion integration; **MOON** added candidate scene compilation and source provenance for authoring |
 | `struction_assets` | Verified, 23 tests including real Blender 5.2.2 import/export, UVs, collision/LODs, compiled loading and hot reload; Clippy clean |
 | `struction_debug` | Implemented, 5 tests and native trace verified. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
 | `struction_editor` / `apps/editor` | Headless foundation verified by **MOON**, 32 tests and native JSONL smoke. Shared validation, source/history, hierarchy/inspection, world-space moves, templates and isolated play. GUI app remains a scaffold |
-| `apps/playground` | Milestone 1 scene runnable. Water surface replaces overlapping transparent box; camera-relative movement and overhead orientation covered by 2 tests; native Vulkan smoke run verified |
+| `apps/playground` | Milestone 1 scene runnable with a procedurally walking humanoid player; HUD renders (`bevy_ui_render`, `default_font`) (**SUN**). Water surface replaces overlapping transparent box; camera-relative movement and overhead orientation covered by 2 tests; native Vulkan smoke run verified |
 
 ## Follow-ups
 
 - Brain arguments use tagged values (`{ "Float": 0.25 }`); switch to plain JSON values typed by the condition/action parameter metadata.
-- Animation integration: character writes `AnimMotion` and `LocalUp`; a physics-raycast `GroundQuery`; order physics interpolation before `AnimSystems::Motion`. Looks: foot roll, hip sway, arm swing, longer strides (~110 steps/min), knee limits, turning in place.
+- Animation looks: foot roll, hip sway, arm swing, longer strides (~110 steps/min), knee limits, turning in place.
 - Hot reload of a master's `grantsToWards` does not update existing wards.
 - World/physics integration must derive moving cells from simulation `Position` instead of interpolated `Transform`. Streaming still needs persistence of unloaded spawners that have not run yet; current saves record spawners after their first run.
 

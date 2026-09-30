@@ -43,13 +43,13 @@ The renderer log should identify the Apple M1 Max and Honeykrisp/Vulkan. Initial
 
 ## Playground
 
-Run the milestone 1 physics scene with `cargo run -p struction-playground`. Use WASD to move, Space to jump or swim upward, and M to toggle mouse look and cursor grab. Escape releases a grabbed cursor; press it again to quit. The overlay shows contact, swimming, camera zone, and FPS state. Walk over the blue slippery floor toward the gravity planet, or move right into the water pool.
+Run the physics scene with `cargo run -p struction-playground`. Use WASD to move, Space to jump or swim upward, and M to toggle mouse look and cursor grab. Escape releases a grabbed cursor; press it again to quit. The overlay shows contact, swimming, camera zone, footstep count, and FPS state. Walk over the blue slippery floor toward the gravity planet, or move right into the water pool.
 
-Movement follows the camera's ground frame, including the overhead zone and changing gravity. The input adapter captures that frame in `CharacterIntent`; the fixed simulation never reads a camera. The water uses a two-sided surface at the fluid's upper boundary, separate from its buoyancy volume, to avoid blending overlapping box faces against the pool floor.
+Movement follows the camera's ground frame, including the overhead zone and changing gravity. The input adapter captures that frame in `CharacterIntent`; the fixed simulation never reads a camera. The player is a procedural `struction_anim` humanoid drawn with simple shapes: `CharacterAnimationPlugin` keeps its rig on the interpolated capsule and plants its feet with physics ray casts, on slopes, underwater floors and the planet alike. The water uses a two-sided surface at the fluid's upper boundary, separate from its buoyancy volume, to avoid blending overlapping box faces against the pool floor.
 
-`cargo run -p struction-playground -- --smoke-test` drives the character forward and jumps once, then logs its position and exits after about ten seconds.
+`cargo run -p struction-playground -- --smoke-test` drives the character forward and jumps once, then logs its position and footstep count and exits after about ten seconds.
 
-Headless world integration checks run with `cargo test -p struction_world --locked`. They load the fortress JSONC fixture, exercise boss/minion actions and adoption, restore saves, and rename paths while retaining comments and old save identities. Camera movement and overhead transitions have regression checks in `struction_character` and `struction-playground`.
+Headless world integration checks run with `cargo test -p struction_world --locked`. They load the fortress JSONC fixture, exercise boss/minion actions and adoption, restore saves, and rename paths while retaining comments and old save identities. Camera movement and overhead transitions have regression checks in `struction_character` and `struction-playground`; `cargo test -p struction_character --test animation` covers the rig following the body and foot placement on floors, slopes and in water.
 
 For structured status and position changes, add `--trace /tmp/struction-trace.jsonl` (a new file). This can be combined with `--smoke-test`. See [debugging](debugging.md) for the event format, filtering examples, and headless trace API.
 

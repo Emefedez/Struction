@@ -1,4 +1,4 @@
-//! Native milestone 1 physics playground.
+//! Native physics playground with a procedurally animated player.
 
 use bevy::{
     app::AppExit,
@@ -6,9 +6,15 @@ use bevy::{
     prelude::*,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
+use struction_anim::{
+    humanoid,
+    locomotion::LocomotionParams,
+    plugin::{Locomotor, RigJoints},
+    rig::Rig,
+};
 use struction_character::{
-    CharacterController, CharacterLook, CharacterState, InputActions, InputMap, InputSystems,
-    PlayerControlled,
+    CharacterAnimationPlugin, CharacterController, CharacterLook, CharacterState, InputActions,
+    InputMap, InputSystems, PlayerControlled, spawn_rig,
 };
 use struction_debug::{DebugTracePlugin, TraceAppExt, TraceEntity, TraceWriter};
 use struction_gravity::{GravityField, LocalUp};
@@ -23,6 +29,7 @@ struct PlaygroundOptions {
     jump_sent: bool,
     cursor_grabbed: bool,
     escape_released_cursor: bool,
+    footfalls: u32,
 }
 
 #[derive(Component)]
@@ -36,6 +43,7 @@ enum PlaygroundSystems {
     Cursor,
     Script,
     MovementFrame,
+    Dress,
     Camera,
     Hud,
     Exit,
@@ -83,10 +91,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         jump_sent: false,
         cursor_grabbed: false,
         escape_released_cursor: false,
+        footfalls: 0,
     })
     .add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Struction | Physics playground".into(),
+            title: "Struction | Playground".into(),
             resolution: (1280, 800).into(),
             ..default()
         }),
@@ -95,6 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .add_plugins((
         PhysicsPlugin::default(),
         struction_character::CharacterPlugins,
+        CharacterAnimationPlugin,
     ))
     .configure_sets(
         PreUpdate,
@@ -110,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .configure_sets(
         Update,
         (
+            PlaygroundSystems::Dress,
             PlaygroundSystems::Camera,
             PlaygroundSystems::Hud,
             PlaygroundSystems::Exit,
@@ -123,7 +134,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PreUpdate,
         camera_movement.in_set(PlaygroundSystems::MovementFrame),
     )
-    .add_systems(Update, follow_camera.in_set(PlaygroundSystems::Camera))
+    .add_systems(Update, dress_rigs.in_set(PlaygroundSystems::Dress))
+    .add_systems(
+        Update,
+        (follow_camera, count_footfalls).in_set(PlaygroundSystems::Camera),
+    )
     .add_systems(Update, update_hud.in_set(PlaygroundSystems::Hud))
     .add_systems(Update, exit_control.in_set(PlaygroundSystems::Exit))
     .run();
@@ -158,7 +173,7 @@ fn setup(
     spawn_planet(&mut commands, &mut meshes, &mut materials);
     spawn_camera_zone(&mut commands, &mut meshes, &mut materials);
     spawn_cubes(&mut commands, &mut meshes, &mut materials);
-    spawn_player(&mut commands, &mut meshes, &mut materials);
+    spawn_player(&mut commands);
     spawn_hud(&mut commands);
 }
 
@@ -347,22 +362,107 @@ fn spawn_cubes(
     }
 }
 
-fn spawn_player(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+fn spawn_player(commands: &mut Commands) {
+    // The capsule is only the physics body; the visible player is the rig that follows it.
+    let body = commands
+        .spawn((
+            Name::new("Player"),
+            Player,
+            TraceEntity,
+            CharacterController::default(),
+            PlayerControlled,
+            CameraTarget,
+            Transform::from_xyz(0.0, 0.9, 8.0),
+        ))
+        .id();
+    let rig = spawn_rig(commands, body, humanoid::rig(), LocomotionParams::default())
+        .expect("the built-in humanoid is a valid rig");
+    commands
+        .entity(rig)
+        .insert((Name::new("Player rig"), Visibility::default()));
+}
+
+/// Gives new rigs a body made of simple shapes attached to their joint entities.
+fn dress_rigs(
+    mut commands: Commands,
+    rigs: Query<(&Rig, &RigJoints), Added<RigJoints>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    commands.spawn((
-        Name::new("Player"),
-        Player,
-        TraceEntity,
-        CharacterController::default(),
-        PlayerControlled,
-        CameraTarget,
-        Mesh3d(meshes.add(Capsule3d::new(0.3, 1.0))),
-        MeshMaterial3d(material(materials, Color::srgb(0.96, 0.86, 0.44))),
-        Transform::from_xyz(0.0, 0.9, 8.0),
-    ));
+    for (rig, joints) in &rigs {
+        let skin = material(&mut materials, Color::srgb(0.96, 0.86, 0.44));
+        let dark = material(&mut materials, Color::srgb(0.30, 0.27, 0.34));
+        let defs = rig.skeleton.joints();
+        for (def, &joint) in defs.iter().zip(&joints.0) {
+            commands.entity(joint).insert(Visibility::default());
+            let name = def.name.as_str();
+            let decoration = if name == "head" {
+                Some((
+                    meshes.add(Sphere::new(0.11)),
+                    skin.clone(),
+                    Transform::from_xyz(0.0, 0.08, 0.0),
+                ))
+            } else if name.starts_with("hand") {
+                Some((
+                    meshes.add(Sphere::new(0.04)),
+                    skin.clone(),
+                    Transform::from_xyz(0.0, -0.03, 0.0),
+                ))
+            } else if name.starts_with("foot") {
+                // Toes point forward (-Z) from the ankle, with the sole on the ground.
+                Some((
+                    meshes.add(Cuboid::new(0.09, humanoid::ANKLE_HEIGHT, 0.24)),
+                    dark.clone(),
+                    Transform::from_xyz(0.0, -humanoid::ANKLE_HEIGHT * 0.5, -0.06),
+                ))
+            } else {
+                None
+            };
+            if let Some((mesh, material, transform)) = decoration {
+                commands.spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(material),
+                    transform,
+                    ChildOf(joint),
+                ));
+            }
+
+            // A limb segment from the parent joint to this one, owned by the parent so it turns
+            // with it.
+            let Some(parent) = def.parent.filter(|&p| p != rig.root) else {
+                continue;
+            };
+            let offset = def.rest.translation;
+            let length = offset.length();
+            let radius = segment_radius(&defs[parent].name);
+            if length < 1e-3 || radius == 0.0 {
+                continue;
+            }
+            let legs = ["thigh", "shin"]
+                .iter()
+                .any(|l| defs[parent].name.starts_with(l));
+            commands.spawn((
+                Mesh3d(meshes.add(Capsule3d::new(radius, (length - radius).max(0.01)))),
+                MeshMaterial3d(if legs { dark.clone() } else { skin.clone() }),
+                Transform::from_translation(offset * 0.5)
+                    .with_rotation(Quat::from_rotation_arc(Vec3::Y, offset / length)),
+                ChildOf(joints.0[parent]),
+            ));
+        }
+    }
+}
+
+/// Thickness of the segment that starts at a joint; zero draws nothing.
+fn segment_radius(parent: &str) -> f32 {
+    match parent.split('_').next().unwrap_or(parent) {
+        "hips" => 0.09,
+        "spine" | "chest" => 0.11,
+        "neck" => 0.05,
+        "upper" | "thigh" => 0.06,
+        "forearm" | "shin" => 0.045,
+        "fingers" | "thumb" | "hand" => 0.012,
+        _ => 0.0,
+    }
 }
 
 fn spawn_hud(commands: &mut Commands) {
@@ -483,6 +583,10 @@ fn camera_ground_forward(camera: &Transform, up: Vec3) -> Option<Vec3> {
     Some(up.cross(right))
 }
 
+fn count_footfalls(rigs: Query<&Locomotor>, mut options: ResMut<PlaygroundOptions>) {
+    options.footfalls += rigs.iter().map(|l| l.state.output().footfalls).sum::<u32>();
+}
+
 fn update_hud(
     player: Query<(&CharacterState, &Submersion, &InCameraZones), With<Player>>,
     mut hud: Query<&mut Text, With<Hud>>,
@@ -503,12 +607,13 @@ fn update_hud(
         0.0
     };
     **text = format!(
-        "STRUCTION / PHYSICS PLAYGROUND\nWASD move  ·  Space jump / swim  ·  M mouse look [{}]  ·  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Camera: {}   FPS: {:.0}\nBlue tile: slippery   ·   Orange cube: push   ·   Right: water   ·   Ahead: gravity planet",
+        "STRUCTION / PLAYGROUND\nWASD move  |  Space jump / swim  |  M mouse look [{}]  |  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Camera: {}   Steps: {}   FPS: {:.0}\nBlue tile: slippery   |   Orange cube: push   |   Right: water   |   Ahead: gravity planet",
         if options.cursor_grabbed { "on" } else { "off" },
         state.grounded,
         state.swimming,
         submersion.0 * 100.0,
         zone,
+        options.footfalls,
         fps
     );
 }
@@ -522,7 +627,10 @@ fn exit_control(
 ) {
     if options.smoke && time.elapsed_secs() >= 10.0 {
         if let Ok(position) = player.single() {
-            info!("Smoke test character position: {:?}", position.0);
+            info!(
+                "Smoke test character position: {:?}, footfalls: {}",
+                position.0, options.footfalls
+            );
         }
         exit.write(AppExit::Success);
     } else if keys.just_pressed(KeyCode::Escape) && !options.escape_released_cursor {

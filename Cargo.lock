@@ -878,6 +878,7 @@ dependencies = [
  "bevy_reflect",
  "bevy_render",
  "bevy_shader",
+ "bevy_sprite_render",
  "bevy_transform",
  "bevy_utils",
  "bytemuck",
@@ -1003,6 +1004,7 @@ dependencies = [
  "bevy_time",
  "bevy_transform",
  "bevy_ui",
+ "bevy_ui_render",
  "bevy_utils",
  "bevy_window",
  "bevy_winit",
@@ -5247,6 +5249,7 @@ name = "struction-playground"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "struction_anim",
  "struction_character",
  "struction_debug",
  "struction_gravity",

@@ -21,7 +21,9 @@ bevy = { workspace = true, features = [
     "bevy_render",
     "bevy_shader",
     "bevy_text",
+    "default_font",
     "bevy_ui",
+    "bevy_ui_render",
     "bevy_window",
     "bevy_winit",
     "keyboard",
@@ -35,4 +37,5 @@ bevy = { workspace = true, features = [
 struction_gravity = { workspace = true }
 struction_physics = { workspace = true }
 struction_character = { workspace = true }
+struction_anim = { workspace = true }
 struction_debug = { workspace = true }
