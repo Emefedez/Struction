@@ -58,6 +58,11 @@ pub enum ErrorKind {
     DefinitionCycle(Vec<String>),
     #[error("preset cycle: {}", .0.join(" -> "))]
     PresetCycle(Vec<String>),
+    #[error("\"{field}\" refers to missing definition \"{path}\"")]
+    MissingReference { field: String, path: String },
+    /// An action reference that does not resolve or does not match the action's signature.
+    #[error("{0}")]
+    Action(String),
     #[error(
         "definition \"{0}\" has no descendsFrom and is not primordial (primordial names are capitalized)"
     )]

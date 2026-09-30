@@ -48,7 +48,6 @@ impl Plugin for DataPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AppTypeRegistry>()
             .register_type::<Transform>()
-            .register_type::<crate::Lineage>()
             .add_message::<DefinitionsChanged>();
     }
 

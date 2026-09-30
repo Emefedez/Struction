@@ -17,6 +17,7 @@ bevy = { workspace = true, features = ["serialize", "reflect_documentation"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 jsonc-parser = { workspace = true, features = ["serde_json"] }
 thiserror = { workspace = true }
+struction_core = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

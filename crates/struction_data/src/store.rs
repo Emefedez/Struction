@@ -584,11 +584,29 @@ fn build_components(
     body: &Node,
     registry: &TypeRegistry,
 ) -> Result<Vec<ComponentValue>, Vec<DataError>> {
+    match body.get("components") {
+        Some(components) => build_component_map(components, registry),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Builds the components of a `{ "Name": value }` object, collecting one error per bad
+/// component. Also used for component maps outside `components`, such as grants.
+pub(crate) fn build_component_map(
+    components: &Node,
+    registry: &TypeRegistry,
+) -> Result<Vec<ComponentValue>, Vec<DataError>> {
     let builder = Builder { registry };
     let mut out: Vec<ComponentValue> = Vec::new();
     let mut errors = Vec::new();
-    let Some(components) = body.get("components").and_then(Node::as_object) else {
-        return Ok(out);
+    let Some(components) = components.as_object() else {
+        return Err(vec![DataError::at(
+            ErrorKind::TypeMismatch {
+                expected: "object of components".into(),
+                found: components.kind_name().into(),
+            },
+            &components.span,
+        )]);
     };
     for member in components {
         let built = builder

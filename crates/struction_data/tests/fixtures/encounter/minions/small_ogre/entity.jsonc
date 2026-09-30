@@ -1,0 +1,4 @@
+{
+  "descendsFrom": "minions/ogre",
+  "components": { "Health": { "max": 25.0 } }
+}

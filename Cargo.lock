@@ -4825,6 +4825,7 @@ dependencies = [
  "bevy",
  "jsonc-parser",
  "serde_json",
+ "struction_core",
  "tempfile",
  "thiserror 2.0.21",
 ]

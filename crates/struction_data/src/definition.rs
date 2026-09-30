@@ -6,6 +6,7 @@ use bevy::ecs::reflect::ReflectComponent;
 use bevy::prelude::*;
 use bevy::reflect::TypeRegistry;
 use serde_json::Value;
+use struction_core::{Definition, DefinitionPath};
 
 use crate::build::ComponentValue;
 use crate::error::{DataError, ErrorKind};
@@ -189,22 +190,6 @@ pub(crate) fn is_primordial(id: &str) -> bool {
         .is_some_and(char::is_uppercase)
 }
 
-/// Marks an instance with the definition it came from and that definition's ancestors, nearest
-/// first, so queries like "descends from `minions/ogre`" need no data lookup.
-#[derive(Component, Reflect, Clone, Debug, PartialEq, Eq)]
-#[reflect(Component)]
-pub struct Lineage {
-    pub definition: String,
-    pub ancestors: Vec<String>,
-}
-
-impl Lineage {
-    /// True for the definition itself and for anything it descends from.
-    pub fn descends_from(&self, definition: &str) -> bool {
-        self.definition == definition || self.ancestors.iter().any(|a| a == definition)
-    }
-}
-
 /// A definition after inheritance, presets and overrides, with components built and validated.
 #[derive(Debug)]
 pub struct Resolved {
@@ -248,11 +233,13 @@ impl Resolved {
         self.lineage == other.lineage && self.value == other.value
     }
 
-    pub fn lineage_component(&self) -> Lineage {
-        Lineage {
-            definition: self.id.clone(),
-            ancestors: self.lineage.clone(),
-        }
+    /// The core [`Definition`] component: this definition's path and its lineage, so queries
+    /// like "descends from `minions/ogre`" need no data lookup.
+    pub fn definition(&self) -> Definition {
+        Definition::new(
+            self.id.as_str(),
+            self.lineage.iter().map(DefinitionPath::new).collect(),
+        )
     }
 
     /// The built component of type `T`, if the definition has one.
@@ -262,7 +249,7 @@ impl Resolved {
             .find_map(|c| c.value.downcast_ref::<T>())
     }
 
-    /// Inserts every component plus [`Lineage`]. Also what a runtime does to refresh a live
+    /// Inserts every component plus the core [`Definition`]. Also what a runtime does to refresh a live
     /// instance after a reload (insertion replaces the previous value).
     pub fn insert_into(&self, entity: &mut EntityWorldMut, registry: &TypeRegistry) {
         for component in &self.components {
@@ -271,6 +258,6 @@ impl Resolved {
                 .expect("checked when the component was built");
             reflect.insert(entity, &*component.value, registry);
         }
-        entity.insert(self.lineage_component());
+        entity.insert(self.definition());
     }
 }

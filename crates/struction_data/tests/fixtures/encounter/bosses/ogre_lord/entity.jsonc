@@ -1,0 +1,7 @@
+{
+  "descendsFrom": "Actor",
+  "components": { "Health": { "current": 500.0, "max": 500.0 } },
+  "grantsToWards": [
+    { "to": "minions/ogre", "actions": ["rally"] }
+  ]
+}

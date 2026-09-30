@@ -82,7 +82,6 @@ fn components_come_from_the_registry() {
         "Surface",
         "Shape",
         "Transform",
-        "Lineage",
     ] {
         assert!(components.contains_key(name), "{name}");
     }

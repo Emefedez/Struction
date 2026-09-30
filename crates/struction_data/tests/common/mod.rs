@@ -103,7 +103,6 @@ pub fn registry() -> TypeRegistry {
     registry.register::<Shape>();
     registry.register::<Plain>();
     registry.register::<Transform>();
-    registry.register::<struction_data::Lineage>();
     registry
 }
 

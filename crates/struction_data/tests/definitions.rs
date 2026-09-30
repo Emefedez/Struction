@@ -268,9 +268,11 @@ fn instances_get_components_and_lineage() {
         world.get::<Flammable>(entity).unwrap().ignition_temperature,
         300.0
     );
-    let lineage = world.get::<struction_data::Lineage>(entity).unwrap();
-    assert!(lineage.descends_from("minions/ogre"));
-    assert!(lineage.descends_from("Actor"));
-    assert!(lineage.descends_from("minions/small_ogre"));
-    assert!(!lineage.descends_from("minions/ogre_lord"));
+    let definition = world.get::<struction_core::Definition>(entity).unwrap();
+    assert_eq!(definition.path.as_str(), "minions/small_ogre");
+    assert_eq!(definition.validate(), Ok(()));
+    for ancestor in ["minions/small_ogre", "minions/ogre", "Actor"] {
+        assert!(definition.descends_from(&ancestor.into()), "{ancestor}");
+    }
+    assert!(!definition.descends_from(&"minions/ogre_lord".into()));
 }

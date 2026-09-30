@@ -11,6 +11,10 @@
 //! Components are built from the merged data through `Reflect`; fields a component leaves out
 //! come from its `Default`, and every value keeps the file and line it was written at.
 //!
+//! Instances get the core `Definition` (path and lineage) on insertion. `reactions` and
+//! `grantsToWards` become the core `Reactions` and `GrantsToWards` through
+//! [`Resolved::reactions`] and [`Resolved::grants_to_wards`], once actions are registered.
+//!
 //! [`DefinitionStore`] is the entry point; [`edit`] is the write path for the editor and
 //! [`schema`] generates the JSON Schema.
 
@@ -19,14 +23,16 @@ mod definition;
 pub mod edit;
 pub mod error;
 mod plugin;
+mod relations;
 pub mod schema;
 pub mod source;
 mod store;
 mod typeinfo;
 
 pub use build::ComponentValue;
-pub use definition::{CANONICAL_ORDER, DEFAULT_EXTRA_SECTIONS, Lineage, Resolved};
+pub use definition::{CANONICAL_ORDER, DEFAULT_EXTRA_SECTIONS, Resolved};
 pub use error::{DataError, ErrorKind, Location};
 pub use plugin::{DataPlugin, DefinitionsChanged, reload_definition_file};
+pub use relations::{grants_from_node, reactions_from_node};
 pub use source::{Node, NodeValue, parse_jsonc};
 pub use store::{DefinitionStore, ReloadReport};
