@@ -348,6 +348,39 @@ fn camera_zone_detects_the_tracked_entity() {
 }
 
 #[test]
+fn camera_volumes_do_not_submerge_bodies_but_overlapping_water_does() {
+    let mut app = headless_app();
+    let zone = camera_zone(&mut app, Vec3::ZERO, 0);
+    let body = cube(&mut app, Vec3::ZERO, 1000.0);
+    app.world_mut().entity_mut(body).insert(CameraTarget);
+    step(&mut app, 5);
+    assert_eq!(
+        app.world().get::<InCameraZones>(body).unwrap().active(),
+        Some(zone)
+    );
+    assert_eq!(app.world().get::<Submersion>(body).unwrap().0, 0.0);
+
+    let fluid = app
+        .world_mut()
+        .spawn((
+            water(VolumeShape::Box {
+                half_extents: Vec3::splat(2.0),
+            }),
+            Transform::default(),
+        ))
+        .id();
+    step(&mut app, 5);
+    assert_eq!(app.world().get::<Submersion>(body).unwrap().0, 1.0);
+    app.world_mut().entity_mut(fluid).despawn();
+    step(&mut app, 5);
+    assert_eq!(app.world().get::<Submersion>(body).unwrap().0, 0.0);
+    assert_eq!(
+        app.world().get::<InCameraZones>(body).unwrap().active(),
+        Some(zone)
+    );
+}
+
+#[test]
 fn bodies_are_interpolated_between_fixed_ticks() {
     // Render at 144 Hz over a 60 Hz simulation.
     let mut app = headless_app();

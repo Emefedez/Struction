@@ -44,12 +44,12 @@ From the design review's pending recommendations, treated as decided:
 | --- | --- |
 | `struction_core` | Done, 53 tests |
 | `struction_data` | Done, 68 tests. Lineage unified with core's `Definition`; reflected grants/reactions available to world integration |
-| gravity / physics / character | Done, 42 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity |
+| gravity / physics / character | Done, 43 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity. Only buoyant volumes cause submersion; camera zones remain dry |
 | `struction_anim` | Done, 52 tests. Spike verdict: go on mechanics (planted feet, planets, hold/gaze/sit); visual quality unproven until rendered. Runtime uses a fixed solve pipeline, not the dataflow graph yet |
 | `struction_ai` | Done, 23 tests. Loading `brain`/`sensing` from definitions and a physics line-of-sight are left to integration |
 | `struction_world` | Spawners, save/load, aliases and boss/minion integration verified with 21 tests. Rejects inconsistent save identities and rename key collisions; renamed/removed spawns keep correct save bookkeeping |
 | `struction_assets` | Implementation and tests present; verification pending |
-| `struction_debug` | Implemented, 5 tests. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
+| `struction_debug` | Implemented, 5 tests and native trace verified. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
 | `struction_editor` / `apps/editor` | History/session source present but not exported; editor app remains a scaffold |
 | `apps/playground` | Milestone 1 scene runnable. Water surface replaces overlapping transparent box; camera-relative movement and overhead orientation covered by 2 tests; native Vulkan smoke run verified |
 

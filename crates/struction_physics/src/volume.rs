@@ -112,7 +112,8 @@ pub struct VolumeDamage {
 }
 
 /// How much of a body is inside a fluid volume, from 0 to 1 (the maximum over volumes). Written
-/// every tick for every rigid body.
+/// every tick for every rigid body. A fluid volume carries [`Buoyancy`]; camera and other
+/// non-fluid volumes do not make a character swim.
 #[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq)]
 #[reflect(Component)]
 pub struct Submersion(pub f32);
@@ -222,7 +223,9 @@ fn apply_volume_effects(
             if fraction <= 0.0 {
                 continue;
             }
-            submersion.0 = submersion.0.max(fraction);
+            if buoyancy.is_some() {
+                submersion.0 = submersion.0.max(fraction);
+            }
 
             if let Some(drag) = drag {
                 // Never decelerate past standstill within one tick.
