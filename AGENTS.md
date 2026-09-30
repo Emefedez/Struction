@@ -23,6 +23,7 @@ Check this table before proceeding with changes. An active claim covers only its
 | Data/world authoring hooks | **MOON** | Active: candidate-source validation in `struction_data`, scene-source provenance and preview editing in `struction_world`; integration tests |
 | Asset pipeline verification | **MOON** | Landed: 23 tests, including actual Blender import/export, and Clippy verified; implementation predates this verification |
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
+| Character animation integration | **SUN** | Active: character↔`struction_anim` bridge (motion, local up, physics-raycast ground, rig root following the body), animated player in `apps/playground`; small `struction_anim` hook for externally stepped locomotion |
 
 ## Adopted decisions
 
