@@ -20,15 +20,16 @@ use struction_anim::{
     plugin::{Locomotor, RigJoints},
     rig::Rig,
 };
+use struction_camera::{CameraSystems, PlayerCamera, PlayerCameraPlugin, ViewMode};
 use struction_character::{
     CharacterAnimationPlugin, CharacterLook, CharacterState, InputActions, InputMap, InputSystems,
-    spawn_rig,
+    RigOf, spawn_rig,
 };
 use struction_debug::{DebugTracePlugin, TraceAppExt, TraceWriter};
 use struction_gravity::{GravityInfluences, LocalUp};
 use struction_physics::{
-    CameraMode, CameraOcclusion, CameraZone, InCameraZones, PhysicsPlugin, Submersion, Volume,
-    VolumeShape, avian3d::prelude::*,
+    CameraOcclusion, InCameraZones, PhysicsPlugin, Submersion, Volume, VolumeShape,
+    avian3d::prelude::*,
 };
 
 #[derive(Resource)]
@@ -47,7 +48,6 @@ struct Hud;
 enum PlaygroundSystems {
     Cursor,
     Script,
-    MovementFrame,
     Dress,
     Camera,
     Hud,
@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PhysicsPlugin::default(),
         struction_character::CharacterPlugins,
         CharacterAnimationPlugin,
+        PlayerCameraPlugin,
         camera_occlusion::SightFadePlugin,
         ScenePlugin { root: project },
     ))
@@ -129,10 +130,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .configure_sets(
         PreUpdate,
-        (PlaygroundSystems::Script, PlaygroundSystems::MovementFrame)
-            .chain()
+        PlaygroundSystems::Script
             .after(InputSystems::Map)
-            .before(InputSystems::Command),
+            .before(CameraSystems::Input),
     )
     .configure_sets(
         Update,
@@ -144,22 +144,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
             .chain(),
     )
+    .configure_sets(
+        Update,
+        CameraSystems::Follow.in_set(PlaygroundSystems::Camera),
+    )
     .add_systems(Startup, setup)
     .add_systems(PreUpdate, cursor_controls.in_set(PlaygroundSystems::Cursor))
     .add_systems(PreUpdate, scripted_input.in_set(PlaygroundSystems::Script))
     .add_systems(
-        PreUpdate,
-        camera_movement.in_set(PlaygroundSystems::MovementFrame),
-    )
-    .add_systems(
         Update,
-        (attach_rigs, dress_looks, dress_rigs)
+        (attach_rigs, attach_camera, dress_looks, dress_rigs)
             .chain()
             .in_set(PlaygroundSystems::Dress),
     )
     .add_systems(
         Update,
-        (follow_camera, count_footfalls).in_set(PlaygroundSystems::Camera),
+        (hide_rig_in_first_person, count_footfalls).in_set(PlaygroundSystems::Camera),
     )
     .add_systems(Update, update_hud.in_set(PlaygroundSystems::Hud))
     .add_systems(Update, exit_control.in_set(PlaygroundSystems::Exit))
@@ -181,11 +181,6 @@ fn setup(mut commands: Commands) {
             ..default()
         },
         Transform::from_xyz(8.0, 16.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.spawn((
-        Camera3d::default(),
-        CameraOcclusion::default(),
-        Transform::from_xyz(0.0, 4.0, 13.0).looking_at(Vec3::new(0.0, 1.4, 8.0), Vec3::Y),
     ));
     spawn_hud(&mut commands);
 }
@@ -275,6 +270,18 @@ fn attach_rigs(mut commands: Commands, bodies: Query<Entity, Added<Humanoid>>) {
         commands
             .entity(rig)
             .insert((Name::new("Humanoid rig"), Visibility::default()));
+    }
+}
+
+/// The player comes from scene data, so its camera is attached once it spawns.
+fn attach_camera(mut commands: Commands, players: Query<Entity, Added<Player>>) {
+    for player in &players {
+        commands.spawn((
+            Name::new("Player camera"),
+            Camera3d::default(),
+            CameraOcclusion::default(),
+            PlayerCamera::new(player),
+        ));
     }
 }
 
@@ -421,62 +428,21 @@ fn scripted_input(
     }
 }
 
-fn follow_camera(
-    player: Query<(&Transform, &LocalUp, &CharacterLook, &InCameraZones), With<Player>>,
-    zones: Query<&CameraZone>,
-    mut camera: Query<&mut Transform, (With<Camera3d>, Without<Player>)>,
-    time: Res<Time>,
+/// The first-person camera sits inside the head, so the player's own rig is not drawn.
+fn hide_rig_in_first_person(
+    cameras: Query<&PlayerCamera>,
+    mut rigs: Query<(&RigOf, &mut Visibility)>,
 ) {
-    let (Ok((player, up, look, in_zones)), Ok(mut camera)) = (player.single(), camera.single_mut())
-    else {
-        return;
-    };
-    let up = *up.0;
-    let focus = player.translation + up * 0.5;
-    let default = CameraMode::Follow {
-        distance: 5.5,
-        pitch: 0.35,
-    };
-    let mode = in_zones
-        .active()
-        .and_then(|zone| zones.get(zone).ok())
-        .map_or(default, |zone| zone.constraint.mode);
-    let target = match mode {
-        CameraMode::Follow { distance, pitch } => {
-            let angle = (look.pitch + pitch).clamp(-1.3, 1.3);
-            focus - look.forward * (distance * angle.cos()) + up * (distance * angle.sin() + 0.7)
+    for camera in &cameras {
+        for (rig, mut visibility) in &mut rigs {
+            if rig.0 == camera.target {
+                visibility.set_if_neq(match camera.view {
+                    ViewMode::FirstPerson => Visibility::Hidden,
+                    ViewMode::ThirdPerson => Visibility::Inherited,
+                });
+            }
         }
-        CameraMode::Fixed { position } => position,
-    };
-    let smoothing = 1.0 - (-8.0 * time.delta_secs()).exp();
-    camera.translation = camera.translation.lerp(target, smoothing);
-    // Overhead views use the ground heading as screen-up, avoiding the look-at pole.
-    let view_up = match mode {
-        CameraMode::Fixed { .. } => look.forward,
-        CameraMode::Follow { .. } => up,
-    };
-    let target_rotation = camera.looking_at(focus, view_up).rotation;
-    camera.rotation = camera
-        .rotation
-        .slerp(target_rotation, smoothing)
-        .normalize();
-}
-
-fn camera_movement(
-    camera: Query<&Transform, With<Camera3d>>,
-    player: Query<&LocalUp, With<Player>>,
-    mut actions: ResMut<InputActions>,
-) {
-    if let (Ok(camera), Ok(up)) = (camera.single(), player.single()) {
-        actions.movement_forward = camera_ground_forward(camera, *up.0);
     }
-}
-
-fn camera_ground_forward(camera: &Transform, up: Vec3) -> Option<Vec3> {
-    // Screen-right remains defined when a camera points straight down at the player.
-    let right = *camera.right();
-    let right = (right - up * right.dot(up)).try_normalize()?;
-    Some(up.cross(right))
 }
 
 fn count_footfalls(rigs: Query<&Locomotor>, mut options: ResMut<PlaygroundOptions>) {
@@ -485,6 +451,7 @@ fn count_footfalls(rigs: Query<&Locomotor>, mut options: ResMut<PlaygroundOption
 
 fn update_hud(
     player: Query<(&CharacterState, &Submersion, &InCameraZones), With<Player>>,
+    camera: Query<&PlayerCamera>,
     mut hud: Query<&mut Text, With<Hud>>,
     time: Res<Time>,
     options: Res<PlaygroundOptions>,
@@ -492,10 +459,10 @@ fn update_hud(
     let (Ok((state, submersion, zones)), Ok(mut text)) = (player.single(), hud.single_mut()) else {
         return;
     };
-    let zone = if zones.active().is_some() {
-        "overhead"
-    } else {
-        "follow"
+    let view = match camera.single().map(|camera| camera.view) {
+        Ok(ViewMode::FirstPerson) => "first person",
+        _ if zones.active().is_some() => "third person (overhead)",
+        _ => "third person",
     };
     let fps = if time.delta_secs() > 0.0 {
         1.0 / time.delta_secs()
@@ -503,12 +470,12 @@ fn update_hud(
         0.0
     };
     **text = format!(
-        "STRUCTION / PLAYGROUND\nWASD move  |  Space jump / swim  |  M mouse look [{}]  |  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Camera: {}   Steps: {}   FPS: {:.0}\nBlue tile: slippery   |   Orange cube: push   |   Right: water   |   Ahead: gravity planet",
+        "STRUCTION / PLAYGROUND\nWASD move  |  Space jump / swim  |  M mouse look [{}]  |  V or wheel: third / first person  |  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Camera: {}   Steps: {}   FPS: {:.0}\nBlue tile: slippery   |   Orange cube: push   |   Right: water   |   Ahead: gravity planet",
         if options.cursor_grabbed { "on" } else { "off" },
         state.grounded,
         state.swimming,
         submersion.0 * 100.0,
-        zone,
+        view,
         options.footfalls,
         fps
     );
@@ -537,85 +504,35 @@ fn exit_control(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-    use struction_physics::CameraConstraint;
+    use struction_character::{CharacterControllerPlugin, InputActionsPlugin};
+    use struction_physics::testing::*;
 
     #[test]
-    fn camera_movement_remains_defined_in_overhead_and_planet_views() {
-        for (up, forward) in [
-            (Vec3::Y, Vec3::NEG_Z),
-            (Vec3::Z, Vec3::Y),
-            (Vec3::NEG_Y, Vec3::Z),
-        ] {
-            let overhead = Transform::from_translation(up * 10.0).looking_at(Vec3::ZERO, forward);
-            assert!(
-                camera_ground_forward(&overhead, up)
-                    .unwrap()
-                    .abs_diff_eq(forward, 1e-5)
-            );
-            let follow =
-                Transform::from_translation(up * 3.0 - forward * 5.0).looking_at(Vec3::ZERO, up);
-            assert!(
-                camera_ground_forward(&follow, up)
-                    .unwrap()
-                    .abs_diff_eq(forward, 1e-5)
-            );
-        }
-    }
+    fn the_data_spawned_player_gets_the_player_camera() {
+        let mut app = headless_app_with((
+            CharacterControllerPlugin,
+            InputActionsPlugin,
+            PlayerCameraPlugin,
+            ScenePlugin {
+                root: scene::default_project(),
+            },
+        ));
+        app.add_systems(Update, attach_camera);
+        // Spawners run in the first fixed tick; the camera follows in the updates after it.
+        step(&mut app, 30);
 
-    #[test]
-    fn passing_under_the_overhead_camera_does_not_reverse_screen_right() {
-        let mut app = App::new();
-        let mut time = Time::<()>::default();
-        time.advance_by(Duration::from_secs_f32(1.0 / 60.0));
-        app.insert_resource(time).add_systems(Update, follow_camera);
-        let position = Vec3::new(0.0, 14.0, -8.0);
-        let zone = app
+        let mut players = app
             .world_mut()
-            .spawn(CameraZone {
-                constraint: CameraConstraint {
-                    mode: CameraMode::Fixed { position },
-                    weight: 1.0,
-                    priority: 1,
-                },
-            })
-            .id();
-        let player = app
-            .world_mut()
-            .spawn((
-                Player,
-                Transform::from_xyz(0.0, 0.9, -6.0),
-                LocalUp::default(),
-                CharacterLook::default(),
-                InCameraZones(vec![zone]),
-            ))
-            .id();
-        let camera = app
-            .world_mut()
-            .spawn((
-                Camera3d::default(),
-                Transform::from_translation(position)
-                    .looking_at(Vec3::new(0.0, 1.4, -6.0), Vec3::NEG_Z),
-            ))
-            .id();
-        for frame in 0..120 {
-            app.world_mut()
-                .get_mut::<Transform>(player)
-                .unwrap()
-                .translation
-                .z = -6.0 - frame as f32 / 30.0;
-            let previous = app.world().get::<Transform>(camera).unwrap().rotation;
-            app.world_mut().run_schedule(Update);
-            let transform = app.world().get::<Transform>(camera).unwrap();
-            assert!(transform.rotation.is_finite());
-            assert!(transform.rotation.angle_between(previous) < 0.1);
-            assert!(transform.right().dot(Vec3::X) > 0.99);
-            assert!(
-                camera_ground_forward(transform, Vec3::Y)
-                    .unwrap()
-                    .dot(Vec3::NEG_Z)
-                    > 0.99
-            );
-        }
+            .query_filtered::<(Entity, &Transform), With<Player>>();
+        let (player, body) = players.single(app.world()).expect("one player");
+        let focus = body.translation;
+        let mut cameras = app.world_mut().query::<(&PlayerCamera, &Transform)>();
+        let cameras: Vec<_> = cameras.iter(app.world()).collect();
+        assert_eq!(cameras.len(), 1);
+        let (camera, transform) = cameras[0];
+        assert_eq!(camera.target, player);
+        assert_eq!(camera.view, ViewMode::ThirdPerson);
+        let distance = transform.translation.distance(focus);
+        assert!((1.0..12.0).contains(&distance), "camera {distance} m away");
     }
 }
