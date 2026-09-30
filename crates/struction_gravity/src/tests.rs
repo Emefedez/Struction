@@ -216,3 +216,134 @@ fn up_persists_when_fields_cancel() {
     assert_eq!(app.world().get::<LocalGravity>(body).unwrap().0, Vec3::ZERO);
     assert_eq!(app.world().get::<LocalUp>(body).unwrap().0, Dir3::X);
 }
+
+#[test]
+fn entry_and_exit_radii_are_distinct_without_boundary_chatter() {
+    let field = GravityField::planet(24.0, 5.0);
+    let hysteresis = GravityHysteresis { exit_margin: 0.5 };
+    let mut inside = false;
+    for (distance, expected) in [
+        (5.4, false),
+        (5.0, true),
+        (5.2, true),
+        (5.49, true),
+        (5.51, false),
+        (5.49, false),
+        (5.1, false),
+        (4.99, true),
+    ] {
+        let (acceleration, next) = sample_field(
+            &field,
+            Some(&hysteresis),
+            GravityPose::default(),
+            Vec3::X * distance,
+            inside,
+        );
+        assert_eq!(next, expected, "distance {distance}");
+        assert_eq!(acceleration.length() > 0.0, expected);
+        inside = next;
+    }
+}
+
+#[test]
+fn hysteresis_supports_rotated_boxes_and_ignores_invalid_margins() {
+    let field = GravityField {
+        volume: GravityVolume::Box {
+            half_extents: Vec3::new(3.0, 1.0, 1.0),
+        },
+        kind: GravityKind::Directional {
+            acceleration: Vec3::NEG_Y,
+        },
+    };
+    let pose = GravityPose {
+        rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        ..default()
+    };
+    let point = Vec3::Y * 3.25;
+    assert!(
+        sample_field(
+            &field,
+            Some(&GravityHysteresis { exit_margin: 0.5 }),
+            pose,
+            point,
+            true
+        )
+        .1
+    );
+    assert!(
+        !sample_field(
+            &field,
+            Some(&GravityHysteresis { exit_margin: 0.5 }),
+            pose,
+            point,
+            false
+        )
+        .1
+    );
+    for exit_margin in [-1.0, f32::NAN, f32::INFINITY] {
+        assert!(
+            !sample_field(
+                &field,
+                Some(&GravityHysteresis { exit_margin }),
+                pose,
+                point,
+                true
+            )
+            .1
+        );
+    }
+}
+
+#[test]
+fn simulation_poses_override_presentation_and_removed_fields_drop_membership() {
+    let mut app = app();
+    let field = app
+        .world_mut()
+        .spawn((
+            GravityField::planet(24.0, 5.0),
+            GravityHysteresis { exit_margin: 0.5 },
+            Transform::from_xyz(100.0, 0.0, 0.0),
+            GravityPose::default(),
+        ))
+        .id();
+    let body = app
+        .world_mut()
+        .spawn((
+            LocalGravity::default(),
+            Transform::from_xyz(200.0, 0.0, 0.0),
+            GravityPose {
+                translation: Vec3::X * 4.9,
+                ..default()
+            },
+        ))
+        .id();
+    app.update();
+    app.update();
+    assert_eq!(
+        app.world().get::<GravityInfluences>(body).unwrap().0,
+        vec![field]
+    );
+    assert_eq!(
+        app.world().get::<LocalGravity>(body).unwrap().0,
+        Vec3::NEG_X * 24.0
+    );
+    app.world_mut()
+        .get_mut::<GravityPose>(body)
+        .unwrap()
+        .translation = Vec3::X * 5.4;
+    app.update();
+    assert_eq!(
+        app.world().get::<GravityInfluences>(body).unwrap().0,
+        vec![field]
+    );
+    app.world_mut().despawn(field);
+    app.update();
+    assert!(
+        app.world()
+            .get::<GravityInfluences>(body)
+            .unwrap()
+            .0
+            .is_empty()
+    );
+    assert_eq!(app.world().get::<LocalGravity>(body).unwrap().0, Vec3::ZERO);
+}

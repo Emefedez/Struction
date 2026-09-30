@@ -15,8 +15,8 @@ use bevy::{
 
 pub mod prelude {
     pub use crate::{
-        Falloff, GravityField, GravityKind, GravityPlugin, GravitySystems, GravityVolume,
-        LocalGravity, LocalUp,
+        Falloff, GravityField, GravityHysteresis, GravityInfluences, GravityKind, GravityPlugin,
+        GravityPose, GravitySystems, GravityVolume, LocalGravity, LocalUp,
     };
 }
 
@@ -83,10 +83,32 @@ impl GravityField {
     }
 }
 
+/// Optional boundary hysteresis. A body enters at the field's authored volume and leaves
+/// after moving `exit_margin` world units beyond it. Invalid/negative margins behave as zero.
+#[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq)]
+#[reflect(Component, Default)]
+pub struct GravityHysteresis {
+    pub exit_margin: f32,
+}
+
+/// Fields currently affecting a body, retained between ticks for boundary hysteresis.
+#[derive(Component, Reflect, Clone, Debug, Default, PartialEq)]
+#[reflect(Component, Default)]
+pub struct GravityInfluences(pub Vec<Entity>);
+
+/// Optional simulation-owned world pose. Physics bridges write this before gravity sampling
+/// so rendered/interpolated transforms cannot change forces or boundary membership.
+#[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq)]
+#[reflect(Component, Default)]
+pub struct GravityPose {
+    pub translation: Vec3,
+    pub rotation: Quat,
+}
+
 /// The summed acceleration (m/s^2) of all fields at the entity's position.
 #[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq)]
 #[reflect(Component)]
-#[require(Transform, LocalUp)]
+#[require(Transform, LocalUp, GravityInfluences)]
 pub struct LocalGravity(pub Vec3);
 
 /// The direction opposite to [`LocalGravity`]. With no gravity it keeps its last value.
@@ -121,6 +143,10 @@ pub fn field_acceleration(
     if !volume_contains(&field.volume, rotation.inverse() * offset) {
         return Vec3::ZERO;
     }
+    acceleration_inside(field, rotation, offset)
+}
+
+fn acceleration_inside(field: &GravityField, rotation: Quat, offset: Vec3) -> Vec3 {
     match field.kind {
         GravityKind::Directional { acceleration } => rotation * acceleration,
         GravityKind::Radial { strength, falloff } => {
@@ -136,6 +162,42 @@ pub fn field_acceleration(
             -offset.normalize_or_zero() * strength * scale
         }
     }
+}
+
+/// Stateful sampling of one field. The returned membership must be retained for the next tick.
+/// New bodies in the outer margin remain unaffected until they cross the entry boundary.
+pub fn sample_field(
+    field: &GravityField,
+    hysteresis: Option<&GravityHysteresis>,
+    pose: GravityPose,
+    point: Vec3,
+    previously_inside: bool,
+) -> (Vec3, bool) {
+    let margin = hysteresis.map_or(0.0, |h| h.exit_margin);
+    let margin = if previously_inside && margin.is_finite() {
+        margin.max(0.0)
+    } else {
+        0.0
+    };
+    let volume = match field.volume {
+        GravityVolume::Infinite => GravityVolume::Infinite,
+        GravityVolume::Sphere { radius } => GravityVolume::Sphere {
+            radius: radius + margin,
+        },
+        GravityVolume::Box { half_extents } => GravityVolume::Box {
+            half_extents: half_extents + Vec3::splat(margin),
+        },
+    };
+    let offset = point - pose.translation;
+    let inside = volume_contains(&volume, pose.rotation.inverse() * offset);
+    (
+        if inside {
+            acceleration_inside(field, pose.rotation, offset)
+        } else {
+            Vec3::ZERO
+        },
+        inside,
+    )
 }
 
 /// Sum of all fields at `point`. Fields are `(field, world translation, world rotation)`.
@@ -191,6 +253,9 @@ impl Plugin for GravityPlugin {
         app.register_type::<GravityField>()
             .register_type::<LocalGravity>()
             .register_type::<LocalUp>()
+            .register_type::<GravityHysteresis>()
+            .register_type::<GravityInfluences>()
+            .register_type::<GravityPose>()
             .add_systems(
                 self.schedule,
                 update_local_gravity.in_set(GravitySystems::Update),
@@ -198,19 +263,55 @@ impl Plugin for GravityPlugin {
     }
 }
 
+fn pose(transform: &GlobalTransform, simulation: Option<&GravityPose>) -> GravityPose {
+    simulation.copied().unwrap_or_else(|| {
+        let (_, rotation, translation) = transform.to_scale_rotation_translation();
+        GravityPose {
+            translation,
+            rotation,
+        }
+    })
+}
+
+type FieldData = (
+    Entity,
+    &'static GravityField,
+    &'static GlobalTransform,
+    Option<&'static GravityPose>,
+    Option<&'static GravityHysteresis>,
+);
+
 fn update_local_gravity(
-    fields: Query<(&GravityField, &GlobalTransform)>,
-    mut bodies: Query<(&GlobalTransform, &mut LocalGravity, &mut LocalUp)>,
+    fields: Query<FieldData>,
+    mut bodies: Query<(
+        &GlobalTransform,
+        Option<&GravityPose>,
+        &mut LocalGravity,
+        &mut LocalUp,
+        &mut GravityInfluences,
+    )>,
 ) {
-    for (transform, mut gravity, mut up) in &mut bodies {
-        let point = transform.translation();
-        let sum = sum_fields(
-            fields.iter().map(|(field, field_transform)| {
-                let (_, rotation, translation) = field_transform.to_scale_rotation_translation();
-                (field, translation, rotation)
-            }),
-            point,
-        );
+    // A stable order also keeps floating-point sums independent of archetype migration.
+    let mut fields: Vec<_> = fields.iter().collect();
+    fields.sort_by_key(|(entity, ..)| *entity);
+    for (transform, simulation, mut gravity, mut up, mut influences) in &mut bodies {
+        let point = pose(transform, simulation).translation;
+        let mut sum = Vec3::ZERO;
+        let mut active = Vec::new();
+        for &(entity, field, transform, simulation, hysteresis) in &fields {
+            let (acceleration, inside) = sample_field(
+                field,
+                hysteresis,
+                pose(transform, simulation),
+                point,
+                influences.0.contains(&entity),
+            );
+            sum += acceleration;
+            if inside {
+                active.push(entity);
+            }
+        }
+        influences.set_if_neq(GravityInfluences(active));
         gravity.set_if_neq(LocalGravity(sum));
         let new_up = up_from_gravity(sum, up.0);
         up.set_if_neq(LocalUp(new_up));
