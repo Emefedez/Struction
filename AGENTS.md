@@ -43,7 +43,7 @@ From the design review's pending recommendations, treated as decided:
 | `struction_core` | Done, 53 tests |
 | `struction_data` | Done, 64 tests. Defines its own `Lineage`, to be replaced by core's `Definition` in `struction_world` step 0 |
 | gravity / physics / character | Done, 40 tests. Own input mapping instead of `bevy_enhanced_input`; dynamic capsule controller |
-| `struction_anim` | Written, interrupted before verification: build, test, review, write the spike go/no-go report |
+| `struction_anim` | Done, 52 tests. Spike verdict: go on mechanics (planted feet, planets, hold/gaze/sit); visual quality unproven until rendered. Runtime uses a fixed solve pipeline, not the dataflow graph yet |
 | `struction_ai` | Done, 23 tests. Loading `brain`/`sensing` from definitions and a physics line-of-sight are left to integration |
 | `struction_world` | Not started |
 | `struction_assets` | Not started |
@@ -52,6 +52,7 @@ From the design review's pending recommendations, treated as decided:
 ## Follow-ups
 
 - Brain arguments use tagged values (`{ "Float": 0.25 }`); switch to plain JSON values typed by the condition/action parameter metadata.
+- Animation integration: character writes `AnimMotion` and `LocalUp`; a physics-raycast `GroundQuery`; order physics interpolation before `AnimSystems::Motion`. Looks: foot roll, hip sway, arm swing, longer strides (~110 steps/min), knee limits, turning in place.
 - Hot reload of a master's `grantsToWards` does not update existing wards.
 
 ## Next
