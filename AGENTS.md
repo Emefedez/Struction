@@ -20,6 +20,7 @@ Check this table before proceeding with changes. An active claim covers only its
 
 | Area | Owner | State / scope |
 | --- | --- | --- |
+| Toolbox: collision/LOD utilities and mesh preview window | **SUN** (from **MOON**'s plan) | Active: steps 1–2 of `docs/toolbox.md`, taken on at the user's direction while MOON works on the roll: asset recipes, collision/LOD presets and a preview/apply/undo preparation session in `struction_assets`; an Assets panel, the collision/LOD quick utilities and a separate mesh preview window in `apps/editor`. UV preparation, the Open in… round trip and later inventory items stay in MOON's plan |
 | Headless editor / AI authoring | **MOON** | Landed: validated project edits, exact-source undo, inspection, spawn movement, isolated play and JSONL commands. 32 tests, Clippy and native protocol smoke verified; see `docs/authoring.md` |
 | Data/world authoring hooks | **MOON** | Landed: read-only candidate-source validation, scene-source provenance and integration tests; 69 data / 22 world tests and Clippy verified |
 | Asset pipeline verification | **MOON** | Landed: 23 tests, including actual Blender import/export, and Clippy verified; implementation predates this verification |
