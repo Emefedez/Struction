@@ -16,6 +16,7 @@ use avian3d::{physics_transform::PhysicsTransformSystems, prelude::*};
 use bevy::{ecs::schedule::IntoScheduleConfigs, prelude::*};
 use struction_gravity::{GravityPlugin, GravitySystems};
 
+mod camera_occlusion;
 mod camera_zone;
 mod gravity;
 mod surface;
@@ -23,6 +24,7 @@ pub mod testing;
 mod volume;
 
 pub use avian3d;
+pub use camera_occlusion::{CameraOcclusion, camera_obstructions};
 pub use camera_zone::{CameraConstraint, CameraMode, CameraTarget, CameraZone, InCameraZones};
 pub use surface::Surface;
 pub use volume::{
@@ -31,8 +33,8 @@ pub use volume::{
 
 pub mod prelude {
     pub use crate::{
-        Buoyancy, CameraConstraint, CameraMode, CameraTarget, CameraZone, DamageField,
-        EnvironmentSystems, InCameraZones, PhysicsPlugin, Submersion, Surface, Volume,
+        Buoyancy, CameraConstraint, CameraMode, CameraOcclusion, CameraTarget, CameraZone,
+        DamageField, EnvironmentSystems, InCameraZones, PhysicsPlugin, Submersion, Surface, Volume,
         VolumeDamage, VolumeDrag, VolumeShape, lava, water,
     };
     pub use struction_gravity::prelude::*;
@@ -68,6 +70,7 @@ impl Default for PhysicsPlugin {
 
 impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
+        app.register_type::<CameraOcclusion>();
         app.insert_resource(Time::<Fixed>::from_hz(self.tick_hz))
             // Gravity comes only from fields, applied per body below.
             .insert_resource(Gravity::ZERO)
