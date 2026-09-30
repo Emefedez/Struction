@@ -1,8 +1,8 @@
 # Headless authoring and the first GUI
 
-`struction_editor` is the shared backend for AI tools and the future egui editor. It exposes source edits, project validation, definition and instance inspection, scene previews, world-space spawn movement, undo/redo and isolated play. `apps/editor` still contains only its scaffold.
+`struction_editor` is the shared backend for AI tools and the egui editor. It exposes source edits, project validation, definition and instance inspection, scene previews, world-space spawn movement, undo/redo and isolated play.
 
-MOON implemented and verified this foundation. The initial GUI can now bind its hierarchy, inspector, move gizmo and play controls to these operations. It does not need a second mutation or validation implementation.
+MOON implemented and verified this foundation. SUN built the first GUI on it (`apps/editor`, see [The editor GUI](#the-editor-gui)); it has no second mutation or validation implementation.
 
 ## Run the tool host
 
@@ -74,6 +74,23 @@ The Rust API is in `project`, `session` and `protocol`. `protocol::execute` hand
 
 For runtime change streams, add `struction_debug` to the game's factory and configure its bounded log or a separate JSONL sink. See [debugging.md](debugging.md). Inspection provides current state; tracing records how that state changed.
 
+## The editor GUI
+
+```bash
+cp -r examples/authoring /tmp/struction-authoring
+cargo run -p struction-editor -- /tmp/struction-authoring
+```
+
+Without an argument the editor asks for a project directory. The UI is egui (`bevy_egui`) with its own theme (`apps/editor/src/theme.rs`); egui was chosen over Dear ImGui for being pure Rust with a maintained Bevy 0.19 integration and egui-native docking, gizmo and node-graph crates. Every widget emits a `Command` (`apps/editor/src/state.rs`) that calls the `AuthoringProject` operation of the same name, so the GUI and the JSONL protocol share validation, history and source formatting:
+
+- **Scene**: the authored path tree (zones, spawners, named spawns) and the definitions list. New definitions descend from the selected one through `create_definition`.
+- **Inspector**: an entity's definition, source `file:line`, StableId and placement; its authored components are edited as scene `overrides` on the spawn. A definition shows its lineage and resolved components; edits write its own file. Amber dots mark values set in that source; ↺ removes them to inherit again. Drags on a number form one undo group.
+- **Viewport**: instances as capsules, zones and spawners as gizmos. Click selects; dragging a named spawn moves it on the ground (Shift: height) through `move_spawn`, one undo step per drag. Right-drag orbits, middle-drag pans, the wheel zooms, F frames the selection.
+- **Problems**: `validate` diagnostics and the last rejected operation with its diagnostics; definition locations select their definition.
+- **Top bar**: Undo/Redo (Ctrl+Z, Ctrl+Shift+Z), Refresh (also on window focus, for outside edits), Play/Pause/Step/Stop (Ctrl+P). Play steps the separate play world by the game's fixed timestep; the panels then inspect that world read-only.
+
+The editor hosts the example game's registration (`apps/editor/src/game.rs`) until a game crate provides its own factory. Instances render as markers rather than their meshes, and rotation/scale are read-only, like the backend.
+
 ## Guarantees and current limits
 
 - Validation resolves candidate definitions, inheritance, presets, scene overrides, action references, master references and aliases before writes. Invalid data leaves files and history unchanged. Invalid projects can open for diagnosis; play requires valid sources. JSON syntax damage can be repaired externally, followed by `refresh`.
@@ -81,7 +98,7 @@ For runtime change streams, add `struction_debug` to the game's factory and conf
 - Each file replacement is staged and atomic. Multi-file history restoration preflights every file and rolls back on ordinary write failures; this is not a crash-recovery journal or a distributed filesystem transaction. Use one serialized authoring host per project. Revision checks detect stale edits but are not an interprocess lock.
 - Outside edits invalidate affected history. `refresh` retains the last valid preview if the new sources fail validation. Successful edits rebuild the whole preview, including master grants; large-project incremental preview updates are future work.
 - Play uses a separate app rebuilt from authored source, not a snapshot of arbitrary runtime state. Play edits and undo are blocked. Stopping discards simulated state. File creation produces a user-owned scaffold and is currently outside undo history.
-- The first gizmo operation is translation of named spawns. Rotation/scale gizmos, source rename/delete transactions in the editor, viewport rendering and GUI widgets remain to implement through the same backend. Existing `struction_world::rename_path` is not yet an editor command.
+- The first gizmo operation is translation of named spawns. Rotation/scale gizmos, source rename/delete transactions and rendering instances' own meshes remain to implement through the same backend. Existing `struction_world::rename_path` is not yet an editor command.
 - Physics/animation/AI scene integration, runtime grant hot reload, streaming persistence and procedural animation's visual quality remain separate work. These are not prerequisites for starting the first hierarchy/inspector GUI, but this backend is not a claim that the complete README validation scene is finished.
 
 ## Verification

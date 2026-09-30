@@ -39,3 +39,8 @@ struction_editor = { workspace = true }
 struction_gravity = { workspace = true }
 struction_physics = { workspace = true }
 struction_character = { workspace = true }
+struction_core = { workspace = true }
+struction_world = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

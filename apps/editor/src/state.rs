@@ -1,0 +1,661 @@
+//! Editor state over one `AuthoringProject`. Every change is a `Command` mapped onto the same
+//! project operations the JSONL protocol exposes to AI tools; the GUI holds no second copy of
+//! the data, only a snapshot refreshed after each operation.
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use bevy::prelude::*;
+use serde_json::Value;
+use struction_data::parse_jsonc;
+use struction_editor::{AuthoringProject, Diagnostic, EditRequest, Field, SessionError};
+
+use crate::game;
+
+/// Authored paths (or StableIds for runtime entities), never ECS entities: previews are rebuilt.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Selected {
+    Entity(String),
+    Definition(String),
+}
+
+pub enum Command {
+    Open(PathBuf),
+    Refresh,
+    Select(Option<Selected>),
+    Edit(EditRequest),
+    Move {
+        path: String,
+        position: Vec3,
+        group: Option<String>,
+    },
+    EndGroup,
+    Undo,
+    Redo,
+    CreateDefinition {
+        path: String,
+        parent: String,
+    },
+    StartPlay,
+    StopPlay,
+    TogglePause,
+    Step,
+}
+
+/// A failed operation, shown in Problems until the next one succeeds.
+pub struct Rejection {
+    pub action: &'static str,
+    pub message: String,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+pub struct Play {
+    pub running: bool,
+    pub ticks: u64,
+    accumulated: f32,
+}
+
+pub enum Inspection {
+    Entity {
+        entry: Value,
+        /// Short type name and reflected value, authored components first.
+        components: Vec<(String, Value)>,
+        authored: BTreeSet<String>,
+        unavailable: Vec<String>,
+        /// Scene file and field path of a named spawn, where overrides and moves are written.
+        spawn: Option<(String, Vec<Field>)>,
+        overrides: Value,
+    },
+    Definition {
+        path: String,
+        lineage: Vec<String>,
+        components: Vec<(String, Value)>,
+        /// The definition's own file, to tell fields set here from inherited ones.
+        local: Value,
+    },
+    Missing(String),
+}
+
+#[derive(Default)]
+pub struct Editor {
+    pub project: Option<AuthoringProject>,
+    pub root: Option<PathBuf>,
+    pub entities: Vec<Value>,
+    pub definitions: Vec<String>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub rejection: Option<Rejection>,
+    pub status: Option<String>,
+    pub selected: Option<Selected>,
+    pub play: Option<Play>,
+    /// Bumped whenever the snapshot changes, so dependents rebuild.
+    pub generation: u64,
+    inspection: Option<(u64, Selected, Inspection)>,
+}
+
+impl Editor {
+    pub fn apply(&mut self, command: Command) {
+        if let Command::Open(root) = command {
+            return self.open(root);
+        }
+        if let Command::Select(selected) = command {
+            self.selected = selected;
+            return;
+        }
+        let Some(project) = self.project.as_mut() else {
+            return;
+        };
+        let (action, result) = match command {
+            Command::Open(_) | Command::Select(_) => unreachable!(),
+            Command::Refresh => ("Refresh", project.refresh().map(|()| None)),
+            Command::Edit(request) => ("Edit", project.edit(request).map(|a| Some(a.label))),
+            Command::Move {
+                path,
+                position,
+                group,
+            } => (
+                "Move",
+                project
+                    .move_spawn(&path, position, group)
+                    .map(|a| Some(a.label)),
+            ),
+            Command::EndGroup => {
+                project.end_group();
+                return;
+            }
+            Command::Undo => (
+                "Undo",
+                project
+                    .undo()
+                    .map(|a| a.map(|a| format!("Undid {}", a.label))),
+            ),
+            Command::Redo => (
+                "Redo",
+                project
+                    .redo()
+                    .map(|a| a.map(|a| format!("Redid {}", a.label))),
+            ),
+            Command::CreateDefinition { path, parent } => (
+                "Create definition",
+                project
+                    .create_definition(&path, &parent)
+                    .map(|()| Some(format!("Created {path}"))),
+            ),
+            Command::StartPlay => {
+                let started = project.start_play();
+                if started.is_ok() {
+                    self.play = Some(Play {
+                        running: true,
+                        ticks: 0,
+                        accumulated: 0.0,
+                    });
+                }
+                ("Play", started.map(|()| None))
+            }
+            Command::StopPlay => {
+                project.stop_play();
+                self.play = None;
+                ("Stop", Ok(None))
+            }
+            Command::TogglePause => {
+                if let Some(play) = &mut self.play {
+                    play.running = !play.running;
+                }
+                return;
+            }
+            Command::Step => {
+                if let Some(play) = &mut self.play {
+                    play.running = false;
+                }
+                return self.step(1);
+            }
+        };
+        match result {
+            Ok(status) => {
+                self.rejection = None;
+                if status.is_some() {
+                    self.status = status;
+                }
+            }
+            Err(error) => self.rejection = Some(rejection(action, error)),
+        }
+        self.reload(true);
+    }
+
+    fn open(&mut self, root: PathBuf) {
+        self.project = None;
+        self.play = None;
+        self.selected = None;
+        match AuthoringProject::open(&root, game::factory) {
+            Ok(project) => {
+                self.root = Some(project.session().root().to_owned());
+                self.project = Some(project);
+                self.rejection = None;
+                self.status = None;
+            }
+            Err(error) => {
+                self.root = None;
+                self.rejection = Some(rejection("Open", error));
+            }
+        }
+        self.reload(true);
+    }
+
+    /// Re-reads the snapshot; validation only when sources may have changed.
+    fn reload(&mut self, validate: bool) {
+        self.generation += 1;
+        let Some(project) = &self.project else {
+            self.entities.clear();
+            self.definitions.clear();
+            self.diagnostics.clear();
+            return;
+        };
+        self.entities = project.entities(self.play.is_some()).unwrap_or_default();
+        if validate {
+            self.definitions = project.definitions();
+            self.definitions.sort();
+            self.diagnostics = project.validate();
+        }
+    }
+
+    /// Advances running play by whole fixed ticks of the game's own timestep.
+    pub fn advance(&mut self, delta: f32) {
+        let (Some(play), Some(project)) = (&mut self.play, &self.project) else {
+            return;
+        };
+        if !play.running {
+            return;
+        }
+        let step = project
+            .play_world()
+            .map_or(1.0 / 64.0, |world| {
+                world.resource::<Time<Fixed>>().timestep().as_secs_f32()
+            })
+            .max(1e-4);
+        play.accumulated += delta;
+        // Drop time after a hitch rather than spiral: at most a few ticks per frame.
+        let ticks = ((play.accumulated / step) as u64).min(4);
+        play.accumulated = (play.accumulated - ticks as f32 * step).min(step);
+        if ticks > 0 {
+            self.step(ticks);
+        }
+    }
+
+    fn step(&mut self, ticks: u64) {
+        let (Some(play), Some(project)) = (&mut self.play, &mut self.project) else {
+            return;
+        };
+        if let Err(error) = project.step_play(ticks as usize) {
+            self.rejection = Some(rejection("Step", error));
+            return;
+        }
+        play.ticks += ticks;
+        self.reload(false);
+    }
+
+    pub fn playing(&self) -> bool {
+        self.play.is_some()
+    }
+
+    pub fn entity(&self, target: &str) -> Option<&Value> {
+        self.entities
+            .iter()
+            .find(|entity| entity_key(entity) == target)
+    }
+
+    pub fn inspection(&mut self) -> Option<&Inspection> {
+        let selected = self.selected.clone()?;
+        let fresh = self
+            .inspection
+            .as_ref()
+            .is_some_and(|(generation, cached, _)| {
+                *generation == self.generation && *cached == selected
+            });
+        if !fresh {
+            let inspection = self.inspect(&selected)?;
+            self.inspection = Some((self.generation, selected, inspection));
+        }
+        self.inspection
+            .as_ref()
+            .map(|(_, _, inspection)| inspection)
+    }
+
+    fn inspect(&self, selected: &Selected) -> Option<Inspection> {
+        let project = self.project.as_ref()?;
+        let source = |file: &str| {
+            project
+                .session()
+                .read(file)
+                .ok()
+                .and_then(|text| parse_jsonc(file, &text).ok())
+                .map_or(Value::Null, |node| node.to_value())
+        };
+        Some(match selected {
+            Selected::Entity(target) => {
+                let Ok(inspected) = project.inspect_entity(target, self.playing()) else {
+                    return Some(Inspection::Missing(target.clone()));
+                };
+                let entry = inspected["entity"].clone();
+                let authored: BTreeSet<String> = entry["definition"]
+                    .as_str()
+                    .and_then(|definition| project.inspect_definition(definition).ok())
+                    .and_then(|definition| {
+                        let components = definition["components"].as_object()?;
+                        Some(components.keys().map(|key| short_name(key)).collect())
+                    })
+                    .unwrap_or_default();
+                let mut components: Vec<_> = inspected["components"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(key, value)| (short_name(key), value.clone()))
+                    .collect();
+                components.sort_by_key(|(name, _)| (!authored.contains(name), name.clone()));
+                let spawn = entry["source"].as_object().and_then(|source| {
+                    let path: Vec<Field> = source["path"]
+                        .as_array()?
+                        .iter()
+                        .map(|key| Field::Key(key.as_str().unwrap_or_default().to_owned()))
+                        .collect();
+                    // Only named spawns (`spawnerList.<s>.spawns.<n>`) carry offsets/overrides.
+                    let file = source["file"].as_str()?.to_owned();
+                    (path.len() == 4).then_some((file, path))
+                });
+                let overrides = spawn.as_ref().map_or(Value::Null, |(file, path)| {
+                    let mut at = path.clone();
+                    at.push(Field::Key("overrides".into()));
+                    lookup(&source(file), &at).cloned().unwrap_or(Value::Null)
+                });
+                let unavailable = inspected["unavailable"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| entry["component"].as_str())
+                    .map(short_name)
+                    .collect();
+                Inspection::Entity {
+                    entry,
+                    components,
+                    authored,
+                    unavailable,
+                    spawn,
+                    overrides,
+                }
+            }
+            Selected::Definition(path) => {
+                let Ok(inspected) = project.inspect_definition(path) else {
+                    return Some(Inspection::Missing(path.clone()));
+                };
+                let lineage = inspected["lineage"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| entry.as_str().map(str::to_owned))
+                    .collect();
+                let components = inspected["components"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(key, value)| (short_name(key), value.clone()))
+                    .collect();
+                Inspection::Definition {
+                    path: path.clone(),
+                    lineage,
+                    components,
+                    local: source(&definition_file(path)),
+                }
+            }
+        })
+    }
+}
+
+fn rejection(action: &'static str, error: SessionError) -> Rejection {
+    match error {
+        SessionError::Validation(errors) => Rejection {
+            action,
+            message: "the change would make the project invalid".into(),
+            diagnostics: errors.iter().map(Diagnostic::from).collect(),
+        },
+        error => Rejection {
+            action,
+            message: error.to_string(),
+            diagnostics: Vec::new(),
+        },
+    }
+}
+
+/// The key a selection uses for an entity: its authored path, or its StableId if runtime-made.
+pub fn entity_key(entity: &Value) -> &str {
+    entity["path"]
+        .as_str()
+        .or_else(|| entity["stable_id"].as_str())
+        .unwrap_or_default()
+}
+
+pub fn definition_file(path: &str) -> String {
+    format!("{path}/entity.jsonc")
+}
+
+/// Authored data names components by their short type path.
+fn short_name(type_path: &str) -> String {
+    type_path
+        .rsplit("::")
+        .next()
+        .unwrap_or(type_path)
+        .to_owned()
+}
+
+pub fn lookup<'a>(value: &'a Value, path: &[Field]) -> Option<&'a Value> {
+    path.iter().try_fold(value, |value, field| match field {
+        Field::Key(key) => value.get(key),
+        Field::Index(index) => value.get(index),
+    })
+}
+
+pub fn vec3(value: &Value) -> Option<Vec3> {
+    let items = value.as_array()?;
+    let component = |i: usize| items.get(i)?.as_f64().map(|v| v as f32);
+    Some(Vec3::new(component(0)?, component(1)?, component(2)?))
+}
+
+pub fn quat(value: &Value) -> Option<Quat> {
+    let items = value.as_array()?;
+    let component = |i: usize| items.get(i)?.as_f64().map(|v| v as f32);
+    Some(Quat::from_xyzw(
+        component(0)?,
+        component(1)?,
+        component(2)?,
+        component(3)?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn copy(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    const OGRE: &str = "Court/guards/ogre";
+
+    fn open() -> (tempfile::TempDir, Editor) {
+        let dir = tempfile::tempdir().unwrap();
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/authoring");
+        copy(&example, dir.path());
+        let mut editor = Editor::default();
+        editor.apply(Command::Open(dir.path().to_owned()));
+        assert!(editor.rejection.is_none());
+        (dir, editor)
+    }
+
+    fn keys(path: &[&str]) -> Vec<Field> {
+        path.iter().map(|key| Field::Key((*key).into())).collect()
+    }
+
+    fn health(editor: &mut Editor, field: &str) -> f64 {
+        editor.apply(Command::Select(Some(Selected::Entity(OGRE.into()))));
+        let Some(Inspection::Entity { components, .. }) = editor.inspection() else {
+            panic!("the ogre is inspectable");
+        };
+        let (_, health) = components
+            .iter()
+            .find(|(name, _)| name == "Health")
+            .unwrap();
+        health[field].as_f64().unwrap()
+    }
+
+    fn ogre_position(editor: &Editor) -> Vec3 {
+        vec3(&editor.entity(OGRE).unwrap()["position"]).unwrap()
+    }
+
+    #[test]
+    fn opens_a_project_into_a_valid_snapshot() {
+        let (_dir, mut editor) = open();
+        assert!(editor.diagnostics.is_empty());
+        assert_eq!(editor.definitions, ["Actor", "guards/ogre"]);
+        assert!(editor.entity(OGRE).is_some());
+
+        editor.apply(Command::Select(Some(Selected::Entity(OGRE.into()))));
+        let Some(Inspection::Entity {
+            authored, spawn, ..
+        }) = editor.inspection()
+        else {
+            panic!("the ogre is inspectable");
+        };
+        assert!(authored.contains("Health"));
+        let (file, path) = spawn.clone().unwrap();
+        assert_eq!(file, "scenes/courtyard.jsonc");
+        assert_eq!(path.len(), 4);
+    }
+
+    #[test]
+    fn instance_overrides_write_the_scene_and_undo() {
+        let (dir, mut editor) = open();
+        let scene = dir.path().join("scenes/courtyard.jsonc");
+        let original = fs::read_to_string(&scene).unwrap();
+        let path = keys(&[
+            "spawnerList",
+            "guards",
+            "spawns",
+            "ogre",
+            "overrides",
+            "components",
+            "Health",
+            "current",
+        ]);
+        editor.apply(Command::Edit(EditRequest::Set {
+            file: "scenes/courtyard.jsonc".into(),
+            path,
+            value: 30.into(),
+            label: "Set Health.current on ogre".into(),
+            group: None,
+            revision: None,
+        }));
+        assert!(editor.rejection.is_none());
+        assert_eq!(health(&mut editor, "current"), 30.0);
+        let Some(Inspection::Entity { overrides, .. }) = editor.inspection() else {
+            unreachable!()
+        };
+        assert_eq!(overrides["components"]["Health"]["current"], 30);
+
+        editor.apply(Command::Undo);
+        assert_eq!(health(&mut editor, "current"), 50.0);
+        assert_eq!(fs::read_to_string(&scene).unwrap(), original);
+        editor.apply(Command::Redo);
+        assert_eq!(health(&mut editor, "current"), 30.0);
+    }
+
+    #[test]
+    fn invalid_edits_are_rejected_with_diagnostics_and_leave_sources() {
+        let (dir, mut editor) = open();
+        let file = dir.path().join("guards/ogre/entity.jsonc");
+        let original = fs::read_to_string(&file).unwrap();
+        editor.apply(Command::Edit(EditRequest::Set {
+            file: "guards/ogre/entity.jsonc".into(),
+            path: keys(&["components", "Health", "max"]),
+            value: "lots".into(),
+            label: "Set Health.max".into(),
+            group: None,
+            revision: None,
+        }));
+        let rejection = editor.rejection.as_ref().expect("the edit is rejected");
+        assert!(!rejection.diagnostics.is_empty());
+        assert_eq!(fs::read_to_string(&file).unwrap(), original);
+        assert!(
+            !editor
+                .project
+                .as_ref()
+                .unwrap()
+                .session()
+                .history()
+                .can_undo()
+        );
+    }
+
+    #[test]
+    fn definition_fields_set_and_reset() {
+        let (_dir, mut editor) = open();
+        let file = definition_file("guards/ogre");
+        let local = |editor: &mut Editor| {
+            editor.apply(Command::Select(Some(Selected::Definition(
+                "guards/ogre".into(),
+            ))));
+            match editor.inspection() {
+                Some(Inspection::Definition { local, .. }) => local.clone(),
+                _ => panic!("the definition is inspectable"),
+            }
+        };
+        editor.apply(Command::Edit(EditRequest::Set {
+            file: file.clone(),
+            path: keys(&["components", "Health", "current"]),
+            value: 45.into(),
+            label: "Set Health.current".into(),
+            group: None,
+            revision: None,
+        }));
+        assert_eq!(local(&mut editor)["components"]["Health"]["current"], 45);
+        assert_eq!(health(&mut editor, "current"), 45.0);
+
+        // Resetting removes the field here, so the ogre inherits Actor's value again.
+        editor.apply(Command::Edit(EditRequest::Remove {
+            file,
+            path: keys(&["components", "Health", "current"]),
+            label: "Reset Health.current".into(),
+            revision: None,
+        }));
+        assert!(
+            local(&mut editor)["components"]["Health"]
+                .get("current")
+                .is_none()
+        );
+        assert_eq!(health(&mut editor, "current"), 50.0);
+    }
+
+    #[test]
+    fn a_drag_is_one_undoable_move() {
+        let (_dir, mut editor) = open();
+        let start = ogre_position(&editor);
+        for step in 1..=3 {
+            editor.apply(Command::Move {
+                path: OGRE.into(),
+                position: start + Vec3::X * step as f32,
+                group: Some("drag".into()),
+            });
+        }
+        editor.apply(Command::EndGroup);
+        assert!(ogre_position(&editor).abs_diff_eq(start + Vec3::X * 3.0, 1e-4));
+        editor.apply(Command::Undo);
+        assert!(ogre_position(&editor).abs_diff_eq(start, 1e-4));
+        assert!(
+            !editor
+                .project
+                .as_ref()
+                .unwrap()
+                .session()
+                .history()
+                .can_undo()
+        );
+    }
+
+    #[test]
+    fn play_simulates_a_separate_world_and_stops_back_to_sources() {
+        let (_dir, mut editor) = open();
+        editor.apply(Command::StartPlay);
+        assert!(editor.playing());
+        editor.advance(0.5);
+        let ticks = editor.play.as_ref().unwrap().ticks;
+        assert!(ticks > 0);
+        // Health regenerates in play only.
+        assert!(health(&mut editor, "current") > 50.0);
+
+        editor.apply(Command::Move {
+            path: OGRE.into(),
+            position: Vec3::ZERO,
+            group: None,
+        });
+        assert!(
+            editor.rejection.is_some(),
+            "edits are blocked while playing"
+        );
+
+        editor.apply(Command::TogglePause);
+        editor.advance(0.5);
+        assert_eq!(editor.play.as_ref().unwrap().ticks, ticks);
+        editor.apply(Command::Step);
+        assert_eq!(editor.play.as_ref().unwrap().ticks, ticks + 1);
+
+        editor.apply(Command::StopPlay);
+        assert!(!editor.playing());
+        assert_eq!(health(&mut editor, "current"), 50.0);
+    }
+}
