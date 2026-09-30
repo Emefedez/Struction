@@ -11,6 +11,18 @@ Working notes for coding agents (Claude, Codex) implementing Struction. The desi
 - Match the surrounding code: sparse comments explaining why, no speculative abstractions (README "Scope").
 - AI tools are first-class authoring clients. Expose inspection, validation and edits through headless APIs over structured data; editor UI must call the same operations. Preserve comments, stable identities, actionable source errors and undoable changes. Do not make game authoring depend on GUI automation.
 - Commit often with focused messages, staging only the files you touched (several agents share one checkout). Update the status table below when a milestone step lands.
+- Before editing, read the Work ownership table and check `git status`. Claim the area under your agent name, including its scope; do not overwrite another active owner's work. Coordinate overlapping changes first. Update the entry when work lands or is handed off, and record who implemented or verified each status update. This agent is **MOON**.
+
+## Work ownership
+
+Check this table before proceeding with changes. An active claim covers only its stated scope; unlisted areas are unclaimed, and historical ownership does not block later work.
+
+| Area | Owner | State / scope |
+| --- | --- | --- |
+| Headless editor / AI authoring | **MOON** | Active: `struction_editor` session/history, project inspection and validation, source previews, isolated play, tool commands and readiness tests/docs |
+| Data/world authoring hooks | **MOON** | Active: candidate-source validation in `struction_data`, scene-source provenance and preview editing in `struction_world`; integration tests |
+| Asset pipeline verification | **MOON** | Landed: 23 tests, including actual Blender import/export, and Clippy verified; implementation predates this verification |
+| Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
 
 ## Adopted decisions
 
@@ -50,7 +62,7 @@ From the design review's pending recommendations, treated as decided:
 | `struction_world` | Spawners, save/load, aliases and boss/minion integration verified with 21 tests. Rejects inconsistent save identities and rename key collisions; renamed/removed spawns keep correct save bookkeeping |
 | `struction_assets` | Verified, 23 tests including real Blender 5.2.2 import/export, UVs, collision/LODs, compiled loading and hot reload; Clippy clean |
 | `struction_debug` | Implemented, 5 tests and native trace verified. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
-| `struction_editor` / `apps/editor` | History/session source present but not exported; editor app remains a scaffold |
+| `struction_editor` / `apps/editor` | In progress (**MOON**): exposed headless modules, repairing exact-source undo and adding game-aware validation, preview and isolated play. GUI app remains a scaffold |
 | `apps/playground` | Milestone 1 scene runnable. Water surface replaces overlapping transparent box; camera-relative movement and overhead orientation covered by 2 tests; native Vulkan smoke run verified |
 
 ## Follow-ups
