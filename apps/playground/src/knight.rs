@@ -98,6 +98,12 @@ pub fn dress_knights(
     if asset_server.load_state(handle).is_failed() {
         error!("the blood knight failed to load; drawing the player with shapes");
         *look = PlayerLook::Shapes;
+        for piece in &pieces {
+            commands.entity(piece).despawn();
+        }
+        for (rig, ..) in &rigs {
+            commands.entity(rig).remove::<Dressed>();
+        }
         return;
     }
     let Some(model) = models.get(handle) else {

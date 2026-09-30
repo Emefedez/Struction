@@ -48,7 +48,7 @@ impl Default for Blender {
 }
 
 /// The override if set, else `blender` when it is on `path`, else the executable
-/// inside the last-named `Blender*.app` bundle of `app_dirs`, else plain `blender`.
+/// of the newest `Blender*.app` bundle in `app_dirs`, else plain `blender`.
 fn find_executable(
     override_path: Option<OsString>,
     path: Option<OsString>,
@@ -61,32 +61,57 @@ fn find_executable(
     if on_path(&name, path) {
         return name;
     }
-    // Versioned bundles ("Blender 4.2.app") sort by name; take the newest.
-    let mut bundles: Vec<PathBuf> = app_dirs
+    // Newest version first; an unversioned "Blender.app" is the installer's
+    // current one, and earlier directories win ties.
+    app_dirs
         .iter()
-        .filter_map(|dir| std::fs::read_dir(dir).ok())
-        .flatten()
-        .filter_map(|entry| {
+        .enumerate()
+        .filter_map(|(index, dir)| Some((index, std::fs::read_dir(dir).ok()?)))
+        .flat_map(|(index, entries)| entries.map(move |entry| (index, entry)))
+        .filter_map(|(index, entry)| {
             let entry = entry.ok()?;
             let file_name = entry.file_name().into_string().ok()?;
-            let is_bundle = file_name.starts_with("Blender") && file_name.ends_with(".app");
+            let version = file_name.strip_prefix("Blender")?.strip_suffix(".app")?;
+            let version: Vec<u32> = if version.is_empty() {
+                vec![u32::MAX]
+            } else {
+                version
+                    .trim()
+                    .split('.')
+                    .map(|part| part.parse().ok())
+                    .collect::<Option<_>>()?
+            };
             let executable = entry.path().join("Contents/MacOS/Blender");
-            (is_bundle && executable.is_file()).then_some(executable)
+            is_executable(&executable).then_some(((version, std::cmp::Reverse(index)), executable))
         })
-        .collect();
-    bundles.sort();
-    bundles.pop().unwrap_or(name)
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map_or(name, |(_, executable)| executable)
 }
 
 fn on_path(name: &Path, path: Option<OsString>) -> bool {
-    path.is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
+    path.is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(name)))
+    })
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 impl Blender {
     /// Whether the executable exists (a path, or a name found on `PATH`).
     pub fn is_available(&self) -> bool {
         if self.executable.components().count() > 1 {
-            return self.executable.is_file();
+            return is_executable(&self.executable);
         }
         on_path(&self.executable, std::env::var_os("PATH"))
     }
@@ -254,32 +279,57 @@ mod tests {
 
     #[test]
     fn finds_blender_by_override_path_and_app_bundle() {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = |path: &Path| {
+            std::fs::write(path, "").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
         let dir = tempfile::tempdir().unwrap();
         let apps = dir.path().join("Applications");
-        for bundle in ["Blender 4.2.app", "Blender 4.5.app", "Blender.app"] {
-            let macos = apps.join(bundle).join("Contents/MacOS");
+        let home_apps = dir.path().join("home/Applications");
+        for (root, bundle) in [
+            (&apps, "Blender 9.2.app"),
+            (&apps, "Blender 10.1.app"),
+            (&home_apps, "Blender 10.1.app"),
+            (&home_apps, "Blender 4.2.app"),
+        ] {
+            let macos = root.join(bundle).join("Contents/MacOS");
             std::fs::create_dir_all(&macos).unwrap();
-            std::fs::write(macos.join("Blender"), "").unwrap();
+            executable(&macos.join("Blender"));
         }
         // Not a Blender bundle, and a bundle without its executable.
         std::fs::create_dir_all(apps.join("Other.app/Contents/MacOS")).unwrap();
-        std::fs::create_dir_all(apps.join("Blender 9.app")).unwrap();
+        std::fs::create_dir_all(apps.join("Blender 99.app")).unwrap();
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let dirs = std::slice::from_ref(&apps);
+        let dirs = [apps.clone(), home_apps.clone()];
 
         assert_eq!(
-            find_executable(Some("/opt/b".into()), Some(bin.clone().into()), dirs),
+            find_executable(Some("/opt/b".into()), Some(bin.clone().into()), &dirs),
             PathBuf::from("/opt/b")
         );
+        // 10.1 beats 9.2 numerically; /Applications wins the tie.
         assert_eq!(
-            find_executable(None, Some(bin.clone().into()), dirs),
-            apps.join("Blender.app/Contents/MacOS/Blender")
+            find_executable(None, Some(bin.clone().into()), &dirs),
+            apps.join("Blender 10.1.app/Contents/MacOS/Blender")
+        );
+        let macos = home_apps.join("Blender.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        executable(&macos.join("Blender"));
+        assert_eq!(
+            find_executable(None, Some(bin.clone().into()), &dirs),
+            macos.join("Blender")
         );
         assert_eq!(find_executable(None, None, &[]), PathBuf::from("blender"));
+        // A non-executable `blender` on PATH does not count.
         std::fs::write(bin.join("blender"), "").unwrap();
+        assert_ne!(
+            find_executable(None, Some(bin.clone().into()), &dirs),
+            PathBuf::from("blender")
+        );
+        executable(&bin.join("blender"));
         assert_eq!(
-            find_executable(None, Some(bin.into()), dirs),
+            find_executable(None, Some(bin.into()), &dirs),
             PathBuf::from("blender")
         );
     }
