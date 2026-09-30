@@ -633,3 +633,46 @@ fn walking_up_a_ramp_stays_grounded() {
     let climbed = position(&app, hero) - start;
     assert!(climbed.z < -4.0 && climbed.y > 1.4, "climbed {climbed}");
 }
+
+#[test]
+fn a_freely_orbiting_camera_turns_the_body_toward_its_movement() {
+    let mut app = app();
+    scene_gravity(&mut app);
+    floor(&mut app, None);
+    let hero = player(&mut app, Vec3::new(0.0, FEET, 0.0));
+    app.add_systems(
+        PreUpdate,
+        (|mut actions: ResMut<InputActions>| {
+            actions.movement_forward = Some(Vec3::X);
+            actions.face_movement = true;
+        })
+        .after(struction_character::InputSystems::Map)
+        .before(struction_character::InputSystems::Command),
+    );
+    frames(&mut app, 20);
+    let heading = |app: &App| app.world().get::<CharacterLook>(hero).unwrap().forward;
+    assert!(
+        heading(&app).abs_diff_eq(Vec3::NEG_Z, 1e-4),
+        "no movement, no turn"
+    );
+    // Screen-left of a camera facing +X is -Z: the body keeps facing it, then turns to +X.
+    press(&mut app, KeyCode::KeyA);
+    frames(&mut app, 30);
+    assert!(
+        heading(&app).abs_diff_eq(Vec3::NEG_Z, 1e-4),
+        "{}",
+        heading(&app)
+    );
+    release(&mut app, KeyCode::KeyA);
+    press(&mut app, KeyCode::KeyW);
+    frame(&mut app);
+    let partial = heading(&app);
+    assert!(partial.dot(Vec3::NEG_Z) > 0.5, "turns gradually: {partial}");
+    frames(&mut app, 30);
+    assert!(
+        heading(&app).abs_diff_eq(Vec3::X, 1e-3),
+        "{}",
+        heading(&app)
+    );
+    assert!(position(&app, hero).x > 1.0);
+}
