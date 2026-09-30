@@ -7,13 +7,16 @@
 //!
 //! The controller drives a dynamic capsule with velocity changes, aligned to
 //! [`LocalUp`](struction_gravity::LocalUp): it works on flat floors, around planets, and in water.
-//! Meshes and animation are out of scope.
+//! [`CharacterAnimationPlugin`] drives a procedural `struction_anim` rig from the controller;
+//! meshes are out of scope.
 
 use bevy::{app::PluginGroupBuilder, prelude::*};
 
+mod animation;
 mod controller;
 mod input;
 
+pub use animation::{CharacterAnimationPlugin, RigOf, spawn_rig};
 pub use controller::{
     CharacterController, CharacterControllerPlugin, CharacterIntent, CharacterLook, CharacterState,
     CharacterSystems,

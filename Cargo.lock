@@ -5305,6 +5305,7 @@ version = "0.1.0"
 dependencies = [
  "avian3d",
  "bevy",
+ "struction_anim",
  "struction_gravity",
  "struction_physics",
 ]

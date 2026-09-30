@@ -139,6 +139,8 @@ impl Default for CharacterState {
 pub enum CharacterSystems {
     /// Turns intents into velocity, jumps, and orientation for the next physics step.
     Control,
+    /// Copies interpolated bodies and their motion to animation rigs (`PostUpdate`).
+    Animate,
 }
 
 /// Runs the controller in `FixedPostUpdate`, right before the physics step, after gravity and
@@ -160,7 +162,7 @@ impl Plugin for CharacterControllerPlugin {
             )
             .add_systems(
                 FixedPostUpdate,
-                (probe_ground, control_characters)
+                (probe_ground, control_characters, hold_on_slopes)
                     .chain()
                     .in_set(CharacterSystems::Control),
             );
@@ -337,5 +339,20 @@ fn control_characters(
         let target = orientation(forward, up);
         let blend = 1.0 - (-controller.align_rate * dt).exp();
         rotation.0 = rotation.0.slerp(target, blend).normalize();
+    }
+}
+
+/// Cancels the pull of gravity along the ground for grounded characters, so standing still does
+/// not creep down walkable slopes. It is an acceleration because gravity is integrated per
+/// substep; a velocity change would overshoot uphill. Slippery surfaces keep most of the pull.
+fn hold_on_slopes(mut characters: Query<(Forces, &CharacterState, &LocalGravity)>) {
+    for (mut forces, state, gravity) in &mut characters {
+        if state.grounded && !state.swimming {
+            let normal = state.ground_normal.normalize_or_zero();
+            let along_ground = gravity.0 - normal * gravity.0.dot(normal);
+            forces
+                .non_waking()
+                .apply_linear_acceleration(-along_ground * state.ground_friction.min(1.0));
+        }
     }
 }

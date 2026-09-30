@@ -577,3 +577,33 @@ fn heading_is_transported_across_a_sharp_gravity_change() {
     assert!(look.forward.dot(up).abs() < 1e-4);
     assert!(look.up.abs_diff_eq(up, 1e-4));
 }
+
+/// Where a character left idle on a 20 degree slope ends up after three seconds.
+fn drift_on_slope(surface: Surface) -> Vec3 {
+    let mut app = app();
+    scene_gravity(&mut app);
+    let tilt = Quat::from_rotation_z(20f32.to_radians());
+    app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(40.0, 1.0, 40.0),
+        surface,
+        Transform::from_translation(tilt * Vec3::NEG_Y * 0.5).with_rotation(tilt),
+    ));
+    let hero = player(&mut app, Vec3::new(0.0, FEET + 0.1, 0.0));
+    frames(&mut app, 60);
+    let settled = position(&app, hero);
+    frames(&mut app, 180);
+    position(&app, hero) - settled
+}
+
+#[test]
+fn standing_still_holds_on_walkable_slopes() {
+    let drift = drift_on_slope(Surface::default());
+    assert!(drift.length() < 0.02, "crept {drift} downhill");
+}
+
+#[test]
+fn slippery_slopes_still_slide() {
+    let drift = drift_on_slope(Surface::slippery());
+    assert!(drift.x < -1.0, "slid {drift}");
+}
