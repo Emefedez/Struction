@@ -37,5 +37,6 @@ bevy = { workspace = true, features = [
 struction_gravity = { workspace = true }
 struction_physics = { workspace = true }
 struction_character = { workspace = true }
+struction_camera = { workspace = true }
 struction_anim = { workspace = true }
 struction_debug = { workspace = true }

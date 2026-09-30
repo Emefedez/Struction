@@ -7,6 +7,7 @@ members = [
     "crates/struction_gravity",
     "crates/struction_physics",
     "crates/struction_character",
+    "crates/struction_camera",
     "crates/struction_anim",
     "crates/struction_ai",
     "crates/struction_world",
@@ -56,6 +57,7 @@ struction_core = { path = "crates/struction_core" }
 struction_gravity = { path = "crates/struction_gravity" }
 struction_physics = { path = "crates/struction_physics" }
 struction_character = { path = "crates/struction_character" }
+struction_camera = { path = "crates/struction_camera" }
 struction_anim = { path = "crates/struction_anim" }
 struction_ai = { path = "crates/struction_ai" }
 struction_world = { path = "crates/struction_world" }

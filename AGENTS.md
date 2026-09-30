@@ -26,6 +26,7 @@ Check this table before proceeding with changes. An active claim covers only its
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
 | Planet gravity and camera obstruction | **SUN** (from **MOON**) | Landed: MOON implemented gravity entry/exit hysteresis, simulation-owned `GravityPose` and `camera_obstructions`; SUN verified them, fixed the controller judging leaving the ground along up, and replaced whole-material fading with a sight-line shader cut-out (`apps/playground/src/sight_fade.wgsl`) for ground and water, reviewed natively with the user |
 | Character animation integration | **SUN** | Landed (implemented and verified by **SUN**): `CharacterAnimationPlugin` bridge, `CustomGround` hook, slope fixes in the controller and locomotion, animated player and working HUD in `apps/playground`; native Vulkan smoke run verified |
+| Player camera | **SUN** | Landed (implemented and verified by **SUN**): `struction_camera` with third-person orbit (zoom, collision pull-in, zones) and first-person views only, no free camera; `face_movement` turning in the controller; `ToggleView`/`Zoom` input actions; playground wiring. 7 camera tests, 1 controller test, Clippy; not yet run natively |
 | Editor GUI | **SUN** | Landed (implemented and verified by **SUN**): egui (`bevy_egui`) chosen over Dear ImGui, custom theme; `apps/editor` bound to `AuthoringProject` with project open, scene tree, inspector edits (instance overrides, definition fields, reset), problems, undo/redo, viewport selection and drag moves, and play/pause/step. 7 tests; a native run checked the hierarchy, inspectors and markers. Mouse picking/dragging and play were verified headlessly only |
 
 ## Adopted decisions
@@ -48,6 +49,7 @@ From the design review's pending recommendations, treated as decided:
 | `struction_gravity` | 1 | Gravity fields summed per body, local up |
 | `struction_physics` | 1 | Avian 0.7 wrapper, fixed timestep and interpolation, surfaces, volumes (water, buoyancy), camera zones |
 | `struction_character` | 1 | Input actions and mapping, character controller with variable up |
+| `struction_camera` | 1 | Player camera: third-person orbit and first-person views, variable up, collision pull-in, camera zones |
 | `struction_anim` | 0, 5 | Skeleton, poses, springs, IK, constraints, dataflow graph, procedural locomotion, affordances |
 | `struction_ai` | 3 | Behavior trees, condition registry, sensing by lineage, boids |
 | `struction_world` | 3 | Spawners, zones, save/load, path renaming, data↔core integration |
@@ -60,21 +62,22 @@ From the design review's pending recommendations, treated as decided:
 | --- | --- |
 | `struction_core` | Done, 53 tests |
 | `struction_data` | Done, 69 tests. **MOON** added candidate-source validation without disk writes; inherited definitions, presets and source errors verified |
-| gravity / physics / character | Done, 54 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity. Only buoyant volumes cause submersion; camera zones remain dry. Grounded characters hold on walkable slopes (friction-scaled) and judge leaving the ground along its normal. Gravity fields support exit hysteresis and sample simulation poses (**MOON**); `camera_obstructions` reports blockers of a camera's view (**MOON**). `CharacterAnimationPlugin` drives `struction_anim` rigs with physics-raycast feet (**SUN**) |
+| gravity / physics / character | Done, 54 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity. Only buoyant volumes cause submersion; camera zones remain dry. Grounded characters hold on walkable slopes (friction-scaled) and judge leaving the ground along its normal. Gravity fields support exit hysteresis and sample simulation poses (**MOON**); `camera_obstructions` reports blockers of a camera's view (**MOON**). `CharacterAnimationPlugin` drives `struction_anim` rigs with physics-raycast feet (**SUN**). Characters can turn toward their movement (`face_movement`) for free-orbit cameras (**SUN**) |
+| `struction_camera` | Implemented, 7 tests (**SUN**). Third person (orbit, zoom, sphere-cast pull-in, fixed/follow zones) and first person (eyes, look turns the body), switched by V or zooming; follows local up. No free camera by design |
 | `struction_anim` | Done, 54 tests. Spike verdict: go on mechanics (planted feet, planets, hold/gaze/sit); rendered in the playground, looks still rough (see follow-ups). Runtime uses a fixed solve pipeline, not the dataflow graph yet. `CustomGround` lets bridges step locomotion with their own ground; feet no longer re-step at the reach limit on slopes (**SUN**) |
 | `struction_ai` | Done, 23 tests. Loading `brain`/`sensing` from definitions and a physics line-of-sight are left to integration |
 | `struction_world` | Verified, 22 tests. Spawners, save/load, aliases and boss/minion integration; **MOON** added candidate scene compilation and source provenance for authoring |
 | `struction_assets` | Verified, 23 tests including real Blender 5.2.2 import/export, UVs, collision/LODs, compiled loading and hot reload; Clippy clean |
 | `struction_debug` | Implemented, 5 tests and native trace verified. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
 | `struction_editor` / `apps/editor` | Headless foundation verified by **MOON**, 32 tests and native JSONL smoke. Shared validation, source/history, hierarchy/inspection, world-space moves, templates and isolated play. First egui GUI on it (**SUN**, 7 tests): scene tree, inspector edits, problems, undo/redo, viewport moves and play controls; see `docs/authoring.md` |
-| `apps/playground` | Milestone 1 scene runnable with a procedurally walking humanoid player; HUD renders (`bevy_ui_render`, `default_font`) (**SUN**). Water surface replaces overlapping transparent box; camera-relative movement, overhead orientation, planet escape/walking and sight-line fading covered by 7 tests; occluding ground and the water surface get a soft shader cut-out around the player (**SUN**); planet field ends 1 m above the surface with a 0.5 m exit margin; native Vulkan smoke run verified |
+| `apps/playground` | Milestone 1 scene runnable with a procedurally walking humanoid player; HUD renders (`bevy_ui_render`, `default_font`) (**SUN**). Water surface replaces overlapping transparent box; planet escape/walking and sight-line fading covered by 5 tests (camera movement and overhead orientation moved to `struction_camera`); third/first person player camera (**SUN**); occluding ground and the water surface get a soft shader cut-out around the player (**SUN**); planet field ends 1 m above the surface with a 0.5 m exit margin; native Vulkan smoke run verified |
 
 ## Follow-ups
 
 - Brain arguments use tagged values (`{ "Float": 0.25 }`); switch to plain JSON values typed by the condition/action parameter metadata.
 - Animation looks: foot roll, hip sway, arm swing, longer strides (~110 steps/min), knee limits, turning in place.
 - Hot reload of a master's `grantsToWards` does not update existing wards.
-- Playground camera: walking up the planet's near side, the follow camera can sink under the approach floor. The sight-line cut-out keeps the player visible, but the floor's underside still fills the rest of the view; pulling the camera in when the ground itself blocks it would avoid that.
+- Playground camera: the third-person camera now pulls in when solid ground blocks it, which should stop it sinking under the approach floor on the planet's near side; confirm natively.
 - World/physics integration must derive moving cells from simulation `Position` instead of interpolated `Transform`. Streaming still needs persistence of unloaded spawners that have not run yet; current saves record spawners after their first run.
 
 ## Next
