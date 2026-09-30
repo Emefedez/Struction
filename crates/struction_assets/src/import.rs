@@ -9,7 +9,7 @@ use gltf::mesh::Mode;
 
 use crate::blender::Blender;
 use crate::error::AssetError;
-use crate::format::SceneNode;
+use crate::format::{BundleMaterial, SceneNode};
 
 /// Imported geometry in engine coordinates (Y up, right-handed, meters).
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +18,8 @@ pub struct PreparedScene {
     pub meshes: Vec<PreparedMesh>,
     /// Nodes of the default scene; parents come before their children.
     pub nodes: Vec<SceneNode>,
+    /// Named materials; meshes refer to them by name.
+    pub materials: Vec<BundleMaterial>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -187,7 +189,26 @@ fn parse_gltf(
         stack.extend(children.into_iter().rev().map(|child| (child, Some(index))));
     }
 
-    Ok(PreparedScene { meshes, nodes })
+    let materials = gltf
+        .materials()
+        .filter_map(|material| {
+            let pbr = material.pbr_metallic_roughness();
+            let strength = material.emissive_strength().unwrap_or(1.0);
+            Some(BundleMaterial {
+                name: material.name()?.to_owned(),
+                base_color: pbr.base_color_factor(),
+                metallic: pbr.metallic_factor(),
+                roughness: pbr.roughness_factor(),
+                emissive: material.emissive_factor().map(|c| c * strength),
+            })
+        })
+        .collect();
+
+    Ok(PreparedScene {
+        meshes,
+        nodes,
+        materials,
+    })
 }
 
 fn load_buffers(

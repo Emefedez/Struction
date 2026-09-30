@@ -76,6 +76,15 @@ fn blend_import_converts_to_engine_axes() {
 
     let ball = mesh(&scene, "Ball");
     assert_eq!(ball.material.as_deref(), Some("Metal"));
+    let metal = scene
+        .materials
+        .iter()
+        .find(|material| material.name == "Metal")
+        .expect("Metal material");
+    for (actual, expected) in metal.base_color.iter().zip([0.8, 0.1, 0.1, 1.0]) {
+        assert!((actual - expected).abs() < 1e-4, "{metal:?}");
+    }
+    assert!((metal.metallic - 1.0).abs() < 1e-4 && (metal.roughness - 0.25).abs() < 1e-4);
     assert_eq!(ball.indices.len() / 3, 32 * 14 * 2 + 32 * 2);
     assert!(ball.positions.iter().all(|p| {
         let radius = p.iter().map(|c| c * c).sum::<f32>().sqrt();
@@ -210,6 +219,8 @@ fn blend_end_to_end() {
         assert_eq!(loaded.material, source.material);
     }
     assert_eq!(model.nodes, imported.nodes);
+    assert_eq!(model.materials, imported.materials);
+    assert_eq!(model.material("Metal").map(|m| m.metallic), Some(1.0));
     let tower = model
         .nodes
         .iter()

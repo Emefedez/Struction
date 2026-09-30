@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 use bevy::asset::AssetPath;
 use bevy::prelude::*;
 
+use crate::blender::Blender;
 use crate::compile::{CompileSettings, CompileStatus, compile_asset_with};
 use crate::error::AssetError;
 
@@ -23,10 +24,17 @@ pub struct OpenIn {
 }
 
 impl Default for OpenIn {
+    /// The desktop's opener, and `.blend` files in the Blender the pipeline found.
     fn default() -> Self {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        let blender = Blender::default().executable.to_string_lossy().into_owned();
         Self {
-            default_command: vec!["xdg-open".into()],
-            by_extension: HashMap::from([("blend".into(), vec!["blender".into()])]),
+            default_command: vec![opener.into()],
+            by_extension: HashMap::from([("blend".into(), vec![blender])]),
         }
     }
 }
@@ -252,8 +260,14 @@ mod tests {
     #[test]
     fn chooses_command_by_extension() {
         let open_in = OpenIn::default();
-        assert_eq!(open_in.command_for(Path::new("a/ogre.BLEND")), ["blender"]);
-        assert_eq!(open_in.command_for(Path::new("notes.txt")), ["xdg-open"]);
+        let blender = Blender::default().executable.to_string_lossy().into_owned();
+        assert_eq!(open_in.command_for(Path::new("a/ogre.BLEND")), [blender]);
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        assert_eq!(open_in.command_for(Path::new("notes.txt")), [opener]);
     }
 
     #[test]

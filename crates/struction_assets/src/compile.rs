@@ -108,6 +108,7 @@ pub fn prepare_scene(scene: &PreparedScene, settings: &PrepareSettings) -> MeshB
             })
             .collect(),
         nodes: scene.nodes.clone(),
+        materials: scene.materials.clone(),
     }
 }
 

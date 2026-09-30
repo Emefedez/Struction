@@ -6,7 +6,9 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::prelude::*;
 
 use crate::error::FormatError;
-use crate::format::{self, ArchivedMeshLod, Bounds, CollisionShapes, SceneNode, to_native};
+use crate::format::{
+    self, ArchivedMeshLod, Bounds, BundleMaterial, CollisionShapes, SceneNode, to_native,
+};
 
 /// A loaded bundle. Every LOD is a labeled [`Mesh`] sub-asset
 /// (`model.smesh#Mesh0/Lod1`); collision and hierarchy are plain data.
@@ -14,6 +16,13 @@ use crate::format::{self, ArchivedMeshLod, Bounds, CollisionShapes, SceneNode, t
 pub struct CompiledModel {
     pub meshes: Vec<CompiledMesh>,
     pub nodes: Vec<SceneNode>,
+    pub materials: Vec<BundleMaterial>,
+}
+
+impl CompiledModel {
+    pub fn material(&self, name: &str) -> Option<&BundleMaterial> {
+        self.materials.iter().find(|material| material.name == name)
+    }
 }
 
 #[derive(Debug)]
@@ -83,6 +92,7 @@ impl AssetLoader for CompiledModelLoader {
         Ok(CompiledModel {
             meshes,
             nodes: deserialize(&bundle.nodes)?,
+            materials: deserialize(&bundle.materials)?,
         })
     }
 
