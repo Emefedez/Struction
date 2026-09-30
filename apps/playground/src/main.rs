@@ -1,6 +1,8 @@
 //! Native physics playground with a procedurally animated player.
 
 mod camera_occlusion;
+
+use camera_occlusion::{FadeMaterial, FadesWith, fade_material};
 #[cfg(test)]
 mod planet_tests;
 
@@ -110,7 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PhysicsPlugin::default(),
         struction_character::CharacterPlugins,
         CharacterAnimationPlugin,
-        camera_occlusion::GroundTransparencyPlugin,
+        camera_occlusion::SightFadePlugin,
     ))
     .configure_sets(
         PreUpdate,
@@ -155,6 +157,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut ground_materials: ResMut<Assets<FadeMaterial>>,
 ) {
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.68, 0.78, 1.0),
@@ -175,21 +178,30 @@ fn setup(
         Transform::from_xyz(0.0, 4.0, 13.0).looking_at(Vec3::new(0.0, 1.4, 8.0), Vec3::Y),
     ));
     spawn_scene_gravity(&mut commands);
-    spawn_floor(&mut commands, &mut meshes, &mut materials);
-    spawn_pool(&mut commands, &mut meshes, &mut materials);
-    spawn_planet(&mut commands, &mut meshes, &mut materials);
+    spawn_floor(&mut commands, &mut meshes, &mut ground_materials);
+    spawn_pool(&mut commands, &mut meshes, &mut ground_materials);
+    spawn_planet(&mut commands, &mut meshes, &mut ground_materials);
     spawn_camera_zone(&mut commands, &mut meshes, &mut materials);
     spawn_cubes(&mut commands, &mut meshes, &mut materials);
     spawn_player(&mut commands);
     spawn_hud(&mut commands);
 }
 
-fn material(materials: &mut Assets<StandardMaterial>, color: Color) -> Handle<StandardMaterial> {
-    materials.add(StandardMaterial {
+fn matte(color: Color) -> StandardMaterial {
+    StandardMaterial {
         base_color: color,
         perceptual_roughness: 0.88,
         ..default()
-    })
+    }
+}
+
+fn material(materials: &mut Assets<StandardMaterial>, color: Color) -> Handle<StandardMaterial> {
+    materials.add(matte(color))
+}
+
+/// Ground that can hide the player gets a cut-out along the camera's line of sight.
+fn ground(materials: &mut Assets<FadeMaterial>, color: Color) -> Handle<FadeMaterial> {
+    fade_material(materials, matte(color))
 }
 
 fn spawn_scene_gravity(commands: &mut Commands) {
@@ -202,7 +214,7 @@ fn spawn_scene_gravity(commands: &mut Commands) {
 fn spawn_floor(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<FadeMaterial>,
 ) {
     let tile = meshes.add(Cuboid::new(14.0, 0.5, 12.0));
     for (name, z, surface, color) in [
@@ -226,7 +238,7 @@ fn spawn_floor(
             Collider::cuboid(14.0, 0.5, 12.0),
             surface,
             Mesh3d(tile.clone()),
-            MeshMaterial3d(material(materials, color)),
+            MeshMaterial3d(ground(materials, color)),
             Transform::from_xyz(0.0, -0.25, z),
         ));
     }
@@ -237,7 +249,7 @@ fn spawn_floor(
         Collider::cuboid(4.0, 0.5, 7.0),
         Surface::default(),
         Mesh3d(meshes.add(Cuboid::new(4.0, 0.5, 7.0))),
-        MeshMaterial3d(material(materials, Color::srgb(0.37, 0.34, 0.34))),
+        MeshMaterial3d(ground(materials, Color::srgb(0.37, 0.34, 0.34))),
         Transform::from_xyz(0.0, -0.25, -16.5),
     ));
     // A shallow rim makes the pool's edge readable and keeps its base solid.
@@ -247,7 +259,7 @@ fn spawn_floor(
         RigidBody::Static,
         Collider::cuboid(7.0, 0.5, 8.0),
         Mesh3d(meshes.add(Cuboid::new(7.0, 0.5, 8.0))),
-        MeshMaterial3d(material(materials, Color::srgb(0.16, 0.30, 0.34))),
+        MeshMaterial3d(ground(materials, Color::srgb(0.16, 0.30, 0.34))),
         Transform::from_xyz(10.5, -2.75, -5.0),
     ));
 }
@@ -255,38 +267,45 @@ fn spawn_floor(
 fn spawn_pool(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<FadeMaterial>,
 ) {
     let shape = VolumeShape::Box {
         half_extents: Vec3::new(3.5, 1.5, 4.0),
     };
-    commands.spawn((
-        Name::new("Water pool"),
-        TraceEntity,
-        water(shape),
-        Transform::from_xyz(10.5, -1.0, -5.0),
-    ));
+    let volume = commands
+        .spawn((
+            Name::new("Water pool"),
+            TraceEntity,
+            water(shape),
+            Transform::from_xyz(10.5, -1.0, -5.0),
+        ))
+        .id();
     // A closed transparent box overlaps the pool floor and blends its own unsorted faces.
     commands.spawn((
         Name::new("Water surface"),
         Transform::from_xyz(10.5, 0.5, -5.0),
         Mesh3d(meshes.add(Plane3d::default().mesh().size(7.0, 8.0))),
         NotShadowCaster,
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.04, 0.46, 0.72, 0.48),
-            alpha_mode: AlphaMode::Blend,
-            perceptual_roughness: 0.24,
-            cull_mode: None,
-            double_sided: true,
-            ..default()
-        })),
+        // A swimmer below the surface stays visible through it.
+        FadesWith(volume),
+        MeshMaterial3d(fade_material(
+            materials,
+            StandardMaterial {
+                base_color: Color::srgba(0.04, 0.46, 0.72, 0.48),
+                alpha_mode: AlphaMode::Blend,
+                perceptual_roughness: 0.24,
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            },
+        )),
     ));
 }
 
 fn spawn_planet(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<FadeMaterial>,
 ) {
     let center = Vec3::new(0.0, 4.0, -20.0);
     commands.spawn((
@@ -298,7 +317,7 @@ fn spawn_planet(
         GravityHysteresis { exit_margin: 0.5 },
         Surface::default(),
         Mesh3d(meshes.add(Sphere::new(4.0).mesh().ico(5).expect("valid sphere"))),
-        MeshMaterial3d(material(materials, Color::srgb(0.52, 0.35, 0.24))),
+        MeshMaterial3d(ground(materials, Color::srgb(0.52, 0.35, 0.24))),
         Transform::from_translation(center),
     ));
 }

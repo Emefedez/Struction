@@ -9,8 +9,14 @@ use bevy::prelude::*;
 pub struct CameraOcclusion {
     /// Swept radius around the sight line, covering the near plane instead of a single ray.
     pub probe_radius: f32,
+    /// Radius around the target of the region hidden in blocking surfaces; they stay visible
+    /// elsewhere.
+    pub cutout_radius: f32,
+    /// How far behind the camera surfaces start fading, so one the camera is about to pass
+    /// through is already faded when it does.
+    pub anticipation: f32,
     pub blocked_opacity: f32,
-    /// Exponential blend rate per second; the host restores the original material on release.
+    /// Exponential blend rate per second toward blocked or clear.
     pub fade_speed: f32,
 }
 
@@ -18,8 +24,10 @@ impl Default for CameraOcclusion {
     fn default() -> Self {
         Self {
             probe_radius: 0.25,
+            cutout_radius: 1.6,
+            anticipation: 1.5,
             blocked_opacity: 0.12,
-            fade_speed: 16.0,
+            fade_speed: 5.0,
         }
     }
 }
