@@ -528,7 +528,9 @@ impl LocomotionState {
         }
 
         // Planted legs that want to step, most urgent first.
-        let hip_lift = up * self.bob.value;
+        // Measure reach where the pelvis will be: last frame's height was limited while swinging
+        // feet were still in the air, so a foot landing lower would read as out of reach.
+        let hip_lift = up * self.bob.value.min(self.pelvis_limit(input, up));
         let mut candidates: Vec<(usize, f32, bool)> = Vec::new();
         for (i, leg) in self.legs.iter().enumerate() {
             if leg.phase != LegPhase::Planted {
@@ -545,7 +547,8 @@ impl LocomotionState {
             };
             let hip = input.root.transform_point(leg.spec.hip) + hip_lift;
             let ratio = hip.distance(leg.foot) / leg.spec.reach;
-            let urgent = ratio > self.params.reach_limit;
+            // The pelvis limit parks the hip exactly at the reach limit; slack absorbs rounding.
+            let urgent = ratio > self.params.reach_limit + 1e-3;
             let urgency = (behind / stride)
                 .max(offset.length() / trigger)
                 .max(ratio / self.params.reach_limit);

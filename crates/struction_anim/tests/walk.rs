@@ -442,6 +442,22 @@ fn feet_lie_flat_on_a_slope_under_an_upright_body() {
     }
 }
 
+#[test]
+fn standing_across_a_slope_keeps_both_feet_planted() {
+    // A capsule body rests slightly above a slope, so the downhill foot hangs at the reach limit.
+    let ground = PlaneGround {
+        point: Vec3::ZERO,
+        normal: Quat::from_rotation_z(20f32.to_radians()) * Vec3::Y,
+    };
+    let mut sim = Sim::humanoid(&ground, Transform::from_xyz(0.0, 0.02, 0.0));
+    for frame in 0..180 {
+        let record = sim.step(Vec3::ZERO);
+        if frame >= 30 {
+            assert_eq!(record.planted, [true, true], "frame {frame}: re-stepping");
+        }
+    }
+}
+
 /// Four legs, two per side, trotting in diagonal pairs.
 fn quadruped() -> Rig {
     let mut joints = vec![

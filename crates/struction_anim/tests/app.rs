@@ -403,3 +403,59 @@ fn jump_predicts_the_landing_then_squashes_and_the_spine_springs_back() {
             .all(|f| f.planted && (f.position.y - humanoid::ANKLE_HEIGHT).abs() < 1e-4)
     );
 }
+
+#[test]
+fn custom_ground_characters_are_stepped_by_their_own_system() {
+    use bevy::app::PostUpdate;
+    use bevy::ecs::query::With;
+    use bevy::ecs::schedule::IntoScheduleConfigs;
+    use bevy::ecs::system::{Query, Res};
+    use bevy::time::Time;
+    use struction_anim::AnimSystems;
+    use struction_anim::humanoid::ANKLE_HEIGHT;
+    use struction_anim::plugin::{CustomGround, LocalUp};
+
+    #[derive(bevy::ecs::resource::Resource)]
+    struct Raised(bool);
+
+    fn step_on_platform(
+        time: Res<Time>,
+        raised: Res<Raised>,
+        mut characters: Query<
+            (&Transform, &AnimMotion, &LocalUp, &mut Locomotor),
+            With<CustomGround>,
+        >,
+    ) {
+        if !raised.0 {
+            return;
+        }
+        let platform = PlaneGround {
+            point: Vec3::Y * 0.3,
+            normal: Vec3::Y,
+        };
+        for (root, motion, up, mut locomotor) in &mut characters {
+            let input = motion.locomotion_input(*root, up.0);
+            locomotor.state.update(&input, &platform, time.delta_secs());
+        }
+    }
+
+    let mut app = app();
+    app.insert_resource(Raised(false))
+        .add_systems(PostUpdate, step_on_platform.in_set(AnimSystems::Locomotion));
+    let character = spawn(&mut app, Transform::from_xyz(0.0, 0.3, 0.0));
+    app.world_mut().entity_mut(character).insert(CustomGround);
+    run(&mut app, 5);
+    let locomotor = app.world().get::<Locomotor>(character).unwrap();
+    assert!(
+        locomotor.state.output().feet.is_empty(),
+        "the built-in step skips it"
+    );
+
+    app.world_mut().resource_mut::<Raised>().0 = true;
+    run(&mut app, 5);
+    let locomotor = app.world().get::<Locomotor>(character).unwrap();
+    for foot in &locomotor.state.output().feet {
+        assert!((foot.position.y - (0.3 + ANKLE_HEIGHT)).abs() < 1e-4);
+    }
+    assert_eq!(locomotor.state.output().feet.len(), 2);
+}

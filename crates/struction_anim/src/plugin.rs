@@ -11,7 +11,7 @@ use bevy::ecs::component::Component;
 use bevy::ecs::entity::Entity;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::ecs::name::Name;
-use bevy::ecs::query::With;
+use bevy::ecs::query::{With, Without};
 use bevy::ecs::reflect::ReflectComponent;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::schedule::{IntoScheduleConfigs, SystemSet};
@@ -65,6 +65,7 @@ impl Plugin for AnimPlugin {
             .register_type::<LocalUp>()
             .register_type::<AnimMotion>()
             .register_type::<MotionFromTransform>()
+            .register_type::<CustomGround>()
             .register_type::<AnimConstraints>()
             .register_type::<AnimIntent>()
             .register_type::<Locomotor>()
@@ -131,6 +132,27 @@ impl Default for AnimMotion {
         }
     }
 }
+
+impl AnimMotion {
+    /// Locomotion input for a root at `root` with the given local up.
+    pub fn locomotion_input(&self, root: Transform, up: Vec3) -> LocomotionInput {
+        let up = up.normalize_or(Vec3::Y);
+        LocomotionInput {
+            root,
+            velocity: self.velocity,
+            up,
+            grounded: self.grounded,
+            gravity: self.gravity.unwrap_or(-up * 9.81),
+        }
+    }
+}
+
+/// Locomotion of this character is stepped by another system in [`AnimSystems::Locomotion`]
+/// with its own [`Ground`], typically physics queries that need system parameters and so cannot
+/// live in [`GroundQuery`]. The built-in step skips it.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component)]
+pub struct CustomGround;
 
 /// Derives `AnimMotion::velocity` from the root's `Transform` each frame, for characters that
 /// are moved directly (tests, scripted movers) rather than by a physics controller.
@@ -497,7 +519,10 @@ fn update_constraints(
 fn update_locomotion(
     time: Res<Time>,
     ground: Option<Res<GroundQuery>>,
-    mut characters: Query<(Entity, &mut Locomotor, &AnimMotion, Option<&LocalUp>)>,
+    mut characters: Query<
+        (Entity, &mut Locomotor, &AnimMotion, Option<&LocalUp>),
+        Without<CustomGround>,
+    >,
     transforms: WorldTransforms,
 ) {
     let dt = time.delta_secs();
@@ -509,14 +534,7 @@ fn update_locomotion(
         let Some(root) = transforms.get(entity) else {
             continue;
         };
-        let up = up.map_or(Vec3::Y, |u| u.0).normalize_or(Vec3::Y);
-        let input = LocomotionInput {
-            root,
-            velocity: motion.velocity,
-            up,
-            grounded: motion.grounded,
-            gravity: motion.gravity.unwrap_or(-up * 9.81),
-        };
+        let input = motion.locomotion_input(root, up.map_or(Vec3::Y, |u| u.0));
         locomotor.state.update(&input, ground, dt);
     }
 }
