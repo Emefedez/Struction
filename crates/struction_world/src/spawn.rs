@@ -172,6 +172,7 @@ pub fn spawn_instance(
             .unwrap_or_default(),
     );
     let cell = world.resource::<CellSize>().cell_of(transform.translation);
+    let live = world.contains_resource::<crate::live::LiveReload>();
 
     let mut entity = world.spawn((WorldEntity, cell));
     resolved.insert_into(&mut entity, &types);
@@ -181,6 +182,9 @@ pub fn spawn_instance(
     }
     if let Some(reactions) = reactions {
         entity.insert(reactions);
+    }
+    if live {
+        entity.insert(crate::live::Authored::new(&resolved));
     }
     Ok(entity.id())
 }
