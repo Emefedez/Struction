@@ -201,15 +201,39 @@ impl DefinitionStore {
 
     /// Scans the project directory and resolves everything, replacing previous contents.
     pub fn load(&mut self, registry: &TypeRegistry) -> ReloadReport {
+        self.load_with_sources(&BTreeMap::new(), registry)
+    }
+
+    /// Resolves candidate sources without writing files or changing this store, including
+    /// their effect on inherited definitions and presets.
+    pub fn preview_sources(
+        &self,
+        sources: &BTreeMap<String, String>,
+        registry: &TypeRegistry,
+    ) -> Self {
+        let mut candidate = Self::new(self.root.clone());
+        candidate.primordials = self.primordials.clone();
+        candidate.extra_sections = self.extra_sections.clone();
+        candidate.load_with_sources(sources, registry);
+        candidate
+    }
+
+    fn load_with_sources(
+        &mut self,
+        sources: &BTreeMap<String, String>,
+        registry: &TypeRegistry,
+    ) -> ReloadReport {
         self.entities.clear();
         self.presets.clear();
         self.file_errors.clear();
         let mut files = Vec::new();
         walk(&self.root, &self.root, &mut files);
+        files.extend(sources.keys().cloned());
         files.sort();
+        files.dedup();
         for rel in files {
             if let Some(kind) = classify(&rel) {
-                self.read_layer(&rel, &kind);
+                self.read_layer_source(&rel, &kind, sources.get(&rel));
             }
         }
         let old_ids: Vec<String> = self.resolved.keys().cloned().collect();
@@ -291,7 +315,15 @@ impl DefinitionStore {
     }
 
     fn read_layer(&mut self, rel: &str, kind: &FileKind) {
-        let result = fs::read_to_string(self.root.join(rel))
+        self.read_layer_source(rel, kind, None);
+    }
+
+    fn read_layer_source(&mut self, rel: &str, kind: &FileKind, source: Option<&String>) {
+        let result = source
+            .map_or_else(
+                || fs::read_to_string(self.root.join(rel)),
+                |source| Ok(source.clone()),
+            )
             .map_err(|e| {
                 DataError::new(
                     ErrorKind::Io(format!("cannot read {rel}: {e}")),

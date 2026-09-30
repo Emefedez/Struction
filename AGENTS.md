@@ -20,7 +20,7 @@ Check this table before proceeding with changes. An active claim covers only its
 | Area | Owner | State / scope |
 | --- | --- | --- |
 | Headless editor / AI authoring | **MOON** | Active: `struction_editor` session/history, project inspection and validation, source previews, isolated play, tool commands and readiness tests/docs |
-| Data/world authoring hooks | **MOON** | Active: candidate-source validation in `struction_data`, scene-source provenance and preview editing in `struction_world`; integration tests |
+| Data/world authoring hooks | **MOON** | Landed: read-only candidate-source validation, scene-source provenance and integration tests; 69 data / 22 world tests and Clippy verified |
 | Asset pipeline verification | **MOON** | Landed: 23 tests, including actual Blender import/export, and Clippy verified; implementation predates this verification |
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
 | Character animation integration | **SUN** | Active: character↔`struction_anim` bridge (motion, local up, physics-raycast ground, rig root following the body), animated player in `apps/playground`; small `struction_anim` hook for externally stepped locomotion |
@@ -56,11 +56,11 @@ From the design review's pending recommendations, treated as decided:
 | Area | State |
 | --- | --- |
 | `struction_core` | Done, 53 tests |
-| `struction_data` | Done, 68 tests. Lineage unified with core's `Definition`; reflected grants/reactions available to world integration |
+| `struction_data` | Done, 69 tests. **MOON** added candidate-source validation without disk writes; inherited definitions, presets and source errors verified |
 | gravity / physics / character | Done, 43 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity. Only buoyant volumes cause submersion; camera zones remain dry |
 | `struction_anim` | Done, 52 tests. Spike verdict: go on mechanics (planted feet, planets, hold/gaze/sit); visual quality unproven until rendered. Runtime uses a fixed solve pipeline, not the dataflow graph yet |
 | `struction_ai` | Done, 23 tests. Loading `brain`/`sensing` from definitions and a physics line-of-sight are left to integration |
-| `struction_world` | Spawners, save/load, aliases and boss/minion integration verified with 21 tests. Rejects inconsistent save identities and rename key collisions; renamed/removed spawns keep correct save bookkeeping |
+| `struction_world` | Verified, 22 tests. Spawners, save/load, aliases and boss/minion integration; **MOON** added candidate scene compilation and source provenance for authoring |
 | `struction_assets` | Verified, 23 tests including real Blender 5.2.2 import/export, UVs, collision/LODs, compiled loading and hot reload; Clippy clean |
 | `struction_debug` | Implemented, 5 tests and native trace verified. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
 | `struction_editor` / `apps/editor` | In progress (**MOON**): exposed headless modules, repairing exact-source undo and adding game-aware validation, preview and isolated play. GUI app remains a scaffold |

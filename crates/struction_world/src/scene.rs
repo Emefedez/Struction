@@ -55,6 +55,8 @@ impl ZoneDef {
 
 #[derive(Clone, Debug)]
 pub struct SpawnDef {
+    /// Authored key location for editors and tool diagnostics.
+    pub source: Span,
     /// Key in `spawns`.
     pub name: String,
     pub path: EntityPath,
@@ -71,6 +73,9 @@ pub struct SpawnDef {
 
 #[derive(Clone, Debug)]
 pub struct SpawnerDef {
+    /// Key in the source file’s `spawnerList`.
+    pub name: String,
+    pub source: Span,
     pub path: EntityPath,
     pub zone: EntityPath,
     /// In zone coordinates.
@@ -104,16 +109,35 @@ impl SceneCatalog {
     /// Reads `<root>/scenes/**.jsonc`. Invalid spawners and spawns are left out and reported in
     /// [`Self::errors`]; everything else loads.
     pub fn load(root: &Path, store: &DefinitionStore, types: &TypeRegistry) -> Self {
+        Self::load_with_sources(root, store, types, &BTreeMap::new())
+    }
+
+    /// Compiles candidate scene sources without writing them to disk.
+    pub fn load_with_sources(
+        root: &Path,
+        store: &DefinitionStore,
+        types: &TypeRegistry,
+        sources: &BTreeMap<String, String>,
+    ) -> Self {
         let mut files = Vec::new();
         walk(
             &root.join(SCENES_DIR),
             &format!("{SCENES_DIR}/"),
             &mut files,
         );
+        files.extend(
+            sources
+                .keys()
+                .filter(|file| file.starts_with("scenes/") && file.ends_with(".jsonc"))
+                .map(|file| (file.clone(), root.join(file))),
+        );
         files.sort();
+        files.dedup();
         let mut catalog = Self::default();
         for (rel, full) in files {
-            let parsed = fs::read_to_string(&full)
+            let parsed = sources
+                .get(&rel)
+                .map_or_else(|| fs::read_to_string(&full), |source| Ok(source.clone()))
                 .map_err(|e| DataError::new(ErrorKind::Io(format!("cannot read {rel}: {e}")), None))
                 .and_then(|text| parse_jsonc(&rel, &text));
             match parsed {
@@ -324,6 +348,8 @@ fn read_spawner(member: &Member, errors: &mut Vec<DataError>) -> Result<SpawnerD
         }
     }
     Ok(SpawnerDef {
+        name: member.key.clone(),
+        source: member.key_span.clone(),
         path,
         zone,
         position,
@@ -335,6 +361,7 @@ fn read_spawner(member: &Member, errors: &mut Vec<DataError>) -> Result<SpawnerD
 fn read_spawn(member: &Member, spawner: &EntityPath) -> Result<SpawnDef, DataError> {
     check_name(member, "spawn")?;
     let mut spawn = SpawnDef {
+        source: member.key_span.clone(),
         name: member.key.clone(),
         path: spawner.join(&member.key),
         definition: String::new(),

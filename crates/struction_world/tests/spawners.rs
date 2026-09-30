@@ -297,3 +297,31 @@ fn scene_errors_point_at_the_source() {
     assert!(find(&app, BOSS).is_some());
     assert!(find(&app, "Fortress/Camp/camp/ghost").is_none());
 }
+
+#[test]
+fn candidate_scenes_keep_source_provenance_without_writing_files() {
+    let app = app(&fixture());
+    let store = app.world().resource::<struction_data::DefinitionStore>();
+    let types = app.world().resource::<AppTypeRegistry>().read();
+    let file = "scenes/preview.jsonc";
+    let sources = std::collections::BTreeMap::from([(file.into(), r#"{"spawnerList":{"preview":{"zone":"New","position":[1,2,3],"spawns":{"ogre":{"definition":"minions/ogre","offset":[4,0,0]}}}}}"#.into())]);
+    let scenes = SceneCatalog::load_with_sources(store.root(), store, &types, &sources);
+    assert!(scenes.errors().is_empty(), "{:?}", scenes.errors());
+    let spawner = scenes.spawner(&"New/preview".into()).unwrap();
+    assert_eq!(spawner.name, "preview");
+    assert_eq!(spawner.source.file.as_ref(), file);
+    assert_eq!(spawner.spawns[0].source.file.as_ref(), file);
+    assert_eq!(
+        spawner
+            .spawn_transform(&Transform::IDENTITY, &spawner.spawns[0])
+            .translation,
+        Vec3::new(5.0, 2.0, 3.0)
+    );
+    assert!(!store.root().join(file).exists());
+    assert!(
+        app.world()
+            .resource::<SceneCatalog>()
+            .spawner(&"New/preview".into())
+            .is_none()
+    );
+}

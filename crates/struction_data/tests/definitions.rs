@@ -276,3 +276,58 @@ fn instances_get_components_and_lineage() {
     }
     assert!(!definition.descends_from(&"minions/ogre_lord".into()));
 }
+
+#[test]
+fn candidate_sources_resolve_inheritance_and_presets_without_mutating_the_store() {
+    use std::collections::BTreeMap;
+    let (store, registry) = open_fixture();
+    let candidate = store.preview_sources(&BTreeMap::from([
+        ("minions/ogre/entity.jsonc".into(), r#"{"descendsFrom":"Actor","presets":["flammable"],"components":{"Health":{"current":17},"Stats":{"strength":9,"agility":2}}}"#.into()),
+        ("presets/flammable.jsonc".into(), r#"{"components":{"Flammable":{"ignition_temperature":999}}}"#.into()),
+        ("minions/new/entity.jsonc".into(), r#"{"descendsFrom":"minions/ogre"}"#.into()),
+    ]), &registry);
+    assert!(candidate.errors().is_empty(), "{:?}", candidate.errors());
+    assert_eq!(
+        candidate
+            .get("minions/small_ogre")
+            .unwrap()
+            .component::<Health>()
+            .unwrap()
+            .current,
+        17.0
+    );
+    assert_eq!(
+        candidate
+            .get("minions/new")
+            .unwrap()
+            .component::<Flammable>()
+            .unwrap()
+            .ignition_temperature,
+        999.0
+    );
+    assert_eq!(
+        store
+            .get("minions/ogre")
+            .unwrap()
+            .component::<Health>()
+            .unwrap()
+            .current,
+        60.0
+    );
+    assert!(store.get("minions/new").is_none());
+    assert!(!store.root().join("minions/new/entity.jsonc").exists());
+    let bad = store.preview_sources(
+        &BTreeMap::from([("minions/new/entity.jsonc".into(), "{\n broken".into())]),
+        &registry,
+    );
+    let errors = bad.errors();
+    let location = errors
+        .iter()
+        .find_map(|e| {
+            e.location
+                .as_ref()
+                .filter(|l| l.file.as_ref() == "minions/new/entity.jsonc")
+        })
+        .unwrap();
+    assert_eq!(location.line, 2);
+}
