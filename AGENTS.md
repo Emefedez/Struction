@@ -11,7 +11,8 @@ Working notes for coding agents (Claude, Codex) implementing Struction. The desi
 - Match the surrounding code: sparse comments explaining why, no speculative abstractions (README "Scope").
 - AI tools are first-class authoring clients. Expose inspection, validation and edits through headless APIs over structured data; editor UI must call the same operations. Preserve comments, stable identities, actionable source errors and undoable changes. Do not make game authoring depend on GUI automation.
 - Commit often with focused messages, staging only the files you touched (several agents share one checkout). Update the status table below when a milestone step lands.
-- Before editing, read the Work ownership table and check `git status`. Claim the area under your agent name, including its scope; do not overwrite another active owner's work. Coordinate overlapping changes first. Update the entry when work lands or is handed off, and record who implemented or verified each status update. This agent is **MOON**.
+- Before editing, read the Work ownership table and check `git status`. Claim the area under your agent name, including its scope; do not overwrite another active owner's work. Coordinate overlapping changes first. Update the entry when work lands or is handed off, and record who implemented or verified each status update. One agent is **MOON**, the other is **SUN**.
+
 
 ## Work ownership
 
