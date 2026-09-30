@@ -3,16 +3,14 @@
 //! per drag, so the view never owns positions itself.
 use std::collections::HashMap;
 
+use crate::state::{Command, Editor, Selected};
+use crate::ui::Typing;
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     prelude::*,
     window::PrimaryWindow,
 };
 use bevy_egui::input::EguiWantsInput;
-use serde_json::Value;
-
-use crate::state::{Command, Editor, Selected, entity_key, quat, vec3};
-use crate::ui::Typing;
 
 /// The 3D camera whose viewport fills the space the panels leave.
 #[derive(Component)]
@@ -162,9 +160,11 @@ fn frame_project(
         return;
     }
     framed.clone_from(&editor.root);
-    let instances = editor.entities.iter().filter(|e| is_instance(e));
-    let positions: Vec<Vec3> = instances
-        .filter_map(|entity| vec3(&entity["position"]))
+    let positions: Vec<Vec3> = editor
+        .entities
+        .iter()
+        .filter(|entity| entity.is_instance())
+        .filter_map(|entity| entity.position)
         .collect();
     if positions.is_empty() {
         *orbit = Orbit::default();
@@ -189,7 +189,7 @@ fn focus_selection(
         return;
     }
     if let Some(Selected::Entity(target)) = &editor.selected
-        && let Some(position) = editor.entity(target).and_then(|e| vec3(&e["position"]))
+        && let Some(position) = editor.entity(target).and_then(|e| e.position)
     {
         orbit.focus = position + Vec3::Y * MARKER_HEIGHT / 2.0;
         orbit.distance = orbit.distance.min(10.0);
@@ -271,11 +271,6 @@ fn point_hit(ray: Ray3d, position: Vec3) -> Option<f32> {
     (ray.get_point(t).distance(position) <= POINT_RADIUS).then_some(t)
 }
 
-/// Definition instances get a body; zones and spawners are placement frames.
-fn is_instance(entity: &Value) -> bool {
-    entity["definition"].is_string()
-}
-
 #[allow(clippy::too_many_arguments)]
 fn pick_and_drag(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -331,23 +326,27 @@ fn pick_and_drag(
         .entities
         .iter()
         .filter_map(|entity| {
-            let position = vec3(&entity["position"])?;
-            let rotation = quat(&entity["rotation"]).unwrap_or_default();
-            let scale = vec3(&entity["scale"]).unwrap_or(Vec3::ONE);
-            let t = if is_instance(entity) {
-                marker_hit(ray, position, rotation, scale)?
+            let transform = entity.transform()?;
+            let t = if entity.is_instance() {
+                marker_hit(
+                    ray,
+                    transform.translation,
+                    transform.rotation,
+                    transform.scale,
+                )?
             } else {
-                point_hit(ray, position)?
+                point_hit(ray, transform.translation)?
             };
-            Some((t, entity_key(entity).to_owned(), position, entity))
+            Some((t, entity))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0));
-    let Some((_, key, position, entity)) = hit else {
+    let Some((_, entity)) = hit else {
         editor.apply(Command::Select(None));
         return;
     };
+    let (key, position) = (entity.key().to_owned(), entity.position.unwrap_or_default());
     // Only named spawns have an authored offset to move.
-    let movable = !editor.playing() && entity["source"]["path"].as_array().map(Vec::len) == Some(4);
+    let movable = !editor.playing() && entity.is_named_spawn();
     editor.apply(Command::Select(Some(Selected::Entity(key.clone()))));
     if movable {
         // Shift drags height on a plane facing the camera; otherwise along the ground.
@@ -394,17 +393,13 @@ fn sync_markers(
     let mut wanted: HashMap<&str, (Transform, Handle<StandardMaterial>)> = editor
         .entities
         .iter()
-        .filter(|entity| is_instance(entity))
+        .filter(|entity| entity.is_instance())
         .filter_map(|entity| {
-            let key = entity_key(entity);
-            let transform = Transform {
-                translation: vec3(&entity["position"])?,
-                rotation: quat(&entity["rotation"]).unwrap_or_default(),
-                scale: vec3(&entity["scale"]).unwrap_or(Vec3::ONE),
-            };
+            let key = entity.key();
+            let transform = entity.transform()?;
             let material = if editor.selected == Some(Selected::Entity(key.to_owned())) {
                 &assets.selected
-            } else if entity["disabled"].as_bool() == Some(true) {
+            } else if entity.disabled {
                 &assets.disabled
             } else {
                 &assets.idle
@@ -442,18 +437,18 @@ fn draw_guides(editor: NonSend<Editor>, mut gizmos: Gizmos) {
         Color::srgba(1.0, 1.0, 1.0, 0.06),
     );
     let flat = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
-    for entity in editor.entities.iter().filter(|e| !is_instance(e)) {
-        let Some(position) = vec3(&entity["position"]) else {
+    for entity in editor.entities.iter().filter(|e| !e.is_instance()) {
+        let Some(Transform {
+            translation: position,
+            rotation,
+            ..
+        }) = entity.transform()
+        else {
             continue;
         };
-        let rotation = quat(&entity["rotation"]).unwrap_or_default();
         let color = Color::srgba(0.55, 0.58, 0.63, 0.8);
         // Spawners (with a source) are diamonds; zones are squares.
-        let turn = if entity["source"].is_null() {
-            0.0
-        } else {
-            0.785
-        };
+        let turn = if entity.source.is_none() { 0.0 } else { 0.785 };
         let frame = Isometry3d::new(position, rotation * Quat::from_rotation_y(turn) * flat);
         gizmos.rect(frame, Vec2::splat(POINT_RADIUS * 1.6), color);
         gizmos.arrow(position, position + rotation * Vec3::Z * 0.9, color);
@@ -461,7 +456,7 @@ fn draw_guides(editor: NonSend<Editor>, mut gizmos: Gizmos) {
     let Some(Selected::Entity(target)) = &editor.selected else {
         return;
     };
-    let Some(position) = editor.entity(target).and_then(|e| vec3(&e["position"])) else {
+    let Some(position) = editor.entity(target).and_then(|e| e.position) else {
         return;
     };
     let axes = [

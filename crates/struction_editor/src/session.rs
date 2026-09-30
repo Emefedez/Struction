@@ -98,6 +98,23 @@ pub fn revision(text: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// A synced temporary file holding `text` in the directory of `path`, ready to persist there.
+fn stage(path: &Path, text: &str) -> std::io::Result<tempfile::NamedTempFile> {
+    let mut staged =
+        tempfile::NamedTempFile::new_in(path.parent().expect("project-relative file"))?;
+    staged.write_all(text.as_bytes())?;
+    staged.as_file().sync_all()?;
+    Ok(staged)
+}
+
+/// What each file would contain once `sources` are written, for validation.
+fn candidates(sources: &BTreeMap<String, SourceChange>) -> BTreeMap<String, String> {
+    sources
+        .iter()
+        .map(|(file, change)| (file.clone(), change.after.clone()))
+        .collect()
+}
+
 fn io(file: &str, source: std::io::Error) -> SessionError {
     SessionError::Io {
         file: file.into(),
@@ -211,7 +228,7 @@ impl EditSession {
         request: EditRequest,
         validate: impl FnOnce(&BTreeMap<String, String>) -> Result<(), Vec<DataError>>,
     ) -> Result<Applied, SessionError> {
-        match request {
+        let (file, path, label, group, revision, value) = match request {
             EditRequest::Set {
                 file,
                 path,
@@ -219,34 +236,26 @@ impl EditSession {
                 label,
                 group,
                 revision,
-            } => {
-                let path: Vec<_> = path.iter().map(PathSegment::from).collect();
-                self.change(
-                    &file,
-                    &label,
-                    group.as_deref(),
-                    revision.as_deref(),
-                    |text| edit::set_value(text, &path, value),
-                    validate,
-                )
-            }
+            } => (file, path, label, group, revision, Some(value)),
             EditRequest::Remove {
                 file,
                 path,
                 label,
                 revision,
-            } => {
-                let path: Vec<_> = path.iter().map(PathSegment::from).collect();
-                self.change(
-                    &file,
-                    &label,
-                    None,
-                    revision.as_deref(),
-                    |text| edit::remove_value(text, &path),
-                    validate,
-                )
-            }
-        }
+            } => (file, path, label, None, revision, None),
+        };
+        let path: Vec<_> = path.iter().map(PathSegment::from).collect();
+        self.change(
+            &file,
+            &label,
+            group.as_deref(),
+            revision.as_deref(),
+            |text| match value {
+                Some(value) => edit::set_value(text, &path, value),
+                None => edit::remove_value(text, &path),
+            },
+            validate,
+        )
     }
 
     fn change(
@@ -282,13 +291,7 @@ impl EditSession {
                 after: edited.text,
             },
         )]);
-        validate(
-            &sources
-                .iter()
-                .map(|(file, change)| (file.clone(), change.after.clone()))
-                .collect(),
-        )
-        .map_err(SessionError::Validation)?;
+        validate(&candidates(&sources)).map_err(SessionError::Validation)?;
         self.write_sources(&sources)?;
         self.history.record_source(
             label,
@@ -305,18 +308,15 @@ impl EditSession {
         })
     }
 
+    /// `text` in a temporary file beside the existing `file`, with its permissions.
     fn staged(&self, file: &str, text: &str) -> Result<tempfile::NamedTempFile, SessionError> {
         let path = self.path_of(file)?;
-        let mut staged =
-            tempfile::NamedTempFile::new_in(path.parent().expect("project-relative file"))
-                .map_err(|e| io(file, e))?;
         let permissions = fs::metadata(&path).map_err(|e| io(file, e))?.permissions();
+        let staged = stage(&path, text).map_err(|e| io(file, e))?;
         staged
             .as_file()
             .set_permissions(permissions)
             .map_err(|e| io(file, e))?;
-        staged.write_all(text.as_bytes()).map_err(|e| io(file, e))?;
-        staged.as_file().sync_all().map_err(|e| io(file, e))?;
         Ok(staged)
     }
 
@@ -407,38 +407,37 @@ impl EditSession {
             return Err(SessionError::Playing);
         }
         self.check_external_changes();
-        let mut next = self.history.clone();
-        let Some(transaction) = (if redo { next.redo() } else { next.undo() }) else {
+        self.history.close_group();
+        let next = if redo {
+            self.history.next_redo()
+        } else {
+            self.history.next_undo()
+        };
+        let Some(transaction) = next else {
             return Ok(None);
         };
+        let label = transaction.label.clone();
         let sources: BTreeMap<_, _> = transaction
             .sources
-            .into_iter()
+            .iter()
             .map(|(file, source)| {
-                (
-                    file,
-                    if redo {
-                        source
-                    } else {
-                        SourceChange {
-                            before: source.after,
-                            after: source.before,
-                        }
-                    },
-                )
+                let change = if redo {
+                    source.clone()
+                } else {
+                    source.reversed()
+                };
+                (file.clone(), change)
             })
             .collect();
-        validate(
-            &sources
-                .iter()
-                .map(|(file, change)| (file.clone(), change.after.clone()))
-                .collect(),
-        )
-        .map_err(SessionError::Validation)?;
+        validate(&candidates(&sources)).map_err(SessionError::Validation)?;
         self.write_sources(&sources)?;
-        self.history = next;
+        if redo {
+            self.history.redo();
+        } else {
+            self.history.undo();
+        }
         Ok(Some(Applied {
-            label: transaction.label,
+            label,
             files: sources.into_keys().collect(),
         }))
     }
@@ -471,12 +470,8 @@ impl EditSession {
         let path = self.path_of(file)?;
         fs::create_dir_all(path.parent().expect("project-relative file"))
             .map_err(|e| io(file, e))?;
-        let mut output =
-            tempfile::NamedTempFile::new_in(path.parent().expect("project-relative file"))
-                .map_err(|e| io(file, e))?;
-        output.write_all(text.as_bytes()).map_err(|e| io(file, e))?;
-        output.as_file().sync_all().map_err(|e| io(file, e))?;
-        output
+        stage(&path, text)
+            .map_err(|e| io(file, e))?
             .persist_noclobber(path)
             .map_err(|e| io(file, e.error))?;
         self.known.insert(file.into(), revision(text));
@@ -628,7 +623,9 @@ mod tests {
         let outside = OGRE.replace("60.0", "65.0");
         fs::write(dir.path().join(FILE), &outside).unwrap();
         assert_eq!(session.check_external_changes(), vec![FILE.to_owned()]);
-        assert_eq!(session.history().files(), vec!["other.jsonc".to_owned()]);
+        let history = session.history();
+        assert_eq!(history.undo_stack().len(), 1);
+        assert_eq!(history.undo_stack()[0].files(), ["other.jsonc"]);
 
         // Undo only reaches the other file; the outside text stays.
         session.undo().unwrap().unwrap();

@@ -1,6 +1,6 @@
 //! Panels around the viewport. Widgets read the editor snapshot and emit `Command`s, applied
 //! after the pass, so every change goes through the shared authoring operations.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
@@ -12,11 +12,9 @@ use bevy_egui::{
     },
 };
 use serde_json::Value;
-use struction_editor::{Diagnostic, EditRequest, Field};
+use struction_editor::{Diagnostic, EditRequest, EntityEntry, Field};
 
-use crate::state::{
-    Command, Editor, Inspection, Selected, definition_file, entity_key, lookup, quat, vec3,
-};
+use crate::state::{Command, Editor, Inspection, Selected, definition_file, lookup};
 use crate::theme;
 use crate::viewport::SceneCamera;
 
@@ -276,7 +274,7 @@ fn welcome(root: &mut Ui, free: egui::Rect, drafts: &mut Drafts, commands: &mut 
 /// Authored paths form a tree; zones and spawners without an entity appear as folders.
 #[derive(Default)]
 struct Node<'a> {
-    entity: Option<&'a Value>,
+    entity: Option<&'a EntityEntry>,
     children: BTreeMap<&'a str, Node<'a>>,
 }
 
@@ -290,7 +288,7 @@ fn hierarchy(ui: &mut Ui, editor: &Editor, drafts: &mut Drafts, commands: &mut V
     let mut tree = Node::default();
     let mut runtime = Vec::new();
     for entity in &editor.entities {
-        let Some(path) = entity["path"].as_str() else {
+        let Some(path) = entity.path.as_deref() else {
             runtime.push(entity);
             continue;
         };
@@ -307,7 +305,7 @@ fn hierarchy(ui: &mut Ui, editor: &Editor, drafts: &mut Drafts, commands: &mut V
             tree_node(ui, name, node, editor, commands);
         }
         for entity in runtime {
-            entity_row(ui, entity_key(entity), entity, editor, commands);
+            entity_row(ui, entity.key(), entity, editor, commands);
         }
 
         ui.add_space(14.0);
@@ -359,7 +357,7 @@ fn tree_node(ui: &mut Ui, name: &str, node: &Node, editor: &Editor, commands: &m
         }
         return;
     }
-    let id = ui.make_persistent_id(("tree", name, node.entity.map(entity_key)));
+    let id = ui.make_persistent_id(("tree", name, node.entity.map(EntityEntry::key)));
     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
         .show_header(ui, |ui| match node.entity {
             Some(entity) => entity_row(ui, name, entity, editor, commands),
@@ -377,18 +375,18 @@ fn tree_node(ui: &mut Ui, name: &str, node: &Node, editor: &Editor, commands: &m
 fn entity_row(
     ui: &mut Ui,
     name: &str,
-    entity: &Value,
+    entity: &EntityEntry,
     editor: &Editor,
     commands: &mut Vec<Command>,
 ) {
-    let key = entity_key(entity).to_owned();
+    let key = entity.key().to_owned();
     let selected = editor.selected == Some(Selected::Entity(key.clone()));
     let mut text = RichText::new(name);
-    if entity["disabled"].as_bool() == Some(true) {
+    if entity.disabled {
         text = text.color(theme::MUTED).italics();
     }
     let row = ui.selectable_label(selected, text);
-    let row = match entity["definition"].as_str() {
+    let row = match &entity.definition {
         Some(definition) => row.on_hover_text(definition),
         None => row,
     };
@@ -415,7 +413,7 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, commands: &mut Vec<Command>) {
             spawn,
             overrides,
         } => {
-            let key = entity_key(entry);
+            let key = entry.key();
             ui.heading(key.rsplit('/').next().unwrap_or(key));
             ui.label(RichText::new(key).monospace().small().color(theme::MUTED));
             ui.add_space(6.0);
@@ -423,28 +421,26 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, commands: &mut Vec<Command>) {
                 .num_columns(2)
                 .spacing([12.0, 4.0])
                 .show(ui, |ui| {
-                    if let Some(definition) = entry["definition"].as_str() {
+                    if let Some(definition) = &entry.definition {
                         fact(ui, "Definition");
                         if ui.link(definition).clicked() {
                             commands.push(Command::Select(Some(Selected::Definition(
-                                definition.to_owned(),
+                                definition.clone(),
                             ))));
                         }
                         ui.end_row();
                     }
-                    if let Some(source) = entry["source"].as_object() {
+                    if let Some(source) = &entry.source {
                         fact(ui, "Source");
-                        let file = source["file"].as_str().unwrap_or_default();
-                        let line = source["line"].as_u64().unwrap_or_default();
-                        mono(ui, &format!("{file}:{line}"));
+                        mono(ui, &format!("{}:{}", source.file, source.line));
                         ui.end_row();
                     }
-                    if let Some(id) = entry["stable_id"].as_str() {
+                    if let Some(id) = &entry.stable_id {
                         fact(ui, "Stable id");
                         mono(ui, id);
                         ui.end_row();
                     }
-                    if let Some(master) = entry["master"].as_str() {
+                    if let Some(master) = &entry.master {
                         fact(ui, "Master");
                         mono(ui, master);
                         ui.end_row();
@@ -454,10 +450,10 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, commands: &mut Vec<Command>) {
 
             let editable = spawn.is_some() && !playing;
             section(ui, "Transform", |ui| {
-                if let Some(position) = vec3(&entry["position"]) {
-                    let edited = vector_row(ui, "Position", position, editable, 0.05);
+                if let Some(current) = entry.position {
+                    let edited = vector_row(ui, "Position", current, editable, 0.05);
                     if let Some((position, done)) = edited {
-                        if position != vec3(&entry["position"]).unwrap_or(position) {
+                        if position != current {
                             commands.push(Command::Move {
                                 path: key.to_owned(),
                                 position,
@@ -469,7 +465,7 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, commands: &mut Vec<Command>) {
                         }
                     }
                 }
-                if let Some(rotation) = quat(&entry["rotation"]) {
+                if let Some(rotation) = entry.rotation {
                     let (y, x, z) = rotation.to_euler(EulerRot::YXZ);
                     // Rounded, and plus zero, so float noise does not show as -0.000.
                     let degrees = (Vec3::new(x, y, z) * 180_000.0 / std::f32::consts::PI).round()
@@ -477,7 +473,7 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, commands: &mut Vec<Command>) {
                         + Vec3::ZERO;
                     vector_row(ui, "Rotation", degrees, false, 0.0);
                 }
-                if let Some(scale) = vec3(&entry["scale"]) {
+                if let Some(scale) = entry.scale {
                     vector_row(ui, "Scale", scale, false, 0.0);
                 }
                 if !editable && !playing {
@@ -758,15 +754,11 @@ fn leaf_widget(ui: &mut Ui, value: &Value, field: &[Field], width: f32) -> Optio
         Value::Array(items) if is_vector(items) => {
             let vector: Vec<f32> = items
                 .iter()
-                .filter_map(|v| v.as_f64())
+                .filter_map(Value::as_f64)
                 .map(|v| v as f32)
                 .collect();
-            let mut padded = [0.0; 3];
-            for (slot, value) in padded.iter_mut().zip(&vector) {
-                *slot = *value;
-            }
-            if vector.len() == 3 {
-                return vector_fields(ui, Vec3::from(padded), true, 0.05, width)
+            if let Ok(vector) = <[f32; 3]>::try_from(vector.as_slice()) {
+                return vector_fields(ui, Vec3::from(vector), true, 0.05, width)
                     .map(|(v, done)| (Value::from(v.to_array().to_vec()), done));
             }
             ui.label(RichText::new(format!("{vector:?}")).monospace());
@@ -906,19 +898,8 @@ fn problems(ui: &mut Ui, editor: &Editor, commands: &mut Vec<Command>) {
             ui.label(RichText::new("All sources are valid.").color(theme::MUTED));
         }
         let error = ui.visuals().error_fg_color;
-        let unique: BTreeSet<_> = editor
-            .diagnostics
-            .iter()
-            .map(|d| (d.file.clone(), d.line, d.column, d.message.clone()))
-            .collect();
-        for (file, line, column, message) in unique {
-            let diagnostic = Diagnostic {
-                message,
-                file,
-                line,
-                column,
-            };
-            diagnostic_row(ui, &diagnostic, error, editor, commands);
+        for diagnostic in &editor.diagnostics {
+            diagnostic_row(ui, diagnostic, error, editor, commands);
         }
     });
 }

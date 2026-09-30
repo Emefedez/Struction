@@ -14,6 +14,16 @@ pub struct SourceChange {
     pub after: String,
 }
 
+impl SourceChange {
+    /// The change that undoes this one.
+    pub fn reversed(&self) -> Self {
+        Self {
+            before: self.after.clone(),
+            after: self.before.clone(),
+        }
+    }
+}
+
 /// One field edit in one project file (project-relative path with `/` separators).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Change {
@@ -22,13 +32,6 @@ pub struct Change {
 }
 
 impl Change {
-    pub fn inverse(&self) -> Change {
-        Change {
-            file: self.file.clone(),
-            edit: self.edit.inverse(),
-        }
-    }
-
     fn is_noop(&self) -> bool {
         self.edit.previous == self.edit.next
     }
@@ -43,11 +46,6 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// The changes that revert this transaction, in the order to apply them.
-    pub fn inverse(&self) -> Vec<Change> {
-        self.changes.iter().rev().map(Change::inverse).collect()
-    }
-
     pub fn touches(&self, file: &str) -> bool {
         self.sources.contains_key(file) || self.changes.iter().any(|c| c.file == file)
     }
@@ -112,9 +110,6 @@ impl History {
             return;
         }
         self.close_group();
-        if group.is_none() && change.is_noop() {
-            return;
-        }
         self.undo.push(Transaction {
             label: label.to_owned(),
             changes: vec![change],
@@ -170,31 +165,30 @@ impl History {
         self.open_group.is_some()
     }
 
-    /// Takes the transaction to revert and moves it to the redo stack. The caller applies
-    /// [`Transaction::inverse`]; if that fails it calls [`Self::discard_redo`].
-    pub fn undo(&mut self) -> Option<Transaction> {
+    /// The transaction [`Self::undo`] would revert. Close the group first to see past it.
+    pub fn next_undo(&self) -> Option<&Transaction> {
+        self.undo.last()
+    }
+
+    /// The transaction [`Self::redo`] would re-apply.
+    pub fn next_redo(&self) -> Option<&Transaction> {
+        self.redo.last()
+    }
+
+    /// Moves the transaction to revert to the redo stack, once the caller reverted its sources.
+    pub fn undo(&mut self) -> Option<&Transaction> {
         self.close_group();
         let transaction = self.undo.pop()?;
-        self.redo.push(transaction.clone());
-        Some(transaction)
+        self.redo.push(transaction);
+        self.redo.last()
     }
 
-    /// Takes the transaction to re-apply and moves it back to the undo stack.
-    pub fn redo(&mut self) -> Option<Transaction> {
+    /// Moves the transaction to re-apply back to the undo stack, once the caller re-applied it.
+    pub fn redo(&mut self) -> Option<&Transaction> {
         self.close_group();
         let transaction = self.redo.pop()?;
-        self.undo.push(transaction.clone());
-        Some(transaction)
-    }
-
-    /// Drops the transaction that the last [`Self::undo`] moved, when reverting it failed.
-    pub fn discard_redo(&mut self) {
-        self.redo.pop();
-    }
-
-    /// Drops the transaction that the last [`Self::redo`] moved, when re-applying it failed.
-    pub fn discard_undo(&mut self) {
-        self.undo.pop();
+        self.undo.push(transaction);
+        self.undo.last()
     }
 
     /// Forgets every transaction touching `file`, on both stacks. A file changed outside the
@@ -208,12 +202,6 @@ impl History {
         self.undo.retain(|t| !t.touches(file));
         self.redo.retain(|t| !t.touches(file));
         before - self.undo.len() - self.redo.len()
-    }
-
-    pub fn clear(&mut self) {
-        self.undo.clear();
-        self.redo.clear();
-        self.open_group = None;
     }
 
     pub fn can_undo(&self) -> bool {
@@ -240,19 +228,6 @@ impl History {
     /// Redo stack, next to redo last.
     pub fn redo_stack(&self) -> &[Transaction] {
         &self.redo
-    }
-
-    /// Files with recorded changes on either stack.
-    pub fn files(&self) -> Vec<String> {
-        let mut files: Vec<String> = self
-            .undo
-            .iter()
-            .chain(&self.redo)
-            .flat_map(Transaction::files)
-            .collect();
-        files.sort();
-        files.dedup();
-        files
     }
 }
 
@@ -281,14 +256,11 @@ mod tests {
         history.record("b", change("f", "y", None, Some(json!(3))), None);
         assert_eq!(history.undo_label(), Some("b"));
 
-        let undone = history.undo().unwrap();
-        assert_eq!(undone.label, "b");
-        assert_eq!(undone.inverse()[0].edit.next, None);
+        assert_eq!(history.undo().unwrap().label, "b");
         assert_eq!(history.redo_label(), Some("b"));
         assert_eq!(history.undo_label(), Some("a"));
 
-        let redone = history.redo().unwrap();
-        assert_eq!(redone.label, "b");
+        assert_eq!(history.redo().unwrap().label, "b");
         assert!(!history.can_redo());
     }
 
@@ -321,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn a_group_merges_per_field_and_keeps_order_for_undo() {
+    fn a_group_merges_per_field_in_order_of_first_touch() {
         let mut history = History::default();
         history.record(
             "g",
@@ -334,13 +306,12 @@ mod tests {
             change("s", "a", Some(json!(1)), Some(json!(2))),
             Some("k"),
         );
-        let undone = history.undo().unwrap();
-        let inverse = undone.inverse();
-        assert_eq!(inverse.len(), 2);
-        // Reverted in reverse order of first touch: b, then a.
-        assert_eq!(inverse[0].edit.path, parse_path("b"));
-        assert_eq!(inverse[0].edit.next, None);
-        assert_eq!(inverse[1].edit.next, Some(json!(0)));
+        let changes = &history.undo().unwrap().changes;
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].edit.path, parse_path("a"));
+        assert_eq!(changes[0].edit.previous, Some(json!(0)));
+        assert_eq!(changes[0].edit.next, Some(json!(2)));
+        assert_eq!(changes[1].edit.path, parse_path("b"));
     }
 
     #[test]
@@ -406,7 +377,7 @@ mod tests {
         assert_eq!(history.invalidate_file("one"), 2);
         assert_eq!(history.undo_label(), Some("b"));
         assert!(!history.can_redo());
-        assert_eq!(history.files(), vec!["two".to_owned()]);
+        assert_eq!(history.undo_stack()[0].files(), ["two"]);
     }
 
     #[test]
