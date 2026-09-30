@@ -23,7 +23,7 @@ Check this table before proceeding with changes. An active claim covers only its
 | Data/world authoring hooks | **MOON** | Landed: read-only candidate-source validation, scene-source provenance and integration tests; 69 data / 22 world tests and Clippy verified |
 | Asset pipeline verification | **MOON** | Landed: 23 tests, including actual Blender import/export, and Clippy verified; implementation predates this verification |
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
-| Planet gravity and camera obstruction | **SUN** (from **MOON**) | Active, handed to SUN while MOON is away; MOON's uncommitted work is being verified and finished as-is: gravity entry/exit hysteresis and escape tests; separate playground occlusion module for transparent blocking ground. SUN retains rig/animation work in playground; only minimal camera module wiring and planet tuning will overlap |
+| Planet gravity and camera obstruction | **SUN** (from **MOON**) | Landed: MOON implemented gravity entry/exit hysteresis, simulation-owned `GravityPose`, `camera_obstructions` and the playground ground-fade module; SUN verified them (tests, Clippy, native traced run), and fixed the controller judging leaving the ground along up, which made walking on the planet and up ramps read as airborne |
 | Character animation integration | **SUN** | Landed (implemented and verified by **SUN**): `CharacterAnimationPlugin` bridge, `CustomGround` hook, slope fixes in the controller and locomotion, animated player and working HUD in `apps/playground`; native Vulkan smoke run verified |
 
 ## Adopted decisions
@@ -58,25 +58,26 @@ From the design review's pending recommendations, treated as decided:
 | --- | --- |
 | `struction_core` | Done, 53 tests |
 | `struction_data` | Done, 69 tests. **MOON** added candidate-source validation without disk writes; inherited definitions, presets and source errors verified |
-| gravity / physics / character | Done, 49 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity. Only buoyant volumes cause submersion; camera zones remain dry. Grounded characters hold on walkable slopes (friction-scaled). `CharacterAnimationPlugin` drives `struction_anim` rigs with physics-raycast feet (**SUN**) |
+| gravity / physics / character | Done, 54 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity. Only buoyant volumes cause submersion; camera zones remain dry. Grounded characters hold on walkable slopes (friction-scaled) and judge leaving the ground along its normal. Gravity fields support exit hysteresis and sample simulation poses (**MOON**); `camera_obstructions` reports blockers of a camera's view (**MOON**). `CharacterAnimationPlugin` drives `struction_anim` rigs with physics-raycast feet (**SUN**) |
 | `struction_anim` | Done, 54 tests. Spike verdict: go on mechanics (planted feet, planets, hold/gaze/sit); rendered in the playground, looks still rough (see follow-ups). Runtime uses a fixed solve pipeline, not the dataflow graph yet. `CustomGround` lets bridges step locomotion with their own ground; feet no longer re-step at the reach limit on slopes (**SUN**) |
 | `struction_ai` | Done, 23 tests. Loading `brain`/`sensing` from definitions and a physics line-of-sight are left to integration |
 | `struction_world` | Verified, 22 tests. Spawners, save/load, aliases and boss/minion integration; **MOON** added candidate scene compilation and source provenance for authoring |
 | `struction_assets` | Verified, 23 tests including real Blender 5.2.2 import/export, UVs, collision/LODs, compiled loading and hot reload; Clippy clean |
 | `struction_debug` | Implemented, 5 tests and native trace verified. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
 | `struction_editor` / `apps/editor` | Headless foundation verified by **MOON**, 32 tests and native JSONL smoke. Shared validation, source/history, hierarchy/inspection, world-space moves, templates and isolated play. GUI app remains a scaffold |
-| `apps/playground` | Milestone 1 scene runnable with a procedurally walking humanoid player; HUD renders (`bevy_ui_render`, `default_font`) (**SUN**). Water surface replaces overlapping transparent box; camera-relative movement and overhead orientation covered by 2 tests; native Vulkan smoke run verified |
+| `apps/playground` | Milestone 1 scene runnable with a procedurally walking humanoid player; HUD renders (`bevy_ui_render`, `default_font`) (**SUN**). Water surface replaces overlapping transparent box; camera-relative movement, overhead orientation, planet escape/walking and ground fading covered by 5 tests; planet field ends 1 m above the surface with a 0.5 m exit margin; native Vulkan smoke run verified |
 
 ## Follow-ups
 
 - Brain arguments use tagged values (`{ "Float": 0.25 }`); switch to plain JSON values typed by the condition/action parameter metadata.
 - Animation looks: foot roll, hip sway, arm swing, longer strides (~110 steps/min), knee limits, turning in place.
 - Hot reload of a master's `grantsToWards` does not update existing wards.
+- Playground camera: walking up the planet's near side, the follow camera can sink under the approach floor; the ground fade then hides every surface and the player floats in a void. Pull the camera in toward the focus when the ground itself blocks it, and keep fading for thin occluders.
 - World/physics integration must derive moving cells from simulation `Position` instead of interpolated `Transform`. Streaming still needs persistence of unloaded spawners that have not run yet; current saves record spawners after their first run.
 
 ## Next
 
-1. Shared headless editor gate passed (**MOON**); resolve reported planet gravity/camera issues before beginning the first egui hierarchy, inspector, move gizmo and play controls. See `docs/authoring.md`.
+1. Shared headless editor gate passed (**MOON**); planet gravity/camera fixes landed (**MOON**, verified by **SUN**). Begin the first egui hierarchy, inspector, move gizmo and play controls. See `docs/authoring.md`.
 2. Playground: integrate animation, AI and authored encounters through `struction_world`, then hot reload and the rest of the README validation scene.
 3. Editor (milestone 4): build egui on `AuthoringProject`; extend the same headless operations for rotation/scale, source rename/delete and further authoring tools.
 4. Menus as entities; package validation (planetary gravity as an external package, milestone 7); streaming (milestone 8).
