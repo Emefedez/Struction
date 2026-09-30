@@ -60,6 +60,12 @@ pub enum BlenderError {
     Timeout { timeout: Duration, output: String },
     #[error("Blender finished but wrote no output file:\n{output}")]
     NoOutput { output: String },
+    #[error("could not move the generated file into place at {path:?}: {source}")]
+    Move {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// A compiled file that cannot be read by this build.

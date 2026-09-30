@@ -93,14 +93,22 @@ impl Blender {
 
     /// Runs a generator script that builds an asset from code and saves it to
     /// `output` (`.blend`, or glTF when the script exports one). The script
-    /// receives the absolute output path as its only argument after `--`.
+    /// receives an absolute path after `--`: a sibling of `output` with the same
+    /// extension, renamed over `output` on success so watchers never see a
+    /// missing or partial file.
     pub fn run_generator(&self, script: &Path, output: &Path) -> Result<String, BlenderError> {
         let output = absolute(output);
-        let _ = std::fs::remove_file(&output);
-        let log = self.run_script(&absolute(script), &[output.clone().into()])?;
-        if !output.is_file() {
+        let name = output.file_name().unwrap_or_default().to_string_lossy();
+        let building = output.with_file_name(format!(".building-{name}"));
+        let _ = std::fs::remove_file(&building);
+        let log = self.run_script(&absolute(script), &[building.clone().into()])?;
+        if !building.is_file() {
             return Err(BlenderError::NoOutput { output: log });
         }
+        std::fs::rename(&building, &output).map_err(|source| BlenderError::Move {
+            path: output.clone(),
+            source,
+        })?;
         Ok(log)
     }
 
