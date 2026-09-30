@@ -129,8 +129,12 @@ impl ConditionMeta {
         };
         let condition = self.name.clone();
         as_action.resolve_args(args).map_err(|error| match error {
-            ActionError::MissingArg { param, .. } => ConditionError::MissingArg { condition, param },
-            ActionError::UnknownArg { param, .. } => ConditionError::UnknownArg { condition, param },
+            ActionError::MissingArg { param, .. } => {
+                ConditionError::MissingArg { condition, param }
+            }
+            ActionError::UnknownArg { param, .. } => {
+                ConditionError::UnknownArg { condition, param }
+            }
             ActionError::ArgType {
                 param,
                 expected,
@@ -175,6 +179,13 @@ pub struct ConditionCall {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ConditionId(u32);
+
+impl ConditionId {
+    /// Stands in for a reference that did not resolve, in a tree that is then discarded.
+    pub(crate) fn placeholder() -> Self {
+        Self(u32::MAX)
+    }
+}
 
 struct Entry {
     meta: ConditionMeta,

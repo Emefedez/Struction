@@ -21,14 +21,13 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use struction_core::{
-    ActionAppExt as _, ActionInvocation, ActionName, ActionQueue, ActionRegistry, ActionSet,
-    Orders,
+    ActionArgs, ActionInvocation, ActionName, ActionQueue, ActionRegistry, ActionSet, Orders,
 };
 
+use crate::Status;
 use crate::condition::{ConditionCall, ConditionId, ConditionName, ConditionRegistry};
 use crate::definition::{BehaviorTreeDef, LeafDef, NodeDef, ParallelPolicy};
 use crate::error::{BrainError, BrainErrors};
-use crate::{ActionArgs, Status};
 
 const MAX_PARALLEL_CHILDREN: usize = 64;
 
@@ -272,7 +271,10 @@ impl Compiler<'_> {
                 if children.len() > MAX_PARALLEL_CHILDREN {
                     self.shape(
                         path,
-                        format!("has {} children, at most {MAX_PARALLEL_CHILDREN} are supported", children.len()),
+                        format!(
+                            "has {} children, at most {MAX_PARALLEL_CHILDREN} are supported",
+                            children.len()
+                        ),
                     );
                 }
                 let ids = self.children(children, path);
@@ -399,20 +401,25 @@ impl BehaviorTreeAppExt for App {
     }
 }
 
-/// Ticks every brain once, in entity order.
+/// Ticks every brain once, by entity index: deterministic, and spawn order in a fresh world.
 pub(crate) fn think(world: &mut World, brains: &mut QueryState<(Entity, &Brain)>) {
     let trees = world.resource::<BehaviorTrees>();
     let mut todo: Vec<_> = brains
         .iter(world)
         .map(|(entity, brain)| {
-            let tree = trees.resolve(&brain.0).cloned().map_err(|_| brain.0.clone());
+            let tree = trees
+                .resolve(&brain.0)
+                .cloned()
+                .map_err(|_| brain.0.clone());
             (entity, tree)
         })
         .collect();
-    todo.sort_by_key(|(entity, _)| *entity);
+    todo.sort_by_key(|(entity, _)| entity.index_u32());
 
     for (entity, tree) in todo {
-        let Some(mut state) = world.get_mut::<BrainState>(entity).map(|mut s| std::mem::take(&mut *s))
+        let Some(mut state) = world
+            .get_mut::<BrainState>(entity)
+            .map(|mut s| std::mem::take(&mut *s))
         else {
             continue;
         };
@@ -544,14 +551,16 @@ impl Runner<'_> {
             Slot::Latched(mask) => mask,
             _ => 0,
         };
-        // The result that does not decide the node: children that reach it stay finished.
+        // `pending` does not decide the node: impure children that reach it stay finished,
+        // pure ones are checked again next tick.
         let (deciding, pending) = match policy {
             ParallelPolicy::RequireAll => (Status::Failure, Status::Success),
             ParallelPolicy::RequireOne => (Status::Success, Status::Failure),
         };
-        let mut unfinished = false;
+        let mut done = 0;
         for (i, &child) in children.iter().enumerate() {
             if latched & (1 << i) != 0 {
+                done += 1;
                 continue;
             }
             let status = self.tick(child);
@@ -562,14 +571,14 @@ impl Runner<'_> {
                 }
                 return status;
             }
-            if status == pending && !tree.nodes[child as usize].pure {
-                latched |= 1 << i;
-            } else if status == Status::Running || status == pending {
-                unfinished = true;
+            if status == pending {
+                done += 1;
+                if !tree.nodes[child as usize].pure {
+                    latched |= 1 << i;
+                }
             }
         }
-        if !unfinished && latched.count_ones() as usize == children.len() {
-            // Every child reached the non-deciding result: all succeeded, or all failed.
+        if done == children.len() {
             self.slots[index] = Slot::Idle;
             return pending;
         }
@@ -604,7 +613,10 @@ impl Runner<'_> {
     }
 
     fn check(&mut self, condition: &ConditionRef) -> bool {
-        let system = self.world.resource::<ConditionRegistry>().system(condition.id);
+        let system = self
+            .world
+            .resource::<ConditionRegistry>()
+            .system(condition.id);
         let call = ConditionCall {
             condition: condition.name.clone(),
             entity: self.entity,
@@ -652,6 +664,10 @@ impl Runner<'_> {
 
 impl From<bool> for Status {
     fn from(holds: bool) -> Self {
-        if holds { Status::Success } else { Status::Failure }
+        if holds {
+            Status::Success
+        } else {
+            Status::Failure
+        }
     }
 }
