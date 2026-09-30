@@ -1,5 +1,9 @@
 //! Native physics playground with a procedurally animated player.
 
+mod camera_occlusion;
+#[cfg(test)]
+mod planet_tests;
+
 use bevy::{
     app::AppExit,
     light::NotShadowCaster,
@@ -17,10 +21,10 @@ use struction_character::{
     InputMap, InputSystems, PlayerControlled, spawn_rig,
 };
 use struction_debug::{DebugTracePlugin, TraceAppExt, TraceEntity, TraceWriter};
-use struction_gravity::{GravityField, LocalUp};
+use struction_gravity::{GravityField, GravityHysteresis, GravityInfluences, LocalUp};
 use struction_physics::{
-    CameraConstraint, CameraMode, CameraTarget, CameraZone, InCameraZones, PhysicsPlugin,
-    Submersion, Surface, Volume, VolumeShape, avian3d::prelude::*, water,
+    CameraConstraint, CameraMode, CameraOcclusion, CameraTarget, CameraZone, InCameraZones,
+    PhysicsPlugin, Submersion, Surface, Volume, VolumeShape, avian3d::prelude::*, water,
 };
 
 #[derive(Resource)]
@@ -83,6 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .trace_component::<CharacterLook>()
             .trace_component::<struction_character::CharacterIntent>()
             .trace_component::<LocalUp>()
+            .trace_component::<GravityInfluences>()
             .trace_component::<Submersion>()
             .trace_component::<InCameraZones>();
     }
@@ -105,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PhysicsPlugin::default(),
         struction_character::CharacterPlugins,
         CharacterAnimationPlugin,
+        camera_occlusion::GroundTransparencyPlugin,
     ))
     .configure_sets(
         PreUpdate,
@@ -165,6 +171,7 @@ fn setup(
     ));
     commands.spawn((
         Camera3d::default(),
+        CameraOcclusion::default(),
         Transform::from_xyz(0.0, 4.0, 13.0).looking_at(Vec3::new(0.0, 1.4, 8.0), Vec3::Y),
     ));
     spawn_scene_gravity(&mut commands);
@@ -287,7 +294,8 @@ fn spawn_planet(
         TraceEntity,
         RigidBody::Static,
         Collider::sphere(4.0),
-        GravityField::planet(24.0, 8.0),
+        GravityField::planet(24.0, 5.0),
+        GravityHysteresis { exit_margin: 0.5 },
         Surface::default(),
         Mesh3d(meshes.add(Sphere::new(4.0).mesh().ico(5).expect("valid sphere"))),
         MeshMaterial3d(material(materials, Color::srgb(0.52, 0.35, 0.24))),
