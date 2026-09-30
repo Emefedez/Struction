@@ -6,6 +6,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use bevy::asset::AssetPath;
+use bevy::ecs::message::MessageCursor;
 use bevy::prelude::*;
 use struction_assets::compile::MANIFEST_NAME;
 use struction_assets::format::to_native;
@@ -199,13 +200,18 @@ fn bevy_rejects_corrupt_files() {
     assert!(wait_loaded(&mut app, &handle).is_failed());
 }
 
-/// Updates until the watcher reports a recompile of the source.
-fn wait_recompiled(app: &mut App) -> SourceRecompiled {
+/// Updates until the watcher reports a recompile the cursor has not seen yet.
+/// Messages only rotate after a fixed-timestep tick, so fast updates would
+/// otherwise see the previous recompile again.
+fn wait_recompiled(
+    app: &mut App,
+    cursor: &mut MessageCursor<SourceRecompiled>,
+) -> SourceRecompiled {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         app.update();
         let messages = app.world().resource::<Messages<SourceRecompiled>>();
-        if let Some(message) = messages.iter_current_update_messages().last() {
+        if let Some(message) = cursor.read(messages).last() {
             return message.clone();
         }
         assert!(Instant::now() < deadline, "no recompile reported");
@@ -228,6 +234,10 @@ fn watcher_recompiles_and_hot_reloads_on_save() {
     let mut watcher = app.world_mut().resource_mut::<SourceWatcher>();
     watcher.poll_interval = Duration::ZERO;
     watcher.watch(&source, &out, Some(AssetPath::from("ball.smesh")));
+    let mut cursor = app
+        .world()
+        .resource::<Messages<SourceRecompiled>>()
+        .get_cursor();
 
     // Nothing happens until the source changes.
     for _ in 0..5 {
@@ -241,7 +251,7 @@ fn watcher_recompiles_and_hot_reloads_on_save() {
 
     // "Save" a coarser sphere, as the external application would.
     write_gltf(&source, &[sphere(8, 4, 1.0)], [0.0; 3]);
-    let message = wait_recompiled(&mut app);
+    let message = wait_recompiled(&mut app, &mut cursor);
     assert_eq!(message.source, source);
     assert_eq!(message.result, Ok(CompileStatus::Compiled));
 
@@ -267,7 +277,7 @@ fn watcher_recompiles_and_hot_reloads_on_save() {
 
     // A broken save reports the error instead of replacing the output.
     std::fs::write(&source, "{ broken").unwrap();
-    let message = wait_recompiled(&mut app);
+    let message = wait_recompiled(&mut app, &mut cursor);
     assert!(message.result.unwrap_err().contains("invalid glTF"));
     assert!(MappedBundle::open(&out).is_ok());
 }
