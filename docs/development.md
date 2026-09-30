@@ -1,6 +1,6 @@
 # Development setup
 
-The workspace currently contains an environment smoke test, not the engine. It renders a procedurally rotating cube using pinned Bevy 0.19.1. `rust-toolchain.toml` pins Rust 1.98.1, rustfmt, Clippy, rust-analyzer, Rust sources, and the WebAssembly target. Commit `Cargo.lock` when changing dependencies.
+The workspace contains an environment smoke test and a native physics playground using pinned Bevy 0.19.1. `rust-toolchain.toml` pins Rust 1.98.1, rustfmt, Clippy, rust-analyzer, Rust sources, and the WebAssembly target. Commit `Cargo.lock` when changing dependencies.
 
 ## Omarchy on Apple Silicon
 
@@ -40,6 +40,12 @@ cargo run --locked -p struction-smoke-test -- --smoke-test
 ```
 
 The renderer log should identify the Apple M1 Max and Honeykrisp/Vulkan. Initial compilation takes longer than subsequent builds.
+
+## Playground
+
+Run the milestone 1 physics scene with `cargo run -p struction-playground`. Use WASD to move, Space to jump or swim upward, and M to toggle mouse look and cursor grab. Escape releases a grabbed cursor; press it again to quit. The overlay shows contact, swimming, camera zone, and FPS state. Walk over the blue slippery floor toward the gravity planet, or move right into the water pool.
+
+`cargo run -p struction-playground -- --smoke-test` drives the character forward and jumps once, then logs its position and exits after about ten seconds.
 
 ```bash
 cargo fmt --all --check

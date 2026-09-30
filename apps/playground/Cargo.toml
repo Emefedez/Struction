@@ -20,6 +20,8 @@ bevy = { workspace = true, features = [
     "bevy_pbr",
     "bevy_render",
     "bevy_shader",
+    "bevy_text",
+    "bevy_ui",
     "bevy_window",
     "bevy_winit",
     "keyboard",
