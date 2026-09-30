@@ -2,6 +2,8 @@
 
 The workspace contains an environment smoke test and a native physics playground using pinned Bevy 0.19.1. `rust-toolchain.toml` pins Rust 1.98.1, rustfmt, Clippy, rust-analyzer, Rust sources, and the WebAssembly target. Commit `Cargo.lock` when changing dependencies.
 
+Two hosts are supported for development: Linux (the reference setup below, Omarchy on Apple Silicon) and [macOS](#macos). Everything after the host sections applies to both.
+
 ## Omarchy on Apple Silicon
 
 Build natively for `aarch64-unknown-linux-gnu`. Graphics use Asahi's Mesa/Honeykrisp Vulkan driver and the Wayland desktop; x86 emulation is unnecessary.
@@ -24,6 +26,32 @@ source "$HOME/.cargo/env"
 
 The pinned toolchain includes Cargo, rustfmt, Clippy, rust-analyzer, and sources for editor navigation. C/C++ build tools and GDB are also available. No custom linker configuration is required.
 
+## macOS
+
+Build natively for the host (`aarch64-apple-darwin` on Apple Silicon); the pinned toolchain installs it. Graphics use wgpu's Metal backend, so no Vulkan SDK or MoltenVK is needed. The applications' `wayland` and `x11` Bevy features only affect Linux and can stay enabled.
+
+1. Install the Xcode Command Line Tools, which provide the linker, `clang`, and the macOS SDK that the C/C++ dependencies (`blake3`, `meshopt`) compile against:
+
+   ```bash
+   xcode-select --install
+   ```
+
+2. Install Rust with the [official rustup installer](https://rustup.rs/), then open a new terminal or run `source "$HOME/.cargo/env"`. The first `cargo` command in the repository downloads the pinned 1.98.1 toolchain.
+
+3. Install [Blender](https://www.blender.org/download/) for `.blend` importing. The app bundle does not put `blender` on `PATH`; point Struction at it instead (for example in `~/.zshrc`):
+
+   ```bash
+   export STRUCTION_BLENDER=/Applications/Blender.app/Contents/MacOS/Blender
+   ```
+
+   `struction_assets` (importing, its Blender tests and **Open in…** for `.blend` files) reads `STRUCTION_BLENDER`, and so does `./tools/check-environment.sh`. Other files open with `open` on macOS and `xdg-open` on Linux.
+
+Then follow [Native check](#native-check). No Linux packages, `pkg-config`, `cmake` or `ninja` are required.
+
+Known gap on macOS: the `wasm-bindgen` version lookup under [WebAssembly](#webassembly) needs Python 3.11 or newer (`tomllib`). If the system `python3` is older, install a current Python, for example with Homebrew.
+
+Verification status: the workspace type-checks for `aarch64-apple-darwin` from Linux (`cargo check --workspace --all-targets`, excluding `struction_assets`, whose `meshopt` C++ build needs the macOS SDK). Building, running and the Blender tests have not yet been verified on a Mac; record the first native run here.
+
 ## Native check
 
 From the repository root:
@@ -33,13 +61,13 @@ From the repository root:
 cargo run --locked -p struction-smoke-test
 ```
 
-The environment script checks Linux build dependencies, Vulkan, and headless Blender. The application opens a lit rotating cube; Escape or closing the window exits. For an eight-second run:
+The environment script checks the host's build dependencies, the GPU (Vulkan on Linux, Metal on macOS), and headless Blender. The application opens a lit rotating cube; Escape or closing the window exits. For an eight-second run:
 
 ```bash
 cargo run --locked -p struction-smoke-test -- --smoke-test
 ```
 
-The renderer log should identify the Apple M1 Max and Honeykrisp/Vulkan. Initial compilation takes longer than subsequent builds.
+On the Linux reference machine the renderer log identifies the Apple M1 Max and Honeykrisp/Vulkan; on macOS it should name the Apple GPU and the Metal backend. Initial compilation takes longer than subsequent builds.
 
 ## Playground
 
@@ -71,10 +99,10 @@ python3 -m http.server 8000 --bind 127.0.0.1 --directory dist/smoke-test
 
 Open `http://localhost:8000` in a browser with WebGPU enabled and supported. Compilation alone does not establish browser GPU support. The generated files in `dist/` are disposable.
 
-On this machine, native Vulkan execution and WebAssembly packaging passed. T3's embedded browser exposed WebGPU but returned no GPU adapter, so rendering there could not be validated. The web page checks adapter availability before starting.
+On the Linux reference machine, native Vulkan execution and WebAssembly packaging passed. T3's embedded browser exposed WebGPU but returned no GPU adapter, so rendering there could not be validated. The web page checks adapter availability before starting.
 
 ## Other platforms
 
-Linux, Windows, and macOS remain editor targets. Windows and macOS builds need their own platform toolchains and validation; installing Rust targets on this Linux machine does not provide those SDKs.
+Linux, Windows, and macOS remain editor targets. macOS is covered [above](#macos). Windows builds need their own platform toolchain and validation; installing Rust targets on a Linux machine does not provide its SDK.
 
-References: [Bevy setup](https://bevy.org/learn/quick-start/getting-started/setup/), [Linux dependencies](https://github.com/bevyengine/bevy/blob/v0.19.1/docs/linux_dependencies.md), [Bevy web builds](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/README.md#wasm).
+References: [Bevy setup](https://bevy.org/learn/quick-start/getting-started/setup/), [Linux dependencies](https://github.com/bevyengine/bevy/blob/v0.19.1/docs/linux_dependencies.md), [wgpu backends](https://github.com/gfx-rs/wgpu#supported-platforms), [Bevy web builds](https://github.com/bevyengine/bevy/blob/v0.19.1/examples/README.md#wasm).
