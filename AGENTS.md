@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Working notes for coding agents (Claude, Codex) implementing Struction. The design lives in [README.md](README.md); rationale and the adopted resolutions of the README's open decisions are in [docs/design-review.md](docs/design-review.md) (the only Spanish document; everything else, including code, is English). Setup is in [docs/development.md](docs/development.md).
+Working notes for coding agents (Claude, Codex) implementing Struction. The design lives in [README.md](README.md); rationale and the adopted resolutions of the README's open decisions are in [docs/design-review.md](docs/design-review.md) (the only Spanish document; everything else, including code, is English). Setup (Linux or macOS) is in [docs/development.md](docs/development.md).
 
 ## Rules
 
@@ -27,6 +27,7 @@ Check this table before proceeding with changes. An active claim covers only its
 | Planet gravity and camera obstruction | **SUN** (from **MOON**) | Landed: MOON implemented gravity entry/exit hysteresis, simulation-owned `GravityPose` and `camera_obstructions`; SUN verified them, fixed the controller judging leaving the ground along up, and replaced whole-material fading with a sight-line shader cut-out (`apps/playground/src/sight_fade.wgsl`) for ground and water, reviewed natively with the user |
 | Character animation integration | **SUN** | Landed (implemented and verified by **SUN**): `CharacterAnimationPlugin` bridge, `CustomGround` hook, slope fixes in the controller and locomotion, animated player and working HUD in `apps/playground`; native Vulkan smoke run verified |
 | Editor GUI | **SUN** | Landed (implemented and verified by **SUN**): egui (`bevy_egui`) chosen over Dear ImGui, custom theme; `apps/editor` bound to `AuthoringProject` with project open, scene tree, inspector edits (instance overrides, definition fields, reset), problems, undo/redo, viewport selection and drag moves, and play/pause/step. 7 tests; a native run checked the hierarchy, inspectors and markers. Mouse picking/dragging and play were verified headlessly only |
+| macOS development setup | **SUN** | Landed (implemented by **SUN**): macOS host section in `docs/development.md` and a macOS branch in `tools/check-environment.sh`. Type-checked for `aarch64-apple-darwin` from Linux (all but `struction_assets`); native Mac run not yet verified |
 
 ## Adopted decisions
 
