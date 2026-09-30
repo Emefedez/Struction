@@ -5346,8 +5346,11 @@ name = "struction_editor"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "serde",
  "serde_json",
+ "struction_core",
  "struction_data",
+ "struction_world",
  "tempfile",
  "thiserror 2.0.21",
 ]

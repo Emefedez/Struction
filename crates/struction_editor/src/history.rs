@@ -5,7 +5,14 @@
 //! stays open those merge into one transaction that keeps the first previous value and the last
 //! next value of every field.
 
+use std::collections::BTreeMap;
 use struction_data::edit::FieldEdit;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceChange {
+    pub before: String,
+    pub after: String,
+}
 
 /// One field edit in one project file (project-relative path with `/` separators).
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +39,7 @@ impl Change {
 pub struct Transaction {
     pub label: String,
     pub changes: Vec<Change>,
+    pub sources: BTreeMap<String, SourceChange>,
 }
 
 impl Transaction {
@@ -41,11 +49,12 @@ impl Transaction {
     }
 
     pub fn touches(&self, file: &str) -> bool {
-        self.changes.iter().any(|c| c.file == file)
+        self.sources.contains_key(file) || self.changes.iter().any(|c| c.file == file)
     }
 
     pub fn files(&self) -> Vec<String> {
         let mut files: Vec<String> = self.changes.iter().map(|c| c.file.clone()).collect();
+        files.extend(self.sources.keys().cloned());
         files.sort();
         files.dedup();
         files
@@ -63,7 +72,7 @@ impl Transaction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct History {
     undo: Vec<Transaction>,
     redo: Vec<Transaction>,
@@ -91,6 +100,9 @@ impl History {
     /// Records an applied change. With a `group`, consecutive records under the same key form one
     /// transaction until [`Self::close_group`] or a record under another key.
     pub fn record(&mut self, label: &str, change: Change, group: Option<&str>) {
+        if change.is_noop() {
+            return;
+        }
         self.redo.clear();
         if let Some(key) = group
             && self.open_group.as_deref() == Some(key)
@@ -106,10 +118,32 @@ impl History {
         self.undo.push(Transaction {
             label: label.to_owned(),
             changes: vec![change],
+            sources: BTreeMap::new(),
         });
         self.open_group = group.map(str::to_owned);
         if self.undo.len() > self.limit {
             self.undo.remove(0);
+        }
+    }
+
+    /// Records both semantic edits and exact source text for lossless undo.
+    pub fn record_source(
+        &mut self,
+        label: &str,
+        change: Change,
+        source: SourceChange,
+        group: Option<&str>,
+    ) {
+        if change.is_noop() {
+            return;
+        }
+        let file = change.file.clone();
+        self.record(label, change, group);
+        if let Some(top) = self.undo.last_mut() {
+            top.sources
+                .entry(file)
+                .and_modify(|saved| saved.after = source.after.clone())
+                .or_insert(source);
         }
     }
 
@@ -120,7 +154,13 @@ impl History {
         }
         if let Some(top) = self.undo.last_mut() {
             top.changes.retain(|c| !c.is_noop());
-            if top.changes.is_empty() {
+            if (top.sources.is_empty() && top.changes.is_empty())
+                || (!top.sources.is_empty()
+                    && top
+                        .sources
+                        .values()
+                        .all(|source| source.before == source.after))
+            {
                 self.undo.pop();
             }
         }
@@ -283,9 +323,17 @@ mod tests {
     #[test]
     fn a_group_merges_per_field_and_keeps_order_for_undo() {
         let mut history = History::default();
-        history.record("g", change("s", "a", Some(json!(0)), Some(json!(1))), Some("k"));
+        history.record(
+            "g",
+            change("s", "a", Some(json!(0)), Some(json!(1))),
+            Some("k"),
+        );
         history.record("g", change("s", "b", None, Some(json!(1))), Some("k"));
-        history.record("g", change("s", "a", Some(json!(1)), Some(json!(2))), Some("k"));
+        history.record(
+            "g",
+            change("s", "a", Some(json!(1)), Some(json!(2))),
+            Some("k"),
+        );
         let undone = history.undo().unwrap();
         let inverse = undone.inverse();
         assert_eq!(inverse.len(), 2);
@@ -298,8 +346,16 @@ mod tests {
     #[test]
     fn different_group_keys_are_separate_transactions() {
         let mut history = History::default();
-        history.record("g", change("s", "a", Some(json!(0)), Some(json!(1))), Some("one"));
-        history.record("g", change("s", "a", Some(json!(1)), Some(json!(2))), Some("two"));
+        history.record(
+            "g",
+            change("s", "a", Some(json!(0)), Some(json!(1))),
+            Some("one"),
+        );
+        history.record(
+            "g",
+            change("s", "a", Some(json!(1)), Some(json!(2))),
+            Some("two"),
+        );
         history.record("h", change("s", "a", Some(json!(2)), Some(json!(3))), None);
         assert_eq!(history.undo_stack().len(), 3);
     }
@@ -307,8 +363,16 @@ mod tests {
     #[test]
     fn a_drag_back_to_the_start_leaves_nothing() {
         let mut history = History::default();
-        history.record("g", change("s", "a", Some(json!(0)), Some(json!(1))), Some("k"));
-        history.record("g", change("s", "a", Some(json!(1)), Some(json!(0))), Some("k"));
+        history.record(
+            "g",
+            change("s", "a", Some(json!(0)), Some(json!(1))),
+            Some("k"),
+        );
+        history.record(
+            "g",
+            change("s", "a", Some(json!(1)), Some(json!(0))),
+            Some("k"),
+        );
         history.close_group();
         assert!(!history.can_undo());
     }
@@ -323,9 +387,21 @@ mod tests {
     #[test]
     fn invalidating_a_file_drops_its_transactions_on_both_stacks() {
         let mut history = History::default();
-        history.record("a", change("one", "x", Some(json!(1)), Some(json!(2))), None);
-        history.record("b", change("two", "x", Some(json!(1)), Some(json!(2))), None);
-        history.record("c", change("one", "y", Some(json!(1)), Some(json!(2))), None);
+        history.record(
+            "a",
+            change("one", "x", Some(json!(1)), Some(json!(2))),
+            None,
+        );
+        history.record(
+            "b",
+            change("two", "x", Some(json!(1)), Some(json!(2))),
+            None,
+        );
+        history.record(
+            "c",
+            change("one", "y", Some(json!(1)), Some(json!(2))),
+            None,
+        );
         history.undo();
         assert_eq!(history.invalidate_file("one"), 2);
         assert_eq!(history.undo_label(), Some("b"));

@@ -1,25 +1,33 @@
-//! The write path: edits go to JSONC sources through the comment-preserving API and into the
-//! history; undo and redo write the inverse edits back.
-//!
-//! The session remembers a hash of every file as it last read or wrote it. A file whose content
-//! differs from that on the next access was changed outside the editor ("Open in…", a text
-//! editor): its history entries are dropped before anything else happens.
+//! Source edits and history, shared by UI and tool clients. Undo restores exact source snapshots.
+//! Writes are staged beside their destinations and atomically replace individual files. Grouped
+//! multi-file writes roll back on ordinary errors; this is not a crash-recovery journal.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use struction_data::DataError;
 use struction_data::edit::{self, EditError, PathSegment};
 use thiserror::Error;
 
-use crate::history::{Change, History, Transaction};
+use crate::history::{Change, History, SourceChange};
 
 #[derive(Debug, Error)]
 pub enum SessionError {
+    #[error("{0}")]
+    InvalidOperation(String),
     #[error("play mode is running: stop it to edit")]
     Playing,
+    #[error("invalid project-relative path: {0}")]
+    InvalidPath(String),
+    #[error("{0}: source changed since it was read")]
+    Conflict(String),
+    #[error("edit failed validation: {0:?}")]
+    Validation(Vec<DataError>),
     #[error("{file}: {source}")]
     Io {
         file: String,
@@ -27,28 +35,74 @@ pub enum SessionError {
     },
     #[error("{file}: {source}")]
     Edit { file: String, source: EditError },
+    #[error("{0}")]
+    Rollback(String),
 }
 
-/// What an edit, undo or redo wrote.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Applied {
     pub label: String,
-    /// Project-relative files that were written, to reload.
     pub files: Vec<String>,
+}
+
+/// Structured paths avoid ambiguities in names containing dots or slashes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Field {
+    Key(String),
+    Index(usize),
+}
+
+impl From<&Field> for PathSegment {
+    fn from(field: &Field) -> Self {
+        match field {
+            Field::Key(key) => Self::Key(key.clone()),
+            Field::Index(index) => Self::Index(*index),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EditRequest {
+    Set {
+        file: String,
+        path: Vec<Field>,
+        value: Value,
+        label: String,
+        #[serde(default)]
+        group: Option<String>,
+        #[serde(default)]
+        revision: Option<String>,
+    },
+    Remove {
+        file: String,
+        path: Vec<Field>,
+        label: String,
+        #[serde(default)]
+        revision: Option<String>,
+    },
 }
 
 #[derive(Debug)]
 pub struct EditSession {
     root: PathBuf,
     history: History,
-    known: BTreeMap<String, u64>,
+    known: BTreeMap<String, String>,
     playing: bool,
 }
 
-fn hash(text: &str) -> u64 {
+pub fn revision(text: &str) -> String {
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);
-    hasher.finish()
+    format!("{:016x}", hasher.finish())
+}
+
+fn io(file: &str, source: std::io::Error) -> SessionError {
+    SessionError::Io {
+        file: file.into(),
+        source,
+    }
 }
 
 impl EditSession {
@@ -60,59 +114,64 @@ impl EditSession {
             playing: false,
         }
     }
-
     pub fn root(&self) -> &Path {
         &self.root
     }
-
     pub fn history(&self) -> &History {
         &self.history
     }
-
     pub fn is_playing(&self) -> bool {
         self.playing
     }
-
-    /// Play mode runs on a copy of the world: nothing is written and nothing enters history
-    /// until it stops.
     pub fn set_playing(&mut self, playing: bool) {
         self.history.close_group();
         self.playing = playing;
     }
 
-    pub fn path_of(&self, file: &str) -> PathBuf {
-        self.root.join(file)
+    /// Reject aliases and symlinks so two client paths cannot bypass conflict/history tracking.
+    pub fn path_of(&self, file: &str) -> Result<PathBuf, SessionError> {
+        if file.is_empty()
+            || file.contains(['\\', '\0'])
+            || file
+                .split('/')
+                .any(|p| p.is_empty() || p == "." || p == "..")
+            || Path::new(file)
+                .components()
+                .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            return Err(SessionError::InvalidPath(file.into()));
+        }
+        let mut path = fs::canonicalize(&self.root).map_err(|e| io(file, e))?;
+        for part in Path::new(file).components() {
+            path.push(part);
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(SessionError::InvalidPath(file.into()));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io(file, e)),
+            }
+        }
+        Ok(path)
     }
 
     pub fn read(&self, file: &str) -> Result<String, SessionError> {
-        fs::read_to_string(self.path_of(file)).map_err(|source| SessionError::Io {
-            file: file.into(),
-            source,
-        })
+        fs::read_to_string(self.path_of(file)?).map_err(|e| io(file, e))
     }
-
-    fn write(&mut self, file: &str, text: &str) -> Result<(), SessionError> {
-        fs::write(self.path_of(file), text).map_err(|source| SessionError::Io {
-            file: file.into(),
-            source,
-        })?;
-        self.known.insert(file.to_owned(), hash(text));
-        Ok(())
-    }
-
-    /// Reads `file` for an edit, first dropping its history if it changed outside the editor.
     fn read_checked(&mut self, file: &str) -> Result<String, SessionError> {
         let text = self.read(file)?;
-        let digest = hash(&text);
-        if self.known.get(file).is_some_and(|known| *known != digest) {
+        if self
+            .known
+            .get(file)
+            .is_some_and(|known| *known != revision(&text))
+        {
             self.history.invalidate_file(file);
         }
-        self.known.insert(file.to_owned(), digest);
+        self.known.insert(file.into(), revision(&text));
         Ok(text)
     }
 
-    /// Sets the value at `path` in `file`. Edits sharing a `group` key merge into one undo step
-    /// until [`Self::end_group`] (a gizmo drag, a slider).
     pub fn set(
         &mut self,
         file: &str,
@@ -121,17 +180,73 @@ impl EditSession {
         label: &str,
         group: Option<&str>,
     ) -> Result<Applied, SessionError> {
-        self.change(file, label, group, |text| edit::set_value(text, path, value))
+        self.change(
+            file,
+            label,
+            group,
+            None,
+            |text| edit::set_value(text, path, value),
+            |_| Ok(()),
+        )
     }
-
-    /// Removes the value at `path` in `file` (the field falls back to what it inherits).
     pub fn remove(
         &mut self,
         file: &str,
         path: &[PathSegment],
         label: &str,
     ) -> Result<Applied, SessionError> {
-        self.change(file, label, None, |text| edit::remove_value(text, path))
+        self.change(
+            file,
+            label,
+            None,
+            None,
+            |text| edit::remove_value(text, path),
+            |_| Ok(()),
+        )
+    }
+
+    /// Validates candidate sources before writing or recording history.
+    pub fn apply_checked(
+        &mut self,
+        request: EditRequest,
+        validate: impl FnOnce(&BTreeMap<String, String>) -> Result<(), Vec<DataError>>,
+    ) -> Result<Applied, SessionError> {
+        match request {
+            EditRequest::Set {
+                file,
+                path,
+                value,
+                label,
+                group,
+                revision,
+            } => {
+                let path: Vec<_> = path.iter().map(PathSegment::from).collect();
+                self.change(
+                    &file,
+                    &label,
+                    group.as_deref(),
+                    revision.as_deref(),
+                    |text| edit::set_value(text, &path, value),
+                    validate,
+                )
+            }
+            EditRequest::Remove {
+                file,
+                path,
+                label,
+                revision,
+            } => {
+                let path: Vec<_> = path.iter().map(PathSegment::from).collect();
+                self.change(
+                    &file,
+                    &label,
+                    None,
+                    revision.as_deref(),
+                    |text| edit::remove_value(text, &path),
+                    validate,
+                )
+            }
+        }
     }
 
     fn change(
@@ -139,151 +254,235 @@ impl EditSession {
         file: &str,
         label: &str,
         group: Option<&str>,
+        expected: Option<&str>,
         apply: impl FnOnce(&str) -> Result<edit::Edited, EditError>,
+        validate: impl FnOnce(&BTreeMap<String, String>) -> Result<(), Vec<DataError>>,
     ) -> Result<Applied, SessionError> {
         if self.playing {
             return Err(SessionError::Playing);
         }
         let text = self.read_checked(file)?;
+        if expected.is_some_and(|expected| expected != revision(&text)) {
+            return Err(SessionError::Conflict(file.into()));
+        }
         let edited = apply(&text).map_err(|source| SessionError::Edit {
             file: file.into(),
             source,
         })?;
-        let unchanged = edited.edit.previous == edited.edit.next;
-        if unchanged && group.is_none() {
+        if edited.edit.previous == edited.edit.next {
             return Ok(Applied {
                 label: label.into(),
-                files: Vec::new(),
+                files: vec![],
             });
         }
-        if !unchanged {
-            self.write(file, &edited.text)?;
-        }
-        self.history.record(
+        let sources = BTreeMap::from([(
+            file.to_owned(),
+            SourceChange {
+                before: text,
+                after: edited.text,
+            },
+        )]);
+        validate(
+            &sources
+                .iter()
+                .map(|(file, change)| (file.clone(), change.after.clone()))
+                .collect(),
+        )
+        .map_err(SessionError::Validation)?;
+        self.write_sources(&sources)?;
+        self.history.record_source(
             label,
             Change {
                 file: file.into(),
                 edit: edited.edit,
             },
+            sources[file].clone(),
             group,
         );
         Ok(Applied {
             label: label.into(),
-            files: if unchanged { vec![] } else { vec![file.into()] },
+            files: vec![file.into()],
         })
     }
 
-    /// Closes the open edit group: the next edit starts a new undo step.
+    fn staged(&self, file: &str, text: &str) -> Result<tempfile::NamedTempFile, SessionError> {
+        let path = self.path_of(file)?;
+        let mut staged =
+            tempfile::NamedTempFile::new_in(path.parent().expect("project-relative file"))
+                .map_err(|e| io(file, e))?;
+        let permissions = fs::metadata(&path).map_err(|e| io(file, e))?.permissions();
+        staged
+            .as_file()
+            .set_permissions(permissions)
+            .map_err(|e| io(file, e))?;
+        staged.write_all(text.as_bytes()).map_err(|e| io(file, e))?;
+        staged.as_file().sync_all().map_err(|e| io(file, e))?;
+        Ok(staged)
+    }
+
+    fn write_sources(
+        &mut self,
+        sources: &BTreeMap<String, SourceChange>,
+    ) -> Result<(), SessionError> {
+        let mut staged = Vec::new();
+        for (file, change) in sources {
+            if self.read(file)? != change.before {
+                return Err(SessionError::Conflict(file.clone()));
+            }
+            staged.push((
+                file.clone(),
+                self.path_of(file)?,
+                self.staged(file, &change.after)?,
+            ));
+        }
+        let mut written: Vec<String> = Vec::new();
+        for (file, path, stage) in staged {
+            let result = (|| {
+                if self.read(&file)? != sources[&file].before {
+                    Err(SessionError::Conflict(file.clone()))
+                } else {
+                    stage
+                        .persist(path)
+                        .map(|_| ())
+                        .map_err(|e| io(&file, e.error))
+                }
+            })();
+            if let Err(error) = result {
+                for prior in written.iter().rev() {
+                    let rollback = (|| {
+                        if self.read(prior)? != sources[prior].after {
+                            return Err(SessionError::Conflict(prior.clone()));
+                        }
+                        self.staged(prior, &sources[prior].before)
+                    })()
+                    .and_then(|stage| {
+                        stage
+                            .persist(self.path_of(prior)?)
+                            .map(|_| ())
+                            .map_err(|e| io(prior, e.error))
+                    });
+                    if let Err(rollback) = rollback {
+                        return Err(SessionError::Rollback(format!(
+                            "{error}; rollback failed: {rollback}"
+                        )));
+                    }
+                }
+                return Err(error);
+            }
+            written.push(file);
+        }
+        for (file, source) in sources {
+            self.known.insert(file.clone(), revision(&source.after));
+        }
+        Ok(())
+    }
+
     pub fn end_group(&mut self) {
         self.history.close_group();
     }
-
-    /// Reverts the last transaction. `None` when there is nothing to undo.
     pub fn undo(&mut self) -> Result<Option<Applied>, SessionError> {
-        if self.playing {
-            return Err(SessionError::Playing);
-        }
-        self.check_external_changes();
-        let Some(transaction) = self.history.undo() else {
-            return Ok(None);
-        };
-        let result = self.apply_all(&transaction, &transaction.inverse());
-        if result.is_err() {
-            self.history.discard_redo();
-        }
-        result.map(Some)
+        self.undo_checked(|_| Ok(()))
     }
-
-    /// Re-applies the last undone transaction.
     pub fn redo(&mut self) -> Result<Option<Applied>, SessionError> {
+        self.redo_checked(|_| Ok(()))
+    }
+    pub fn undo_checked(
+        &mut self,
+        validate: impl FnOnce(&BTreeMap<String, String>) -> Result<(), Vec<DataError>>,
+    ) -> Result<Option<Applied>, SessionError> {
+        self.restore(false, validate)
+    }
+    pub fn redo_checked(
+        &mut self,
+        validate: impl FnOnce(&BTreeMap<String, String>) -> Result<(), Vec<DataError>>,
+    ) -> Result<Option<Applied>, SessionError> {
+        self.restore(true, validate)
+    }
+    fn restore(
+        &mut self,
+        redo: bool,
+        validate: impl FnOnce(&BTreeMap<String, String>) -> Result<(), Vec<DataError>>,
+    ) -> Result<Option<Applied>, SessionError> {
         if self.playing {
             return Err(SessionError::Playing);
         }
         self.check_external_changes();
-        let Some(transaction) = self.history.redo() else {
+        let mut next = self.history.clone();
+        let Some(transaction) = (if redo { next.redo() } else { next.undo() }) else {
             return Ok(None);
         };
-        let result = self.apply_all(&transaction, &transaction.changes);
-        if result.is_err() {
-            self.history.discard_undo();
-        }
-        result.map(Some)
+        let sources: BTreeMap<_, _> = transaction
+            .sources
+            .into_iter()
+            .map(|(file, source)| {
+                (
+                    file,
+                    if redo {
+                        source
+                    } else {
+                        SourceChange {
+                            before: source.after,
+                            after: source.before,
+                        }
+                    },
+                )
+            })
+            .collect();
+        validate(
+            &sources
+                .iter()
+                .map(|(file, change)| (file.clone(), change.after.clone()))
+                .collect(),
+        )
+        .map_err(SessionError::Validation)?;
+        self.write_sources(&sources)?;
+        self.history = next;
+        Ok(Some(Applied {
+            label: transaction.label,
+            files: sources.into_keys().collect(),
+        }))
     }
 
-    fn apply_all(
-        &mut self,
-        transaction: &Transaction,
-        changes: &[Change],
-    ) -> Result<Applied, SessionError> {
-        let mut texts: BTreeMap<String, String> = BTreeMap::new();
-        for change in changes {
-            let text = match texts.remove(&change.file) {
-                Some(text) => text,
-                None => self.read(&change.file)?,
-            };
-            let edited = edit::apply_edit(&text, &change.edit).map_err(|source| {
-                SessionError::Edit {
-                    file: change.file.clone(),
-                    source,
-                }
-            })?;
-            texts.insert(change.file.clone(), edited.text);
-        }
-        for (file, text) in &texts {
-            self.write(file, text)?;
-        }
-        Ok(Applied {
-            label: transaction.label.clone(),
-            files: texts.into_keys().collect(),
-        })
-    }
-
-    /// Whether `file`'s content on disk is what the editor last read or wrote. Files the editor
-    /// never touched count as external.
     pub fn is_own_content(&self, file: &str, text: &str) -> bool {
-        self.known.get(file) == Some(&hash(text))
+        self.known.get(file) == Some(&revision(text))
     }
-
-    /// Notes that `file` changed on disk. If the editor did not write that content, the file's
-    /// history is dropped; returns whether it was an outside change.
     pub fn file_changed(&mut self, file: &str) -> bool {
         let text = self.read(file).unwrap_or_default();
         if self.is_own_content(file, &text) {
             return false;
         }
-        if self.known.contains_key(file) || self.history.files().iter().any(|f| f == file) {
-            self.history.invalidate_file(file);
-        }
-        self.known.insert(file.to_owned(), hash(&text));
+        self.history.invalidate_file(file);
+        self.known.insert(file.into(), revision(&text));
         true
     }
-
-    /// Checks every file the editor has touched against disk; drops the history of those changed
-    /// outside and returns them.
     pub fn check_external_changes(&mut self) -> Vec<String> {
-        let files: Vec<String> = self.known.keys().cloned().collect();
+        let files: Vec<_> = self.known.keys().cloned().collect();
         files
             .into_iter()
-            .filter(|file| {
-                let text = self.read(file).unwrap_or_default();
-                !self.is_own_content(file, &text) && self.file_changed(file)
-            })
+            .filter(|file| self.file_changed(file))
             .collect()
     }
 
-    /// Creates a new file (templates). Not undoable: a scaffolded file belongs to the user.
+    /// Scaffolds a user-owned file without overwriting existing content.
     pub fn create_file(&mut self, file: &str, text: &str) -> Result<(), SessionError> {
-        let path = self.path_of(file);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|source| SessionError::Io {
-                file: file.into(),
-                source,
-            })?;
+        if self.playing {
+            return Err(SessionError::Playing);
         }
-        self.write(file, text)
+        let path = self.path_of(file)?;
+        fs::create_dir_all(path.parent().expect("project-relative file"))
+            .map_err(|e| io(file, e))?;
+        let mut output =
+            tempfile::NamedTempFile::new_in(path.parent().expect("project-relative file"))
+                .map_err(|e| io(file, e))?;
+        output.write_all(text.as_bytes()).map_err(|e| io(file, e))?;
+        output.as_file().sync_all().map_err(|e| io(file, e))?;
+        output
+            .persist_noclobber(path)
+            .map_err(|e| io(file, e.error))?;
+        self.known.insert(file.into(), revision(text));
+        Ok(())
     }
 }
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -315,7 +514,13 @@ mod tests {
     fn edits_write_through_and_undo_restores_the_exact_text() {
         let (_dir, mut session) = project();
         let applied = session
-            .set(FILE, &parse_path("components.Health.max"), json!(80.0), "Max", None)
+            .set(
+                FILE,
+                &parse_path("components.Health.max"),
+                json!(80.0),
+                "Max",
+                None,
+            )
             .unwrap();
         assert_eq!(applied.files, vec![FILE.to_owned()]);
         let text = session.read(FILE).unwrap();
@@ -332,7 +537,13 @@ mod tests {
     fn adding_and_removing_fields_is_undoable() {
         let (_dir, mut session) = project();
         session
-            .set(FILE, &parse_path("components.Stats.agility"), json!(6), "Add", None)
+            .set(
+                FILE,
+                &parse_path("components.Stats.agility"),
+                json!(6),
+                "Add",
+                None,
+            )
             .unwrap();
         session
             .remove(FILE, &parse_path("components.Health.current"), "Revert")
@@ -352,7 +563,13 @@ mod tests {
         let path = parse_path("transform.translation");
         for x in 1..=20 {
             session
-                .set(FILE, &path, json!([x as f64 * 0.1, 0.0, 0.0]), "Move", Some("gizmo"))
+                .set(
+                    FILE,
+                    &path,
+                    json!([x as f64 * 0.1, 0.0, 0.0]),
+                    "Move",
+                    Some("gizmo"),
+                )
                 .unwrap();
         }
         session.end_group();
@@ -365,11 +582,23 @@ mod tests {
     fn play_mode_blocks_edits_and_keeps_history_untouched() {
         let (_dir, mut session) = project();
         session
-            .set(FILE, &parse_path("components.Health.max"), json!(70.0), "Max", None)
+            .set(
+                FILE,
+                &parse_path("components.Health.max"),
+                json!(70.0),
+                "Max",
+                None,
+            )
             .unwrap();
         session.set_playing(true);
         assert!(matches!(
-            session.set(FILE, &parse_path("components.Health.max"), json!(1.0), "x", None),
+            session.set(
+                FILE,
+                &parse_path("components.Health.max"),
+                json!(1.0),
+                "x",
+                None
+            ),
             Err(SessionError::Playing)
         ));
         assert!(matches!(session.undo(), Err(SessionError::Playing)));
@@ -383,7 +612,13 @@ mod tests {
         let (dir, mut session) = project();
         fs::write(dir.path().join("other.jsonc"), "{}").unwrap();
         session
-            .set(FILE, &parse_path("components.Health.max"), json!(70.0), "Max", None)
+            .set(
+                FILE,
+                &parse_path("components.Health.max"),
+                json!(70.0),
+                "Max",
+                None,
+            )
             .unwrap();
         session
             .set("other.jsonc", &parse_path("a"), json!(1), "A", None)
@@ -405,11 +640,23 @@ mod tests {
     fn an_outside_change_is_noticed_on_the_next_edit_too() {
         let (dir, mut session) = project();
         session
-            .set(FILE, &parse_path("components.Health.max"), json!(70.0), "Max", None)
+            .set(
+                FILE,
+                &parse_path("components.Health.max"),
+                json!(70.0),
+                "Max",
+                None,
+            )
             .unwrap();
         fs::write(dir.path().join(FILE), OGRE).unwrap();
         session
-            .set(FILE, &parse_path("components.Health.current"), json!(1.0), "Cur", None)
+            .set(
+                FILE,
+                &parse_path("components.Health.current"),
+                json!(1.0),
+                "Cur",
+                None,
+            )
             .unwrap();
         assert_eq!(session.history().undo_stack().len(), 1);
         assert_eq!(session.history().undo_label(), Some("Cur"));
@@ -419,7 +666,13 @@ mod tests {
     fn own_writes_are_not_outside_changes() {
         let (_dir, mut session) = project();
         session
-            .set(FILE, &parse_path("components.Health.max"), json!(70.0), "Max", None)
+            .set(
+                FILE,
+                &parse_path("components.Health.max"),
+                json!(70.0),
+                "Max",
+                None,
+            )
             .unwrap();
         assert!(!session.file_changed(FILE));
         assert!(session.check_external_changes().is_empty());

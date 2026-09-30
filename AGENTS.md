@@ -19,10 +19,11 @@ Check this table before proceeding with changes. An active claim covers only its
 
 | Area | Owner | State / scope |
 | --- | --- | --- |
-| Headless editor / AI authoring | **MOON** | Active: `struction_editor` session/history, project inspection and validation, source previews, isolated play, tool commands and readiness tests/docs |
+| Headless editor / AI authoring | **MOON** | Landed: validated project edits, exact-source undo, inspection, spawn movement, isolated play and JSONL commands. 32 tests, Clippy and native protocol smoke verified; see `docs/authoring.md` |
 | Data/world authoring hooks | **MOON** | Landed: read-only candidate-source validation, scene-source provenance and integration tests; 69 data / 22 world tests and Clippy verified |
 | Asset pipeline verification | **MOON** | Landed: 23 tests, including actual Blender import/export, and Clippy verified; implementation predates this verification |
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
+| Planet gravity and camera obstruction | **MOON** | Active: gravity entry/exit hysteresis and escape tests; separate playground occlusion module for transparent blocking ground. SUN retains rig/animation work in playground; only minimal camera module wiring and planet tuning will overlap |
 | Character animation integration | **SUN** | Active: character↔`struction_anim` bridge (motion, local up, physics-raycast ground, rig root following the body), animated player in `apps/playground`; small `struction_anim` hook for externally stepped locomotion |
 
 ## Adopted decisions
@@ -63,7 +64,7 @@ From the design review's pending recommendations, treated as decided:
 | `struction_world` | Verified, 22 tests. Spawners, save/load, aliases and boss/minion integration; **MOON** added candidate scene compilation and source provenance for authoring |
 | `struction_assets` | Verified, 23 tests including real Blender 5.2.2 import/export, UVs, collision/LODs, compiled loading and hot reload; Clippy clean |
 | `struction_debug` | Implemented, 5 tests and native trace verified. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
-| `struction_editor` / `apps/editor` | In progress (**MOON**): exposed headless modules, repairing exact-source undo and adding game-aware validation, preview and isolated play. GUI app remains a scaffold |
+| `struction_editor` / `apps/editor` | Headless foundation verified by **MOON**, 32 tests and native JSONL smoke. Shared validation, source/history, hierarchy/inspection, world-space moves, templates and isolated play. GUI app remains a scaffold |
 | `apps/playground` | Milestone 1 scene runnable. Water surface replaces overlapping transparent box; camera-relative movement and overhead orientation covered by 2 tests; native Vulkan smoke run verified |
 
 ## Follow-ups
@@ -75,7 +76,7 @@ From the design review's pending recommendations, treated as decided:
 
 ## Next
 
-1. Finish the shared headless editor backend and verify inspect → edit → validate → preview → undo/redo → isolated play before starting GUI implementation.
+1. Shared headless editor gate passed (**MOON**); resolve reported planet gravity/camera issues before beginning the first egui hierarchy, inspector, move gizmo and play controls. See `docs/authoring.md`.
 2. Playground: integrate animation, AI and authored encounters through `struction_world`, then hot reload and the rest of the README validation scene.
-3. Editor (milestone 4): finish and expose the headless session/history API for both AI tools and egui; hierarchy, inspector, gizmos, undo/redo, play mode on a world copy, spawn previews, templates. Add structured command/validation entry points as the operations become available.
+3. Editor (milestone 4): build egui on `AuthoringProject`; extend the same headless operations for rotation/scale, source rename/delete and further authoring tools.
 4. Menus as entities; package validation (planetary gravity as an external package, milestone 7); streaming (milestone 8).
