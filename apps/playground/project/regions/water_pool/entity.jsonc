@@ -1,0 +1,10 @@
+// Water fills the box up to its top face, where the `Water` look draws a translucent surface.
+{
+  "descendsFrom": "Region",
+  "components": {
+    "Volume": { "shape": { "Box": { "half_extents": [3.5, 1.5, 4] } } },
+    "Buoyancy": { "fluid_density": 1000 },
+    "VolumeDrag": { "linear": 1.5, "angular": 1.0 },
+    "Look": { "color": [0.04, 0.46, 0.72], "opacity": 0.48, "finish": "Water" }
+  }
+}

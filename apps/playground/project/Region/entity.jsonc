@@ -1,0 +1,3 @@
+// A volume of space that affects what enters it: water, camera zones. Regions have no collider
+// of their own beyond their `Volume` sensor.
+{}

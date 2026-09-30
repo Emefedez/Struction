@@ -1,0 +1,10 @@
+// The same downward pull everywhere.
+{
+  "descendsFrom": "Gravity",
+  "components": {
+    "GravityField": {
+      "volume": "Infinite",
+      "kind": { "Directional": { "acceleration": [0, -9.81, 0] } }
+    }
+  }
+}

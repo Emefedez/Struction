@@ -1,0 +1,10 @@
+// Light enough for the player to push.
+{
+  "descendsFrom": "Prop",
+  "components": {
+    "RigidBody": "Dynamic",
+    "Shape": { "Box": { "size": [1, 1, 1] } },
+    "ColliderDensity": 80,
+    "Look": { "color": [0.96, 0.52, 0.20] }
+  }
+}
