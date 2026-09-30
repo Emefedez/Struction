@@ -1,5 +1,6 @@
 //! "Open in…": hand a source file to its full application, then recompile it
-//! whenever it is saved and ask the asset server to reload the compiled result.
+//! whenever it or its recipe is saved and ask the asset server to reload the
+//! compiled result.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ use bevy::prelude::*;
 use crate::blender::Blender;
 use crate::compile::{CompileSettings, CompileStatus, compile_asset_with};
 use crate::error::AssetError;
+use crate::recipe::recipe_path;
 
 /// The desktop's handler for files without a per-extension command.
 const DEFAULT_OPENER: &str = if cfg!(target_os = "macos") {
@@ -83,8 +85,9 @@ pub struct SourceRecompiled {
     pub result: Result<CompileStatus, String>,
 }
 
-/// Polls watched sources (size and modification time) and recompiles them on a
-/// background thread once a change has been stable for one poll.
+/// Polls watched sources and their recipes (size and modification time) and
+/// recompiles them on a background thread once a change has been stable for one
+/// poll. A source's recipe replaces `settings.prepare` for it.
 #[derive(Resource)]
 pub struct SourceWatcher {
     pub poll_interval: Duration,
@@ -97,21 +100,31 @@ struct WatchedSource {
     source: PathBuf,
     output: PathBuf,
     asset_path: Option<AssetPath<'static>>,
-    /// Stamp of the version last compiled (or seen when watching started).
-    compiled: Option<FileStamp>,
-    /// A new stamp waiting to be seen again before compiling.
-    pending: Option<FileStamp>,
+    /// Stamps of the version last compiled (or seen when watching started).
+    compiled: Option<Stamps>,
+    /// New stamps waiting to be seen again before compiling.
+    pending: Option<Stamps>,
     job: Option<JoinHandle<Result<CompileStatus, AssetError>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileStamp {
+pub(crate) struct FileStamp {
     modified: SystemTime,
     len: u64,
 }
 
+/// A source's stamp and its recipe's, when it has one.
+type Stamps = (FileStamp, Option<FileStamp>);
+
+fn stamps(source: &Path) -> Option<Stamps> {
+    Some((
+        FileStamp::read(source)?,
+        FileStamp::read(&recipe_path(source)),
+    ))
+}
+
 impl FileStamp {
-    fn read(path: &Path) -> Option<Self> {
+    pub(crate) fn read(path: &Path) -> Option<Self> {
         let metadata = std::fs::metadata(path).ok()?;
         Some(Self {
             modified: metadata.modified().ok()?,
@@ -146,7 +159,7 @@ impl SourceWatcher {
         let source = source.into();
         self.unwatch(&source);
         self.sources.push(WatchedSource {
-            compiled: FileStamp::read(&source),
+            compiled: stamps(&source),
             source,
             output: output.into(),
             asset_path,
@@ -197,7 +210,7 @@ impl SourceWatcher {
             if watched.job.is_some() {
                 continue;
             }
-            let stamp = FileStamp::read(&watched.source);
+            let stamp = stamps(&watched.source);
             if stamp.is_none() || stamp == watched.compiled {
                 watched.pending = None;
                 continue;
@@ -215,7 +228,7 @@ impl SourceWatcher {
                 self.settings.clone(),
             );
             watched.job = Some(std::thread::spawn(move || {
-                compile_asset_with(&source, &output, &settings)
+                compile_asset_with(&source, &output, &settings.with_recipe_of(&source)?)
             }));
         }
     }

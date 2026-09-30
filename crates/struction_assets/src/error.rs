@@ -28,6 +28,12 @@ pub enum AssetError {
         #[source]
         source: BlenderError,
     },
+    /// An unreadable or invalid recipe; `message` locates the problem.
+    #[error("{}: {message}", path.display())]
+    Recipe { path: PathBuf, message: String },
+    /// A file changed outside the tool that had it open.
+    #[error("{}: changed outside this tool; {message}", path.display())]
+    Changed { path: PathBuf, message: String },
     #[error("{}: {source}", path.display())]
     Format {
         path: PathBuf,
@@ -48,7 +54,9 @@ impl AssetError {
 /// Running headless Blender failed. Carries Blender's own output so the cause is visible.
 #[derive(Debug, Error)]
 pub enum BlenderError {
-    #[error("Blender executable {executable:?} could not be started: {source}")]
+    #[error(
+        "Blender executable {executable:?} could not be started: {source}. Install Blender or set STRUCTION_BLENDER to its executable"
+    )]
     Spawn {
         executable: PathBuf,
         #[source]

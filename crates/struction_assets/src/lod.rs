@@ -12,6 +12,7 @@ use crate::format::MeshLod;
 use crate::import::PreparedMesh;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct LodSettings {
     /// Levels generated after LOD 0.
     pub levels: u32,

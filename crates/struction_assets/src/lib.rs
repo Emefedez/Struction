@@ -2,9 +2,10 @@
 //!
 //! Editor side: [`compile_asset`] turns a `.blend`/`.gltf`/`.glb` source into a
 //! `.smesh` bundle (import through headless Blender or directly, UV generation,
-//! collision shapes, LODs), and [`SourceWatcherPlugin`] recompiles sources
-//! edited through "Open in…". Runtime side: [`StructionAssetsPlugin`] loads
-//! `.smesh` bundles without Blender.
+//! collision shapes, LODs) following the source's [recipe](recipe), [`PrepSession`]
+//! previews, applies and undoes recipe changes for the collision and LOD tools, and
+//! [`SourceWatcherPlugin`] recompiles sources edited through "Open in…". Runtime
+//! side: [`StructionAssetsPlugin`] loads `.smesh` bundles without Blender.
 //!
 //! Coordinates: Blender (x, y, z) becomes engine (x, z, -y) (Y up, right-handed,
 //! meters) through the glTF exporter's +Y up conversion, so Blender's +Y is the
@@ -18,6 +19,8 @@ pub mod format;
 pub mod import;
 pub mod loader;
 pub mod lod;
+pub mod prep;
+pub mod recipe;
 pub mod watch;
 
 use bevy::prelude::*;
@@ -33,6 +36,8 @@ pub use format::{MappedBundle, MeshBundle};
 pub use import::{PreparedMesh, PreparedScene, import_source, read_gltf};
 pub use loader::{CompiledMesh, CompiledModel, CompiledModelLoader, lod_label};
 pub use lod::LodSettings;
+pub use prep::{MeshReport, PrepApplied, PrepPreview, PrepSession, PreviewJob, Refreshed};
+pub use recipe::{CollisionPreset, LodPreset, read_recipe, recipe_path};
 pub use watch::{OpenIn, SourceRecompiled, SourceWatcher, SourceWatcherPlugin};
 
 /// Registers the `.smesh` loader. Needs `AssetPlugin` and a `Mesh` asset

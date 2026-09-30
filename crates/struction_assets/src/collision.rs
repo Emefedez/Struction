@@ -12,6 +12,7 @@ use crate::format::{CollisionShapes, ConvexHull, TriMesh};
 use crate::lod::position_adapter;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollisionSettings {
     /// Target triangle count of the collision trimesh relative to the render mesh.
     pub trimesh_ratio: f32,
@@ -20,6 +21,11 @@ pub struct CollisionSettings {
     /// Also compute a convex decomposition (V-HACD); slower, needed for concave
     /// dynamic bodies.
     pub convex_decomposition: bool,
+    /// Most convex parts the decomposition may produce.
+    pub max_parts: u32,
+    /// Concavity each decomposed part may keep, relative to the mesh size; lower
+    /// values split more finely.
+    pub concavity: f32,
 }
 
 impl Default for CollisionSettings {
@@ -28,6 +34,8 @@ impl Default for CollisionSettings {
             trimesh_ratio: 0.25,
             trimesh_max_error: 0.02,
             convex_decomposition: false,
+            max_parts: 16,
+            concavity: 0.01,
         }
     }
 }
@@ -39,7 +47,7 @@ pub fn generate_collision(
 ) -> CollisionShapes {
     let trimesh = simplified_trimesh(positions, indices, settings);
     let parts = if settings.convex_decomposition && !trimesh.triangles.is_empty() {
-        convex_decomposition(&trimesh)
+        convex_decomposition(&trimesh, settings)
     } else {
         Vec::new()
     };
@@ -110,14 +118,18 @@ fn simplified_trimesh(
     mesh
 }
 
-fn convex_decomposition(mesh: &TriMesh) -> Vec<Vec<[f32; 3]>> {
+fn convex_decomposition(mesh: &TriMesh, settings: &CollisionSettings) -> Vec<Vec<[f32; 3]>> {
     let points: Vec<Vector> = mesh
         .vertices
         .iter()
         .map(|&p| Vector::from_array(p))
         .collect();
-    let decomposition =
-        VHACD::decompose(&VHACDParameters::default(), &points, &mesh.triangles, true);
+    let parameters = VHACDParameters {
+        max_convex_hulls: settings.max_parts.max(1),
+        concavity: settings.concavity,
+        ..VHACDParameters::default()
+    };
+    let decomposition = VHACD::decompose(&parameters, &points, &mesh.triangles, true);
     decomposition
         .compute_exact_convex_hulls(&points, &mesh.triangles)
         .into_iter()
