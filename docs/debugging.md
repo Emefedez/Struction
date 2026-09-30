@@ -10,7 +10,7 @@ cargo run --locked -p struction-playground -- --smoke-test --trace /tmp/structio
 
 Existing files are not overwritten. Normal renderer/application logs stay separate. Without `--trace`, the trace plugin and file writer are not installed.
 
-The playground tracks the player, cubes, gravity planet and water volume. It captures physics `Position` and `LinearVelocity`, `CharacterState` (ground contact and swimming), `CharacterLook`, `CharacterIntent`, `LocalUp`, `Submersion`, and `InCameraZones`. It reads simulation positions rather than interpolated render transforms. Registration is explicit so a game can choose the components relevant to its investigation.
+The playground tracks the player, cubes, gravity planet, water volume, floors and camera zone. Ground and zone references can be matched to those entities' names in the trace. It captures physics `Position` and `LinearVelocity`, `CharacterState` (ground contact and swimming), `CharacterLook`, `CharacterIntent`, `LocalUp`, `Submersion`, and `InCameraZones`. It reads simulation positions rather than interpolated render transforms. Registration is explicit so a game can choose the components relevant to its investigation.
 
 Each line contains a format `version`, fixed `tick` number, `identity`, and `kind`:
 
@@ -26,10 +26,10 @@ Component map keys are full Rust type paths. A missing component is represented 
 
 Capture happens in `FixedLast`, after the fixed simulation. Unchanged entities emit no lines. These are end-of-tick observations: intermediate changes that cancel within a tick are not an action history. Starting or re-enabling tracing produces a fresh baseline, not a claim that all observed entities were just created.
 
-For example, to extract character status changes with `jq`:
+Positions and contact normals can change every tick. To extract just grounded/swimming transitions with `jq`:
 
 ```bash
-jq -c 'select(.kind == "changed") | . as $event | .components | to_entries[] | select(.key | endswith("::CharacterState")) | {tick: $event.tick, entity: $event.identity, change: .value}' /tmp/struction-trace.jsonl
+jq -c 'select(.kind == "changed") | . as $event | .components | to_entries[] | select(.key | endswith("::CharacterState")) | select(.value.before.grounded != .value.after.grounded or .value.before.swimming != .value.after.swimming) | {tick: $event.tick, entity: $event.identity, change: .value}' /tmp/struction-trace.jsonl
 ```
 
 ## Engine API

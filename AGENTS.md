@@ -58,6 +58,7 @@ From the design review's pending recommendations, treated as decided:
 - Brain arguments use tagged values (`{ "Float": 0.25 }`); switch to plain JSON values typed by the condition/action parameter metadata.
 - Animation integration: character writes `AnimMotion` and `LocalUp`; a physics-raycast `GroundQuery`; order physics interpolation before `AnimSystems::Motion`. Looks: foot roll, hip sway, arm swing, longer strides (~110 steps/min), knee limits, turning in place.
 - Hot reload of a master's `grantsToWards` does not update existing wards.
+- World/physics integration must derive moving cells from simulation `Position` instead of interpolated `Transform`. Streaming still needs persistence of unloaded spawners that have not run yet; current saves record spawners after their first run.
 
 ## Next
 

@@ -2,6 +2,7 @@
 
 use bevy::{
     app::AppExit,
+    light::NotShadowCaster,
     prelude::*,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
@@ -9,6 +10,7 @@ use struction_character::{
     CharacterController, CharacterLook, CharacterState, InputActions, InputMap, InputSystems,
     PlayerControlled,
 };
+use struction_debug::{DebugTracePlugin, TraceAppExt, TraceEntity, TraceWriter};
 use struction_gravity::{GravityField, LocalUp};
 use struction_physics::{
     CameraConstraint, CameraMode, CameraTarget, CameraZone, InCameraZones, PhysicsPlugin,
@@ -33,58 +35,99 @@ struct Hud;
 enum PlaygroundSystems {
     Cursor,
     Script,
+    MovementFrame,
     Camera,
     Hud,
     Exit,
 }
 
-fn main() {
-    let smoke = std::env::args().any(|arg| arg == "--smoke-test");
-    App::new()
-        .insert_resource(PlaygroundOptions {
-            smoke,
-            jump_sent: false,
-            cursor_grabbed: false,
-            escape_released_cursor: false,
-        })
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Struction | Physics playground".into(),
-                resolution: (1280, 800).into(),
-                ..default()
-            }),
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut smoke = false;
+    let mut trace = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--smoke-test" => smoke = true,
+            "--trace" => {
+                trace = Some(
+                    args.next()
+                        .ok_or("--trace requires a new JSONL file path")?,
+                )
+            }
+            "--help" | "-h" => {
+                println!("struction-playground [--smoke-test] [--trace FILE.jsonl]");
+                return Ok(());
+            }
+            _ => return Err(format!("unknown option: {arg}").into()),
+        }
+    }
+    let mut app = App::new();
+    if let Some(path) = trace {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        app.add_plugins(DebugTracePlugin)
+            .insert_resource(TraceWriter::new(std::io::BufWriter::new(file)))
+            .trace_component::<Position>()
+            .trace_component::<LinearVelocity>()
+            .trace_component::<CharacterState>()
+            .trace_component::<CharacterLook>()
+            .trace_component::<struction_character::CharacterIntent>()
+            .trace_component::<LocalUp>()
+            .trace_component::<Submersion>()
+            .trace_component::<InCameraZones>();
+    }
+    app.insert_resource(PlaygroundOptions {
+        smoke,
+        jump_sent: false,
+        cursor_grabbed: false,
+        escape_released_cursor: false,
+    })
+    .add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Struction | Physics playground".into(),
+            resolution: (1280, 800).into(),
             ..default()
-        }))
-        .add_plugins((
-            PhysicsPlugin::default(),
-            struction_character::CharacterPlugins,
-        ))
-        .configure_sets(
-            PreUpdate,
-            PlaygroundSystems::Cursor.before(InputSystems::Map),
+        }),
+        ..default()
+    }))
+    .add_plugins((
+        PhysicsPlugin::default(),
+        struction_character::CharacterPlugins,
+    ))
+    .configure_sets(
+        PreUpdate,
+        PlaygroundSystems::Cursor.before(InputSystems::Map),
+    )
+    .configure_sets(
+        PreUpdate,
+        (PlaygroundSystems::Script, PlaygroundSystems::MovementFrame)
+            .chain()
+            .after(InputSystems::Map)
+            .before(InputSystems::Command),
+    )
+    .configure_sets(
+        Update,
+        (
+            PlaygroundSystems::Camera,
+            PlaygroundSystems::Hud,
+            PlaygroundSystems::Exit,
         )
-        .configure_sets(
-            PreUpdate,
-            PlaygroundSystems::Script
-                .after(InputSystems::Map)
-                .before(InputSystems::Command),
-        )
-        .configure_sets(
-            Update,
-            (
-                PlaygroundSystems::Camera,
-                PlaygroundSystems::Hud,
-                PlaygroundSystems::Exit,
-            )
-                .chain(),
-        )
-        .add_systems(Startup, setup)
-        .add_systems(PreUpdate, cursor_controls.in_set(PlaygroundSystems::Cursor))
-        .add_systems(PreUpdate, scripted_input.in_set(PlaygroundSystems::Script))
-        .add_systems(Update, follow_camera.in_set(PlaygroundSystems::Camera))
-        .add_systems(Update, update_hud.in_set(PlaygroundSystems::Hud))
-        .add_systems(Update, exit_control.in_set(PlaygroundSystems::Exit))
-        .run();
+            .chain(),
+    )
+    .add_systems(Startup, setup)
+    .add_systems(PreUpdate, cursor_controls.in_set(PlaygroundSystems::Cursor))
+    .add_systems(PreUpdate, scripted_input.in_set(PlaygroundSystems::Script))
+    .add_systems(
+        PreUpdate,
+        camera_movement.in_set(PlaygroundSystems::MovementFrame),
+    )
+    .add_systems(Update, follow_camera.in_set(PlaygroundSystems::Camera))
+    .add_systems(Update, update_hud.in_set(PlaygroundSystems::Hud))
+    .add_systems(Update, exit_control.in_set(PlaygroundSystems::Exit))
+    .run();
+    Ok(())
 }
 
 fn setup(
@@ -105,7 +148,10 @@ fn setup(
         },
         Transform::from_xyz(8.0, 16.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    commands.spawn((Camera3d::default(), Transform::from_xyz(0.0, 4.0, 11.0)));
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 4.0, 13.0).looking_at(Vec3::new(0.0, 1.4, 8.0), Vec3::Y),
+    ));
     spawn_scene_gravity(&mut commands);
     spawn_floor(&mut commands, &mut meshes, &mut materials);
     spawn_pool(&mut commands, &mut meshes, &mut materials);
@@ -154,6 +200,7 @@ fn spawn_floor(
         commands.spawn((
             Name::new(name),
             RigidBody::Static,
+            TraceEntity,
             Collider::cuboid(14.0, 0.5, 12.0),
             surface,
             Mesh3d(tile.clone()),
@@ -163,6 +210,7 @@ fn spawn_floor(
     }
     commands.spawn((
         Name::new("Planet approach"),
+        TraceEntity,
         RigidBody::Static,
         Collider::cuboid(4.0, 0.5, 7.0),
         Surface::default(),
@@ -173,6 +221,7 @@ fn spawn_floor(
     // A shallow rim makes the pool's edge readable and keeps its base solid.
     commands.spawn((
         Name::new("Pool floor"),
+        TraceEntity,
         RigidBody::Static,
         Collider::cuboid(7.0, 0.5, 8.0),
         Mesh3d(meshes.add(Cuboid::new(7.0, 0.5, 8.0))),
@@ -191,14 +240,22 @@ fn spawn_pool(
     };
     commands.spawn((
         Name::new("Water pool"),
+        TraceEntity,
         water(shape),
         Transform::from_xyz(10.5, -1.0, -5.0),
-        Mesh3d(meshes.add(Cuboid::new(7.0, 3.0, 8.0))),
+    ));
+    // A closed transparent box overlaps the pool floor and blends its own unsorted faces.
+    commands.spawn((
+        Name::new("Water surface"),
+        Transform::from_xyz(10.5, 0.5, -5.0),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(7.0, 8.0))),
+        NotShadowCaster,
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgba(0.04, 0.46, 0.72, 0.48),
             alpha_mode: AlphaMode::Blend,
             perceptual_roughness: 0.24,
             cull_mode: None,
+            double_sided: true,
             ..default()
         })),
     ));
@@ -212,6 +269,7 @@ fn spawn_planet(
     let center = Vec3::new(0.0, 4.0, -20.0);
     commands.spawn((
         Name::new("Gravity planet"),
+        TraceEntity,
         RigidBody::Static,
         Collider::sphere(4.0),
         GravityField::planet(24.0, 8.0),
@@ -229,6 +287,7 @@ fn spawn_camera_zone(
 ) {
     commands.spawn((
         Name::new("Overhead camera zone"),
+        TraceEntity,
         CameraZone::bundle(
             Volume {
                 shape: VolumeShape::Box {
@@ -278,6 +337,7 @@ fn spawn_cubes(
         commands.spawn((
             Name::new(name),
             RigidBody::Dynamic,
+            TraceEntity,
             Collider::cuboid(1.0, 1.0, 1.0),
             ColliderDensity(density),
             Mesh3d(cube.clone()),
@@ -295,6 +355,7 @@ fn spawn_player(
     commands.spawn((
         Name::new("Player"),
         Player,
+        TraceEntity,
         CharacterController::default(),
         PlayerControlled,
         CameraTarget,
@@ -386,14 +447,40 @@ fn follow_camera(
         .map_or(default, |zone| zone.constraint.mode);
     let target = match mode {
         CameraMode::Follow { distance, pitch } => {
-            let angle = look.pitch + pitch;
+            let angle = (look.pitch + pitch).clamp(-1.3, 1.3);
             focus - look.forward * (distance * angle.cos()) + up * (distance * angle.sin() + 0.7)
         }
         CameraMode::Fixed { position } => position,
     };
     let smoothing = 1.0 - (-8.0 * time.delta_secs()).exp();
     camera.translation = camera.translation.lerp(target, smoothing);
-    camera.look_at(focus, up);
+    // Overhead views use the ground heading as screen-up, avoiding the look-at pole.
+    let view_up = match mode {
+        CameraMode::Fixed { .. } => look.forward,
+        CameraMode::Follow { .. } => up,
+    };
+    let target_rotation = camera.looking_at(focus, view_up).rotation;
+    camera.rotation = camera
+        .rotation
+        .slerp(target_rotation, smoothing)
+        .normalize();
+}
+
+fn camera_movement(
+    camera: Query<&Transform, With<Camera3d>>,
+    player: Query<&LocalUp, With<Player>>,
+    mut actions: ResMut<InputActions>,
+) {
+    if let (Ok(camera), Ok(up)) = (camera.single(), player.single()) {
+        actions.movement_forward = camera_ground_forward(camera, *up.0);
+    }
+}
+
+fn camera_ground_forward(camera: &Transform, up: Vec3) -> Option<Vec3> {
+    // Screen-right remains defined when a camera points straight down at the player.
+    let right = *camera.right();
+    let right = (right - up * right.dot(up)).try_normalize()?;
+    Some(up.cross(right))
 }
 
 fn update_hud(
@@ -440,5 +527,90 @@ fn exit_control(
         exit.write(AppExit::Success);
     } else if keys.just_pressed(KeyCode::Escape) && !options.escape_released_cursor {
         exit.write(AppExit::Success);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn camera_movement_remains_defined_in_overhead_and_planet_views() {
+        for (up, forward) in [
+            (Vec3::Y, Vec3::NEG_Z),
+            (Vec3::Z, Vec3::Y),
+            (Vec3::NEG_Y, Vec3::Z),
+        ] {
+            let overhead = Transform::from_translation(up * 10.0).looking_at(Vec3::ZERO, forward);
+            assert!(
+                camera_ground_forward(&overhead, up)
+                    .unwrap()
+                    .abs_diff_eq(forward, 1e-5)
+            );
+            let follow =
+                Transform::from_translation(up * 3.0 - forward * 5.0).looking_at(Vec3::ZERO, up);
+            assert!(
+                camera_ground_forward(&follow, up)
+                    .unwrap()
+                    .abs_diff_eq(forward, 1e-5)
+            );
+        }
+    }
+
+    #[test]
+    fn passing_under_the_overhead_camera_does_not_reverse_screen_right() {
+        let mut app = App::new();
+        let mut time = Time::<()>::default();
+        time.advance_by(Duration::from_secs_f32(1.0 / 60.0));
+        app.insert_resource(time).add_systems(Update, follow_camera);
+        let position = Vec3::new(0.0, 14.0, -8.0);
+        let zone = app
+            .world_mut()
+            .spawn(CameraZone {
+                constraint: CameraConstraint {
+                    mode: CameraMode::Fixed { position },
+                    weight: 1.0,
+                    priority: 1,
+                },
+            })
+            .id();
+        let player = app
+            .world_mut()
+            .spawn((
+                Player,
+                Transform::from_xyz(0.0, 0.9, -6.0),
+                LocalUp::default(),
+                CharacterLook::default(),
+                InCameraZones(vec![zone]),
+            ))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Transform::from_translation(position)
+                    .looking_at(Vec3::new(0.0, 1.4, -6.0), Vec3::NEG_Z),
+            ))
+            .id();
+        for frame in 0..120 {
+            app.world_mut()
+                .get_mut::<Transform>(player)
+                .unwrap()
+                .translation
+                .z = -6.0 - frame as f32 / 30.0;
+            let previous = app.world().get::<Transform>(camera).unwrap().rotation;
+            app.world_mut().run_schedule(Update);
+            let transform = app.world().get::<Transform>(camera).unwrap();
+            assert!(transform.rotation.is_finite());
+            assert!(transform.rotation.angle_between(previous) < 0.1);
+            assert!(transform.right().dot(Vec3::X) > 0.99);
+            assert!(
+                camera_ground_forward(transform, Vec3::Y)
+                    .unwrap()
+                    .dot(Vec3::NEG_Z)
+                    > 0.99
+            );
+        }
     }
 }
