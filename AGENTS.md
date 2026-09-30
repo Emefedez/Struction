@@ -9,6 +9,7 @@ Working notes for coding agents (Claude, Codex) implementing Struction. The desi
 - Before committing: `cargo test -p <crate>`, `cargo clippy -p <crate> --all-targets -- -D warnings`, `cargo fmt --all --check`. Commit `Cargo.lock`.
 - Systems use explicit system sets and ordering, never registration order. Simulation runs in `FixedUpdate` and never reads presentation state; randomness is seeded.
 - Match the surrounding code: sparse comments explaining why, no speculative abstractions (README "Scope").
+- AI tools are first-class authoring clients. Expose inspection, validation and edits through headless APIs over structured data; editor UI must call the same operations. Preserve comments, stable identities, actionable source errors and undoable changes. Do not make game authoring depend on GUI automation.
 - Commit often with focused messages, staging only the files you touched (several agents share one checkout). Update the status table below when a milestone step lands.
 
 ## Adopted decisions
@@ -41,13 +42,14 @@ From the design review's pending recommendations, treated as decided:
 | Area | State |
 | --- | --- |
 | `struction_core` | Done, 53 tests |
-| `struction_data` | Done, 64 tests. Defines its own `Lineage`, to be replaced by core's `Definition` in `struction_world` step 0 |
-| gravity / physics / character | Done, 40 tests. Own input mapping instead of `bevy_enhanced_input`; dynamic capsule controller |
+| `struction_data` | Done, 68 tests. Lineage unified with core's `Definition`; reflected grants/reactions available to world integration |
+| gravity / physics / character | Done, 42 tests. Own input mapping; dynamic capsule controller; camera movement frames are captured as commands, headings follow changes in gravity |
 | `struction_anim` | Done, 52 tests. Spike verdict: go on mechanics (planted feet, planets, hold/gaze/sit); visual quality unproven until rendered. Runtime uses a fixed solve pipeline, not the dataflow graph yet |
 | `struction_ai` | Done, 23 tests. Loading `brain`/`sensing` from definitions and a physics line-of-sight are left to integration |
-| `struction_world` | Not started |
-| `struction_assets` | Not started |
-| `apps/playground` | In progress (Codex): milestone 1 visual scene |
+| `struction_world` | Spawners, save/load, aliases and boss/minion integration verified with 21 tests. Rejects inconsistent save identities and rename key collisions; renamed/removed spawns keep correct save bookkeeping |
+| `struction_assets` | Implementation and tests present; verification pending |
+| `struction_editor` / `apps/editor` | History/session source present but not exported; editor app remains a scaffold |
+| `apps/playground` | Milestone 1 scene runnable. Water surface replaces overlapping transparent box; camera-relative movement and overhead orientation covered by 2 tests; native Vulkan smoke run verified |
 
 ## Follow-ups
 
@@ -57,9 +59,7 @@ From the design review's pending recommendations, treated as decided:
 
 ## Next
 
-1. Finish and verify the interrupted crates (physics/character, anim, ai).
-2. `struction_world`: unify lineage, build grants/reactions from data, spawners, save/load, rename, boss/minion scenario test.
-3. `struction_assets` (milestone 6).
-4. Playground app (`apps/playground`): the validation scene from the README, with the physics, character, animation, AI, and data crates wired together, keyboard input, and hot reload.
-5. Editor (milestone 4): egui hierarchy, inspector, gizmos, undo/redo over `struction_data::edit`, play mode on a world copy, spawn previews, templates.
-6. Menus as entities; package validation (planetary gravity as an external package, milestone 7); streaming (milestone 8).
+1. Verify `struction_assets` (milestone 6), including headless Blender import.
+2. Playground: integrate animation, AI and authored encounters through `struction_world`, then hot reload and the rest of the README validation scene.
+3. Editor (milestone 4): finish and expose the headless session/history API for both AI tools and egui; hierarchy, inspector, gizmos, undo/redo, play mode on a world copy, spawn previews, templates. Add structured command/validation entry points as the operations become available.
+4. Menus as entities; package validation (planetary gravity as an external package, milestone 7); streaming (milestone 8).

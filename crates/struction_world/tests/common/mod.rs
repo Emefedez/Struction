@@ -115,7 +115,10 @@ pub fn app_with(root: &Path, options: Options) -> App {
             },
         );
     }
-    for die in ["bosses/ogre_lord/die".to_owned(), format!("{}/die", options.ogre)] {
+    for die in [
+        "bosses/ogre_lord/die".to_owned(),
+        format!("{}/die", options.ogre),
+    ] {
         app.register_action(
             ActionMeta::new(die),
             |In(call): In<ActionCall>, mut commands: Commands| {
@@ -160,12 +163,15 @@ pub fn assert_no_errors(app: &mut App) {
 }
 
 /// Finds an entity by path, loaded or not.
-pub fn by_path(app: &mut App, path: &str) -> Entity {
+pub fn by_path(app: &App, path: &str) -> Entity {
     find(app, path).unwrap_or_else(|| panic!("no entity at {path}"))
 }
 
-pub fn find(app: &mut App, path: &str) -> Option<Entity> {
-    find_entity(app.world_mut(), &EntityRef::Path(EntityPath::new(path)))
+pub fn find(app: &App, path: &str) -> Option<Entity> {
+    app.world()
+        .try_query_filtered::<(Entity, &EntityPath), Allow<Disabled>>()?
+        .iter(app.world())
+        .find_map(|(entity, candidate)| (candidate.as_str() == path).then_some(entity))
 }
 
 pub fn has<C: Component>(app: &App, entity: Entity) -> bool {
@@ -189,10 +195,7 @@ pub fn instance_paths(app: &mut App) -> Vec<String> {
     let mut query = app
         .world_mut()
         .query_filtered::<&EntityPath, (With<Spawned>, Allow<Disabled>)>();
-    let mut paths: Vec<String> = query
-        .iter(app.world())
-        .map(ToString::to_string)
-        .collect();
+    let mut paths: Vec<String> = query.iter(app.world()).map(ToString::to_string).collect();
     paths.sort();
     paths
 }

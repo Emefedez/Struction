@@ -68,10 +68,8 @@ pub(crate) struct Index {
 impl Index {
     pub fn build(world: &mut World) -> Self {
         let mut index = Self::default();
-        let mut query = world.query_filtered::<
-            (Entity, Option<&EntityPath>, Option<&StableId>),
-            Allow<Disabled>,
-        >();
+        let mut query = world
+            .query_filtered::<(Entity, Option<&EntityPath>, Option<&StableId>), Allow<Disabled>>();
         for (entity, path, id) in query.iter(world) {
             if let Some(path) = path {
                 index.paths.insert(path.clone(), entity);

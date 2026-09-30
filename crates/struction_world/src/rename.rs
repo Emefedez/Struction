@@ -105,7 +105,22 @@ impl PathAliases {
         let resolve = |path: &mut String| *path = self.resolve(path).into_owned();
         save.spawners = std::mem::take(&mut save.spawners)
             .into_iter()
-            .map(|(path, spawner)| (self.resolve(&path).into_owned(), spawner))
+            .map(|(path, mut spawner)| {
+                let resolve_name = |name: String| {
+                    self.resolve(&format!("{path}/{name}"))
+                        .rsplit('/')
+                        .next()
+                        .expect("paths have a final segment")
+                        .to_owned()
+                };
+                spawner.created = spawner
+                    .created
+                    .into_iter()
+                    .map(|(name, id)| (resolve_name(name), id))
+                    .collect();
+                spawner.removed = spawner.removed.into_iter().map(resolve_name).collect();
+                (self.resolve(&path).into_owned(), spawner)
+            })
             .collect();
         for entity in &mut save.entities {
             resolve(&mut entity.definition);
@@ -237,7 +252,9 @@ impl Renamer<'_> {
             return Err(self.unsupported(path, &new_path));
         }
         if new_key != key {
-            self.edits.keys.push((container, key.into(), new_key.into()));
+            self.edits
+                .keys
+                .push((container, key.into(), new_key.into()));
         }
         Ok(new_path)
     }
@@ -264,19 +281,18 @@ impl Renamer<'_> {
         }
         let spawners = root.get("spawnerList").and_then(Node::as_object);
         for spawner in spawners.unwrap_or_default() {
-            let here = vec![PathSegment::from("spawnerList"), spawner.key.as_str().into()];
+            let here = vec![
+                PathSegment::from("spawnerList"),
+                spawner.key.as_str().into(),
+            ];
             let Some(zone) = spawner.value.get("zone").and_then(Node::as_str) else {
                 continue;
             };
             self.string(spawner.value.get("zone"), at(&here, "zone"));
             let new_zone = renamed(zone, self.old, self.new).unwrap_or_else(|| zone.to_owned());
             let path = format!("{zone}/{}", spawner.key);
-            let new_spawner = self.key(
-                vec!["spawnerList".into()],
-                &spawner.key,
-                &path,
-                &new_zone,
-            )?;
+            let new_spawner =
+                self.key(vec!["spawnerList".into()], &spawner.key, &path, &new_zone)?;
             let spawns = spawner.value.get("spawns").and_then(Node::as_object);
             for spawn in spawns.unwrap_or_default() {
                 let spawn_here = at(&at(&here, "spawns"), spawn.key.as_str());
@@ -302,7 +318,13 @@ fn io(context: &str, error: std::io::Error) -> RenameError {
 }
 
 fn valid(path: &str) -> bool {
-    !path.is_empty() && path.split('/').all(|segment| !segment.is_empty())
+    !path.is_empty()
+        && path.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && !segment.contains(['\\', '\0'])
+        })
 }
 
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
@@ -369,8 +391,22 @@ fn apply(file: &str, mut text: String, mut edits: FileEdits) -> Result<String, R
             .text;
     }
     // Deepest first, so outer keys are still the old ones when inner keys are looked up.
-    edits.keys.sort_by_key(|(parent, ..)| std::cmp::Reverse(parent.len()));
+    edits
+        .keys
+        .sort_by_key(|(parent, ..)| std::cmp::Reverse(parent.len()));
     for (parent, old, new) in edits.keys {
+        let node = parse_jsonc(file, &text)?;
+        let mut container = &node;
+        for segment in &parent {
+            container = match segment {
+                PathSegment::Key(key) => container.get(key),
+                PathSegment::Index(i) => container.as_array().and_then(|items| items.get(*i)),
+            }
+            .expect("edit paths came from the source");
+        }
+        if old != new && container.get(&new).is_some() {
+            return Err(RenameError::Exists(format!("{file}: {new}")));
+        }
         text = rename_key(&text, &parent, &old, &new).map_err(edit_error)?;
     }
     Ok(text)
@@ -386,7 +422,8 @@ fn has_entity_file(dir: &Path) -> bool {
 
 /// Renames `old` to `new` across the project at `root`, writing the edited sources, moving
 /// definition directories and preset files, and recording the alias. Every edit is computed
-/// before anything is written, so an error leaves the project untouched.
+/// before anything is written, so validation errors leave the project untouched. Filesystem
+/// failures during writing or moving are reported but are not rolled back.
 pub fn rename_path(root: &Path, old: &str, new: &str) -> Result<RenameReport, RenameError> {
     for path in [old, new] {
         if !valid(path) {
@@ -406,7 +443,10 @@ pub fn rename_path(root: &Path, old: &str, new: &str) -> Result<RenameReport, Re
         moves.push((old.into(), new.into()));
     }
     if root.join(format!("presets/{old}.jsonc")).is_file() {
-        moves.push((format!("presets/{old}.jsonc"), format!("presets/{new}.jsonc")));
+        moves.push((
+            format!("presets/{old}.jsonc"),
+            format!("presets/{new}.jsonc"),
+        ));
     }
     if root.join(format!("presets/{old}")).is_dir() {
         moves.push((format!("presets/{old}"), format!("presets/{new}")));
@@ -457,8 +497,10 @@ pub fn rename_path(root: &Path, old: &str, new: &str) -> Result<RenameReport, Re
     let aliases_path = root.join(ALIASES_FILE);
     let mut aliases_text = match fs::read_to_string(&aliases_path) {
         Ok(text) => text,
-        Err(_) => "// Renamed paths, old -> new. Saves written before a rename load through these.\n{}\n"
-            .to_owned(),
+        Err(_) => {
+            "// Renamed paths, old -> new. Saves written before a rename load through these.\n{}\n"
+                .to_owned()
+        }
     };
     let edit_error = |error| RenameError::Edit {
         file: ALIASES_FILE.into(),

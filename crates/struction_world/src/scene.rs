@@ -87,9 +87,8 @@ impl SpawnerDef {
 
     /// Where a spawn is placed in the world: its offset and rotation in the spawner's frame.
     pub fn spawn_transform(&self, zone: &Transform, spawn: &SpawnDef) -> Transform {
-        self.world_transform(zone).mul_transform(
-            Transform::from_translation(spawn.offset).with_rotation(spawn.rotation),
-        )
+        self.world_transform(zone)
+            .mul_transform(Transform::from_translation(spawn.offset).with_rotation(spawn.rotation))
     }
 }
 
@@ -106,7 +105,11 @@ impl SceneCatalog {
     /// [`Self::errors`]; everything else loads.
     pub fn load(root: &Path, store: &DefinitionStore, types: &TypeRegistry) -> Self {
         let mut files = Vec::new();
-        walk(&root.join(SCENES_DIR), &format!("{SCENES_DIR}/"), &mut files);
+        walk(
+            &root.join(SCENES_DIR),
+            &format!("{SCENES_DIR}/"),
+            &mut files,
+        );
         files.sort();
         let mut catalog = Self::default();
         for (rel, full) in files {
@@ -199,7 +202,11 @@ impl SceneCatalog {
             }
         }
         if self.zones.insert(path.clone(), zone).is_some() {
-            return Err(invalid("zone", format!("zone \"{path}\" is declared twice"), &member.key_span));
+            return Err(invalid(
+                "zone",
+                format!("zone \"{path}\" is declared twice"),
+                &member.key_span,
+            ));
         }
         Ok(())
     }

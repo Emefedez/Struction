@@ -38,7 +38,8 @@ pub(crate) fn update_cells(
 
 /// Unloads every world entity in `cell`. Returns how many were unloaded.
 pub fn unload_cell(world: &mut World, cell: IVec3) -> usize {
-    let mut query = world.query_filtered::<(Entity, &Cell), (With<WorldEntity>, Without<Disabled>)>();
+    let mut query =
+        world.query_filtered::<(Entity, &Cell), (With<WorldEntity>, Without<Disabled>)>();
     let entities: Vec<Entity> = query
         .iter(world)
         .filter(|(_, c)| c.0 == cell)

@@ -27,9 +27,7 @@ use bevy::reflect::{FromType, ReflectFromReflect, TypeRegistry};
 use serde::de::DeserializeSeed;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use struction_core::{
-    Definition, GrantRecord, MasterIs, StableId, StableIdGenerator,
-};
+use struction_core::{Definition, GrantRecord, MasterIs, StableId, StableIdGenerator};
 use struction_data::{DataError, DefinitionStore};
 use thiserror::Error;
 use uuid::Uuid;
@@ -211,20 +209,18 @@ pub fn save_world(world: &mut World) -> SaveData {
 
     let types = world.resource::<AppTypeRegistry>().clone();
     let types = types.read();
-    let mut query = world.query_filtered::<
-        (
-            Entity,
-            &StableId,
-            &Definition,
-            Option<&EntityPath>,
-            Option<&MasterIs>,
-            Option<&PendingMaster>,
-            Has<Disabled>,
-            Option<&GrantRecord>,
-        ),
-        (Or<(With<Spawned>, With<RuntimeCreated>)>, Allow<Disabled>),
-    >();
-    let mut refs = world.query_filtered::<(Option<&EntityPath>, Option<&StableId>), Allow<Disabled>>();
+    let mut query = world.query_filtered::<(
+        Entity,
+        &StableId,
+        &Definition,
+        Option<&EntityPath>,
+        Option<&MasterIs>,
+        Option<&PendingMaster>,
+        Has<Disabled>,
+        Option<&GrantRecord>,
+    ), (Or<(With<Spawned>, With<RuntimeCreated>)>, Allow<Disabled>)>();
+    let mut refs =
+        world.query_filtered::<(Option<&EntityPath>, Option<&StableId>), Allow<Disabled>>();
     let mut entities = Vec::new();
     for (entity, id, definition, path, master, pending, unloaded, granted) in query.iter(world) {
         let master = match (master, pending) {
@@ -232,7 +228,9 @@ pub fn save_world(world: &mut World) -> SaveData {
                 Ok((Some(path), _)) => Some(SavedRef::Path(path.to_string())),
                 Ok((None, Some(id))) => Some(SavedRef::Id(id.to_string())),
                 _ => {
-                    warn!("{id}: its master {master} is not a world entity; the relation is not saved");
+                    warn!(
+                        "{id}: its master {master} is not a world entity; the relation is not saved"
+                    );
                     None
                 }
             },
@@ -413,6 +411,9 @@ pub fn load_world(world: &mut World, save: &SaveData) -> Result<LoadReport, Save
         let store = world.resource::<DefinitionStore>();
         for entity in &save.entities {
             let id = parse_id(&entity.id)?;
+            if states.contains_key(&id) {
+                return Err(SaveError::Malformed(format!("duplicate stable id {id}")));
+            }
             if store.get(&entity.definition).is_none() {
                 return Err(SaveError::MissingDefinition {
                     entity: entity.id.clone(),
@@ -426,13 +427,45 @@ pub fn load_world(world: &mut World, save: &SaveData) -> Result<LoadReport, Save
         }
     }
     let mut spawners = Vec::new();
+    let mut authored = HashMap::new();
     for (path, spawner) in &save.spawners {
+        let catalog = world.resource::<crate::SceneCatalog>();
+        if catalog.spawner(&EntityPath::new(path)).is_none()
+            && (catalog.zones().any(|zone| zone.path.as_str() == path)
+                || catalog
+                    .spawners()
+                    .any(|s| s.spawns.iter().any(|spawn| spawn.path.as_str() == path)))
+        {
+            return Err(SaveError::Malformed(format!("{path} is not a spawner")));
+        }
         let created = spawner
             .created
             .iter()
             .map(|(name, id)| Ok((name.clone(), parse_id(id)?)))
             .collect::<Result<BTreeMap<_, _>, SaveError>>()?;
+        for (name, id) in &created {
+            if spawner.removed.contains(name)
+                || authored.insert(*id, format!("{path}/{name}")).is_some()
+            {
+                return Err(SaveError::Malformed(format!(
+                    "conflicting spawn record {path}/{name}"
+                )));
+            }
+        }
         spawners.push((EntityPath::new(path), created, spawner));
+    }
+    for entity in &save.entities {
+        let id = parse_id(&entity.id)?;
+        if authored.get(&id) != entity.path.as_ref() {
+            return Err(SaveError::Malformed(format!(
+                "entity {id} does not match its spawn record"
+            )));
+        }
+    }
+    if let Some(id) = authored.keys().find(|id| !states.contains_key(id)) {
+        return Err(SaveError::Malformed(format!(
+            "spawn record has no entity {id}"
+        )));
     }
 
     clear_world(world);
@@ -468,7 +501,11 @@ pub fn load_world(world: &mut World, save: &SaveData) -> Result<LoadReport, Save
     let leftover = world
         .remove_resource::<PendingRestore>()
         .expect("inserted above");
-    let mut dropped: Vec<String> = leftover.0.keys().map(|id| format!("instance {id}")).collect();
+    let mut dropped: Vec<String> = leftover
+        .0
+        .keys()
+        .map(|id| format!("instance {id}"))
+        .collect();
     dropped.sort();
     report.dropped.extend(dropped);
 

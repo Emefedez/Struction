@@ -2,7 +2,7 @@
 
 A data-driven game engine derived from Bevy, focused on fast authoring through composition, procedural animation, and small integrated tools.
 
-This describes the intended design; only a graphics smoke test exists ([development setup](docs/development.md)). Rationale and pending recommendations are in the [design review](docs/design-review.md). Scope is sized for a solo developer. The first version targets Linux only.
+This describes the intended design. The workspace has headless engine packages, world integration tests and a native physics playground ([development setup](docs/development.md)); current implementation status is tracked in [AGENTS.md](AGENTS.md). Rationale and adopted decisions are in the [design review](docs/design-review.md). Scope is sized for a solo developer. The first version targets Linux only.
 
 ## Core model
 
@@ -161,6 +161,8 @@ Templates scaffold enemies, spawners, and menus with ordered definitions, commen
 ## Editor and toolboxes
 
 Native editor, Linux first. Edits are recorded as undoable changes (file, field, previous and next value); continuous edits such as a gizmo drag form one transaction. Play mode runs on a copy of the world and is excluded from history. **Open in…** hands a source file to the full application; saving triggers reimport and hot reload. `.blend` files are converted through headless Blender and glTF; shipped games do not need Blender.
+
+**AI authoring is a first-class requirement.** Inspection, validation and editing operations must be callable without a window, using structured data and the same headless APIs as the editor. Component schemas and action metadata make capabilities discoverable; edits preserve comments and stable identities, participate in undo/redo, and return actionable source errors. Command-line or tool-protocol adapters should expose those operations as they become available. An AI should be able to inspect a game, change its definitions or scene, and verify the result without automating mouse clicks.
 
 | Toolbox | Tasks | Version |
 | --- | --- | --- |

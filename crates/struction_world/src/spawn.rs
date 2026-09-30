@@ -128,7 +128,13 @@ pub fn build_world(world: &mut World) {
         })
         .collect();
     for (path, transform) in zones {
-        world.spawn((WorldEntity, Zone, Name::new(path.to_string()), path, transform));
+        world.spawn((
+            WorldEntity,
+            Zone,
+            Name::new(path.to_string()),
+            path,
+            transform,
+        ));
     }
     for (path, transform) in spawners {
         world.spawn((
@@ -153,15 +159,18 @@ pub fn spawn_instance(
 ) -> Result<Entity, Vec<DataError>> {
     let types = world.resource::<AppTypeRegistry>().clone();
     let types = types.read();
-    let resolved =
-        world
-            .resource::<DefinitionStore>()
-            .instantiate(definition, overrides, &types)?;
+    let resolved = world
+        .resource::<DefinitionStore>()
+        .instantiate(definition, overrides, &types)?;
     let actions = world.resource::<ActionRegistry>();
     let grants = resolved.grants_to_wards(&types, actions)?;
     let reactions = resolved.reactions(actions)?;
-    let transform =
-        placement.mul_transform(resolved.component::<Transform>().copied().unwrap_or_default());
+    let transform = placement.mul_transform(
+        resolved
+            .component::<Transform>()
+            .copied()
+            .unwrap_or_default(),
+    );
     let cell = world.resource::<CellSize>().cell_of(transform.translation);
 
     let mut entity = world.spawn((WorldEntity, cell));
@@ -208,8 +217,12 @@ pub fn run_spawner(world: &mut World, spawner: Entity) -> Vec<DataError> {
     let zone = catalog.zone_transform(&def.zone);
 
     let mut errors = Vec::new();
-    let mut created = state.created.clone();
-    for spawn in def.spawns.iter().filter(|s| !state.removed.contains(&s.name)) {
+    let mut created = BTreeMap::new();
+    for spawn in def
+        .spawns
+        .iter()
+        .filter(|s| !state.removed.contains(&s.name))
+    {
         let placement = def.spawn_transform(&zone, spawn);
         let entity = match spawn_instance(
             world,
@@ -223,7 +236,7 @@ pub fn run_spawner(world: &mut World, spawner: Entity) -> Vec<DataError> {
                 continue;
             }
         };
-        let id = match created.get(&spawn.name) {
+        let id = match state.created.get(&spawn.name) {
             Some(id) => *id,
             None => world.resource_mut::<StableIdGenerator>().next_id(),
         };

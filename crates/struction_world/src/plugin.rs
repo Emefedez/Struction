@@ -6,9 +6,7 @@ use crate::cells::{CellSize, update_cells};
 use crate::rename::PathAliases;
 use crate::save::{ReflectPersist, clear_world};
 use crate::scene::SceneCatalog;
-use crate::spawn::{
-    WorldErrors, build_world, link_masters, record_removal, run_pending_spawners,
-};
+use crate::spawn::{WorldErrors, build_world, link_masters, record_removal, run_pending_spawners};
 
 /// Phases of the world in `FixedUpdate`. `Spawn` and `Link` run before `CoreSet::Invoke`, so new
 /// instances and relations exist before anything invokes actions on them; `Cells` runs after
