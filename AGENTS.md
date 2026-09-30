@@ -23,7 +23,7 @@ Check this table before proceeding with changes. An active claim covers only its
 | Data/world authoring hooks | **MOON** | Landed: read-only candidate-source validation, scene-source provenance and integration tests; 69 data / 22 world tests and Clippy verified |
 | Asset pipeline verification | **MOON** | Landed: 23 tests, including actual Blender import/export, and Clippy verified; implementation predates this verification |
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
-| Planet gravity and camera obstruction | **MOON** | Active: gravity entry/exit hysteresis and escape tests; separate playground occlusion module for transparent blocking ground. SUN retains rig/animation work in playground; only minimal camera module wiring and planet tuning will overlap |
+| Planet gravity and camera obstruction | **SUN** (from **MOON**) | Active, handed to SUN while MOON is away; MOON's uncommitted work is being verified and finished as-is: gravity entry/exit hysteresis and escape tests; separate playground occlusion module for transparent blocking ground. SUN retains rig/animation work in playground; only minimal camera module wiring and planet tuning will overlap |
 | Character animation integration | **SUN** | Landed (implemented and verified by **SUN**): `CharacterAnimationPlugin` bridge, `CustomGround` hook, slope fixes in the controller and locomotion, animated player and working HUD in `apps/playground`; native Vulkan smoke run verified |
 
 ## Adopted decisions
