@@ -1,0 +1,8 @@
+// Half as dense as water, so it floats.
+{
+  "descendsFrom": "props/pushable_cube",
+  "components": {
+    "ColliderDensity": 500,
+    "Look": { "color": [0.92, 0.72, 0.38] }
+  }
+}

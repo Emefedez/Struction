@@ -14,7 +14,7 @@ const FALLBACK_GRAVITY: f32 = 9.81;
 /// the character is asked to do lives in [`CharacterIntent`]. Override the required `Collider`
 /// to change its shape.
 #[derive(Component, Reflect, Clone, Debug, PartialEq)]
-#[reflect(Component)]
+#[reflect(Component, Default)]
 #[require(
     RigidBody::Dynamic,
     Collider = Collider::capsule(0.3, 1.0),

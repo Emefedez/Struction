@@ -26,6 +26,7 @@ Check this table before proceeding with changes. An active claim covers only its
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
 | Planet gravity and camera obstruction | **SUN** (from **MOON**) | Landed: MOON implemented gravity entry/exit hysteresis, simulation-owned `GravityPose` and `camera_obstructions`; SUN verified them, fixed the controller judging leaving the ground along up, and replaced whole-material fading with a sight-line shader cut-out (`apps/playground/src/sight_fade.wgsl`) for ground and water, reviewed natively with the user |
 | Character animation integration | **SUN** | Landed (implemented and verified by **SUN**): `CharacterAnimationPlugin` bridge, `CustomGround` hook, slope fixes in the controller and locomotion, animated player and working HUD in `apps/playground`; native Vulkan smoke run verified |
+| Playground scene as data | **SUN** | Landed: Milestone 1 scene authored in `apps/playground/project` and spawned through `struction_data`/`struction_world`; `Shape`/`Look`/`Humanoid` authoring components in `apps/playground/src/scene.rs`. Implemented and verified by **SUN**: 3 scene tests, and a `--smoke-test` run on llvmpipe under Xvfb that ends on the planet like `main` (37 vs 38 footfalls); not yet looked at on a real GPU |
 | Editor GUI | **SUN** | Landed (implemented and verified by **SUN**): egui (`bevy_egui`) chosen over Dear ImGui, custom theme; `apps/editor` bound to `AuthoringProject` with project open, scene tree, inspector edits (instance overrides, definition fields, reset), problems, undo/redo, viewport selection and drag moves, and play/pause/step. 7 tests; a native run checked the hierarchy, inspectors and markers. Mouse picking/dragging and play were verified headlessly only |
 
 ## Adopted decisions
@@ -67,7 +68,7 @@ From the design review's pending recommendations, treated as decided:
 | `struction_assets` | Verified, 23 tests including real Blender 5.2.2 import/export, UVs, collision/LODs, compiled loading and hot reload; Clippy clean |
 | `struction_debug` | Implemented, 5 tests and native trace verified. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
 | `struction_editor` / `apps/editor` | Headless foundation verified by **MOON**, 32 tests and native JSONL smoke. Shared validation, source/history, hierarchy/inspection, world-space moves, templates and isolated play. First egui GUI on it (**SUN**, 7 tests): scene tree, inspector edits, problems, undo/redo, viewport moves and play controls; see `docs/authoring.md` |
-| `apps/playground` | Milestone 1 scene runnable with a procedurally walking humanoid player; HUD renders (`bevy_ui_render`, `default_font`) (**SUN**). Water surface replaces overlapping transparent box; camera-relative movement, overhead orientation, planet escape/walking and sight-line fading covered by 7 tests; occluding ground and the water surface get a soft shader cut-out around the player (**SUN**); planet field ends 1 m above the surface with a 0.5 m exit margin; native Vulkan smoke run verified |
+| `apps/playground` | Scene loaded from JSONC data (`apps/playground/project`) through `struction_world` (**SUN**). Milestone 1 scene runnable with a procedurally walking humanoid player; HUD renders (`bevy_ui_render`, `default_font`) (**SUN**). Water surface replaces overlapping transparent box; camera-relative movement, overhead orientation, planet escape/walking and sight-line fading covered by 7 tests; occluding ground and the water surface get a soft shader cut-out around the player (**SUN**); planet field ends 1 m above the surface with a 0.5 m exit margin; native Vulkan smoke run verified |
 
 ## Follow-ups
 
@@ -80,6 +81,6 @@ From the design review's pending recommendations, treated as decided:
 ## Next
 
 1. First egui editor landed on `AuthoringProject` (**SUN**). Next in it: render instances' own meshes, rotation/scale through new backend operations, a game crate supplying the editor's factory, and a native pass on mouse picking/dragging.
-2. Playground: integrate animation, AI and authored encounters through `struction_world`, then hot reload and the rest of the README validation scene.
+2. Playground: the scene is data now; integrate AI and authored encounters through `struction_world`, then hot reload and the rest of the README validation scene.
 3. Editor (milestone 4): build egui on `AuthoringProject`; extend the same headless operations for rotation/scale, source rename/delete and further authoring tools.
 4. Menus as entities; package validation (planetary gravity as an external package, milestone 7); streaming (milestone 8).
