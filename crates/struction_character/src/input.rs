@@ -24,6 +24,9 @@ pub struct ButtonAction {
 pub struct InputActions {
     /// `Move`: x to the right, y forward, length at most 1.
     pub movement: Vec2,
+    /// Optional world-space forward for movement, captured by a camera input adapter.
+    /// `None` keeps movement relative to the character's heading.
+    pub movement_forward: Option<Vec3>,
     /// `Look`: yaw and pitch change this frame in radians (positive x turns right, positive y
     /// looks down).
     pub look: Vec2,
@@ -180,6 +183,7 @@ fn send_player_intent(
 ) {
     for mut intent in &mut players {
         intent.movement = actions.movement;
+        intent.movement_forward = actions.movement_forward;
         intent.jump_held = actions.jump.held;
         // Edges and look deltas are latched: several frames can pass between fixed ticks, and
         // the simulation clears them when it consumes them.

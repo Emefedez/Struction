@@ -78,6 +78,9 @@ impl Default for CharacterController {
 pub struct CharacterIntent {
     /// x to the right, y forward, relative to the character's heading; length at most 1.
     pub movement: Vec2,
+    /// Optional world-space movement frame, supplied as command data by input, AI or networking.
+    /// The simulation projects it onto local ground without reading a camera.
+    pub movement_forward: Option<Vec3>,
     /// Yaw and pitch change in radians since the last tick; cleared by the simulation.
     pub look: Vec2,
     /// A jump was asked for since the last tick; cleared by the simulation.
@@ -92,6 +95,8 @@ pub struct CharacterIntent {
 #[reflect(Component)]
 pub struct CharacterLook {
     pub forward: Vec3,
+    /// Up used by this heading, retained to transport it when gravity changes.
+    pub up: Vec3,
     /// Camera pitch in radians, positive looks up. The body does not pitch.
     pub pitch: f32,
 }
@@ -100,6 +105,7 @@ impl Default for CharacterLook {
     fn default() -> Self {
         Self {
             forward: Vec3::NEG_Z,
+            up: Vec3::Y,
             pitch: 0.0,
         }
     }
@@ -262,8 +268,9 @@ fn control_characters(
     {
         let up = *up.0;
 
-        // Heading: reproject onto the tangent plane (the frame turns on a planet), then yaw.
-        let mut forward = look.forward - up * look.forward.dot(up);
+        // Transport the heading with gravity; projection alone can reverse it at a field boundary.
+        let transported = Quat::from_rotation_arc(look.up, up) * look.forward;
+        let mut forward = transported - up * transported.dot(up);
         if forward.length_squared() < 1e-6 {
             forward = up.any_orthonormal_vector();
         }
@@ -271,8 +278,13 @@ fn control_characters(
         let look_delta = core::mem::take(&mut intent.look);
         forward = Quat::from_axis_angle(up, -look_delta.x) * forward;
         look.forward = forward;
+        look.up = up;
         look.pitch = (look.pitch - look_delta.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
-        let right = forward.cross(up);
+        let movement_forward = intent
+            .movement_forward
+            .and_then(|direction| (direction - up * direction.dot(up)).try_normalize())
+            .unwrap_or(forward);
+        let right = movement_forward.cross(up);
 
         let mut vertical = velocity.0.dot(up);
         let mut tangent = velocity.0 - up * vertical;
@@ -282,7 +294,8 @@ fn control_characters(
         let swimming = submersion.0 >= controller.swim_threshold;
         state.swimming = swimming;
 
-        let wish = (forward * intent.movement.y + right * intent.movement.x).clamp_length_max(1.0);
+        let wish = (movement_forward * intent.movement.y + right * intent.movement.x)
+            .clamp_length_max(1.0);
         if swimming {
             let target = wish * controller.swim_speed;
             tangent = step_toward(tangent, target, controller.swim_acceleration * dt);

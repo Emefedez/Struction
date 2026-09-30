@@ -510,3 +510,70 @@ fn characters_are_deterministic() {
     }
     assert_eq!(run(), run());
 }
+
+#[test]
+fn camera_movement_frame_is_captured_as_a_command_without_a_camera_in_simulation() {
+    let mut app = app();
+    scene_gravity(&mut app);
+    floor(&mut app, None);
+    let hero = player(&mut app, Vec3::new(0.0, FEET, 0.0));
+    app.add_systems(
+        PreUpdate,
+        (|mut actions: ResMut<InputActions>| {
+            actions.movement_forward = Some(Vec3::X);
+        })
+        .after(struction_character::InputSystems::Map)
+        .before(struction_character::InputSystems::Command),
+    );
+    frames(&mut app, 20);
+    press(&mut app, KeyCode::KeyW);
+    frames(&mut app, 60);
+    let p = position(&app, hero);
+    assert!(p.x > 3.0 && p.z.abs() < 0.1, "camera-relative forward: {p}");
+    assert_eq!(
+        app.world()
+            .get::<CharacterIntent>(hero)
+            .unwrap()
+            .movement_forward,
+        Some(Vec3::X)
+    );
+    assert!(
+        app.world()
+            .get::<CharacterLook>(hero)
+            .unwrap()
+            .forward
+            .abs_diff_eq(Vec3::NEG_Z, 1e-4)
+    );
+    release(&mut app, KeyCode::KeyW);
+    press(&mut app, KeyCode::KeyD);
+    frames(&mut app, 60);
+    assert!(
+        position(&app, hero).z > 3.0,
+        "screen right follows the command frame"
+    );
+}
+
+#[test]
+fn heading_is_transported_across_a_sharp_gravity_change() {
+    let mut app = app();
+    let field = app
+        .world_mut()
+        .spawn(GravityField::scene(Vec3::NEG_Y * G))
+        .id();
+    let hero = player(&mut app, Vec3::ZERO);
+    frames(&mut app, 2);
+    let turn = Quat::from_rotation_x(2.0);
+    let up = turn * Vec3::Y;
+    app.world_mut()
+        .entity_mut(field)
+        .insert(GravityField::scene(-up * G));
+    frame(&mut app);
+    let look = app.world().get::<CharacterLook>(hero).unwrap();
+    assert!(
+        look.forward.abs_diff_eq(turn * Vec3::NEG_Z, 1e-4),
+        "{}",
+        look.forward
+    );
+    assert!(look.forward.dot(up).abs() < 1e-4);
+    assert!(look.up.abs_diff_eq(up, 1e-4));
+}
