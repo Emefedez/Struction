@@ -5253,6 +5253,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "struction_anim",
+ "struction_assets",
  "struction_character",
  "struction_debug",
  "struction_gravity",

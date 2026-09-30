@@ -1,6 +1,7 @@
 //! Native physics playground with a procedurally animated player.
 
 mod camera_occlusion;
+mod knight;
 
 use camera_occlusion::{FadeMaterial, FadesWith, fade_material};
 #[cfg(test)]
@@ -113,6 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         struction_character::CharacterPlugins,
         CharacterAnimationPlugin,
         camera_occlusion::SightFadePlugin,
+        knight::KnightPlugin,
     ))
     .configure_sets(
         PreUpdate,
@@ -142,7 +144,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PreUpdate,
         camera_movement.in_set(PlaygroundSystems::MovementFrame),
     )
-    .add_systems(Update, dress_rigs.in_set(PlaygroundSystems::Dress))
+    .add_systems(
+        Update,
+        (
+            knight::dress_knights,
+            dress_rigs.run_if(knight::uses_shapes),
+        )
+            .chain()
+            .in_set(PlaygroundSystems::Dress),
+    )
     .add_systems(
         Update,
         (follow_camera, count_footfalls).in_set(PlaygroundSystems::Camera),
@@ -409,14 +419,16 @@ fn spawn_player(commands: &mut Commands) {
         .insert((Name::new("Player rig"), Visibility::default()));
 }
 
-/// Gives new rigs a body made of simple shapes attached to their joint entities.
+/// Without the blood knight, gives rigs a body made of simple shapes attached to their joint
+/// entities.
 fn dress_rigs(
     mut commands: Commands,
-    rigs: Query<(&Rig, &RigJoints), Added<RigJoints>>,
+    rigs: Query<(Entity, &Rig, &RigJoints), Without<knight::Dressed>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (rig, joints) in &rigs {
+    for (rig_entity, rig, joints) in &rigs {
+        commands.entity(rig_entity).insert(knight::Dressed);
         let skin = material(&mut materials, Color::srgb(0.96, 0.86, 0.44));
         let dark = material(&mut materials, Color::srgb(0.30, 0.27, 0.34));
         let defs = rig.skeleton.joints();

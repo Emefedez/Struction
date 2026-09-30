@@ -39,3 +39,4 @@ struction_physics = { workspace = true }
 struction_character = { workspace = true }
 struction_anim = { workspace = true }
 struction_debug = { workspace = true }
+struction_assets = { workspace = true }
