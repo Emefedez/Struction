@@ -34,7 +34,7 @@ pub use compile::{
 pub use error::{AssetError, BlenderError, FormatError};
 pub use format::{MappedBundle, MeshBundle};
 pub use import::{PreparedMesh, PreparedScene, import_source, read_gltf};
-pub use loader::{CompiledMesh, CompiledModel, CompiledModelLoader, lod_label};
+pub use loader::{CompiledMesh, CompiledModel, CompiledModelLoader, lod_label, lod_mesh};
 pub use lod::LodSettings;
 pub use prep::{MeshReport, PrepApplied, PrepPreview, PrepSession, PreviewJob, Refreshed};
 pub use recipe::{CollisionPreset, LodPreset, read_recipe, recipe_path};

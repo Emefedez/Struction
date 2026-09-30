@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 use crate::error::FormatError;
 use crate::format::{
-    self, ArchivedMeshLod, Bounds, BundleMaterial, CollisionShapes, SceneNode, to_native,
+    self, ArchivedMeshLod, Bounds, BundleMaterial, CollisionShapes, MeshLod, SceneNode, to_native,
 };
 
 /// A loaded bundle. Every LOD is a labeled [`Mesh`] sub-asset
@@ -122,6 +122,21 @@ pub fn to_mesh(lod: &ArchivedMeshLod) -> Mesh {
     ));
     if !lod.uvs.is_empty() {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, to_native(&lod.uvs));
+    }
+    mesh
+}
+
+/// Builds a render mesh from an unarchived LOD, such as a tool's preview.
+pub fn lod_mesh(lod: &MeshLod) -> Mesh {
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, lod.positions.clone())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, lod.normals.clone())
+    .with_inserted_indices(Indices::U32(lod.indices.clone()));
+    if !lod.uvs.is_empty() {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, lod.uvs.clone());
     }
     mesh
 }
