@@ -1,5 +1,6 @@
 //! Native physics playground with a procedurally animated player.
 
+mod authored;
 mod camera_occlusion;
 
 use camera_occlusion::{FadeMaterial, FadesWith, fade_material};
@@ -58,6 +59,7 @@ enum PlaygroundSystems {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut smoke = false;
     let mut trace = None;
+    let mut project = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -68,8 +70,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .ok_or("--trace requires a new JSONL file path")?,
                 )
             }
+            "--project" => {
+                project = Some(std::path::absolute(
+                    args.next()
+                        .ok_or("--project requires a project directory")?,
+                )?)
+            }
             "--help" | "-h" => {
-                println!("struction-playground [--smoke-test] [--trace FILE.jsonl]");
+                println!(
+                    "struction-playground [--smoke-test] [--trace FILE.jsonl] [--project DIR]"
+                );
                 return Ok(());
             }
             _ => return Err(format!("unknown option: {arg}").into()),
@@ -113,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         struction_character::CharacterPlugins,
         CharacterAnimationPlugin,
         camera_occlusion::SightFadePlugin,
+        authored::AuthoredPlugin { root: project },
     ))
     .configure_sets(
         PreUpdate,
