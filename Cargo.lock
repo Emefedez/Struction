@@ -5237,12 +5237,9 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "serde_json",
- "struction_character",
  "struction_core",
  "struction_data",
  "struction_editor",
- "struction_gravity",
- "struction_physics",
  "struction_world",
  "tempfile",
 ]

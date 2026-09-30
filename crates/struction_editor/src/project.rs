@@ -6,6 +6,7 @@ use std::path::Path;
 
 use bevy::ecs::entity_disabling::Disabled;
 use bevy::prelude::*;
+use bevy::reflect::TypeRegistry;
 use bevy::reflect::serde::TypedReflectSerializer;
 use bevy::time::{TimePlugin, TimeUpdateStrategy};
 use serde::Serialize;
@@ -13,8 +14,7 @@ use serde_json::{Value, json};
 use struction_core::{ActionRegistry, Definition, MasterIs, StableId};
 use struction_data::{DataError, DefinitionStore, ErrorKind};
 use struction_world::{
-    EntityPath, PathAliases, SceneCatalog, Spawner, WorldEntity, WorldErrors, link_masters,
-    run_spawner,
+    EntityPath, PathAliases, SceneCatalog, WorldEntity, link_masters, run_pending_spawners,
 };
 
 use crate::session::{Applied, EditRequest, EditSession, Field, SessionError};
@@ -60,25 +60,20 @@ fn build(root: &Path, factory: &GameFactory) -> Result<App, SessionError> {
         || !app.world().contains_resource::<SceneCatalog>()
         || !app.world().contains_resource::<ActionRegistry>()
     {
-        return Err(SessionError::Validation(vec![DataError::new(
-            ErrorKind::Io("game factory requires CorePlugin, DataPlugin and WorldPlugin".into()),
-            None,
-        )]));
+        return Err(invalid(ErrorKind::Io(
+            "game factory requires CorePlugin, DataPlugin and WorldPlugin".into(),
+        )));
     }
     // Initializes Startup and the clock without advancing a simulation tick.
     app.update();
-    let mut query = app.world_mut().query::<(Entity, &EntityPath, &Spawner)>();
-    let mut spawners: Vec<_> = query
-        .iter(app.world())
-        .map(|(entity, path, _)| (path.clone(), entity))
-        .collect();
-    spawners.sort();
-    for (_, entity) in spawners {
-        let errors = run_spawner(app.world_mut(), entity);
-        app.world_mut().resource_mut::<WorldErrors>().record(errors);
-    }
+    run_pending_spawners(app.world_mut());
     link_masters(app.world_mut());
     Ok(app)
+}
+
+/// A validation failure without a source location.
+fn invalid(kind: ErrorKind) -> SessionError {
+    SessionError::Validation(vec![DataError::new(kind, None)])
 }
 
 fn validate(world: &World, sources: &BTreeMap<String, String>) -> Result<(), Vec<DataError>> {
@@ -177,33 +172,28 @@ impl AuthoringProject {
             .map(str::to_owned)
             .collect()
     }
-    pub fn inspect_definition(&self, path: &str) -> Result<Value, SessionError> {
+    pub fn inspect_definition(&self, path: &str) -> Result<DefinitionInspection, SessionError> {
         let world = self.preview.world();
-        let store = world.resource::<DefinitionStore>();
-        let resolved = store.get(path).ok_or_else(|| {
-            SessionError::Validation(vec![DataError::new(
-                ErrorKind::MissingDefinition(path.into()),
-                None,
-            )])
-        })?;
+        let resolved = world
+            .resource::<DefinitionStore>()
+            .get(path)
+            .ok_or_else(|| invalid(ErrorKind::MissingDefinition(path.into())))?;
         let types = world.resource::<AppTypeRegistry>().read();
-        let mut components = BTreeMap::new();
-        for component in &resolved.components {
-            let value = serde_json::to_value(TypedReflectSerializer::new(
-                component.value.as_partial_reflect(),
-                &types,
-            ))
-            .map_err(|e| {
-                SessionError::Validation(vec![DataError::new(
-                    ErrorKind::UnsupportedType(e.to_string()),
-                    None,
-                )])
-            })?;
-            components.insert(component.type_path, value);
-        }
-        Ok(
-            json!({"definition":path,"lineage":resolved.lineage,"resolved":resolved.data(),"components":components}),
-        )
+        let components = resolved
+            .components
+            .iter()
+            .map(|component| {
+                reflect_value(component.value.as_partial_reflect(), &types)
+                    .map(|value| (component.type_path.to_owned(), value))
+                    .map_err(|e| invalid(ErrorKind::UnsupportedType(e.to_string())))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(DefinitionInspection {
+            definition: path.into(),
+            lineage: resolved.lineage.clone(),
+            resolved: resolved.data().clone(),
+            components,
+        })
     }
 
     /// Rebuilds the authored preview only after all sources validate. A bad outside edit keeps
@@ -389,78 +379,199 @@ impl AuthoringProject {
 
     /// Includes disabled and runtime-created instances. Paths express authoring hierarchy;
     /// master relations are reported independently.
-    pub fn entities(&self, playing: bool) -> Result<Vec<Value>, SessionError> {
+    pub fn entities(&self, playing: bool) -> Result<Vec<EntityEntry>, SessionError> {
         let world = self.inspected_world(playing)?;
         let Some(mut query) =
             world.try_query_filtered::<Entity, (With<WorldEntity>, Allow<Disabled>)>()
         else {
             return Ok(vec![]);
         };
-        let mut entities: Vec<_> = query.iter(world).map(|entity| {
-            let transform = world.get::<Transform>(entity);
-            let path = world.get::<EntityPath>(entity);
-            let source = world.resource::<SceneCatalog>().spawners().find_map(|spawner| {
-                if path == Some(&spawner.path) {
-                    Some(json!({"file":spawner.source.file.as_ref(),"line":spawner.source.start.line,"path":["spawnerList",spawner.name]}))
-                } else {
-                    spawner.spawns.iter().find(|spawn| path == Some(&spawn.path)).map(|spawn| json!({"file":spawn.source.file.as_ref(),"line":spawn.source.start.line,"path":["spawnerList",spawner.name,"spawns",spawn.name]}))
-                }
-            });
-            json!({
-                "entity":entity.to_bits().to_string(), "path":path.map(EntityPath::as_str), "source":source,
-                "definition":world.get::<Definition>(entity).map(|d| d.path.as_str()), "stable_id":world.get::<StableId>(entity).map(ToString::to_string),
-                "position":transform.map(|t| t.translation.to_array()),
-                "rotation":transform.map(|t| t.rotation.to_array()), "scale":transform.map(|t| t.scale.to_array()),
-                "disabled":world.get::<Disabled>(entity).is_some(),
-                "master":world.get::<MasterIs>(entity).and_then(|m| world.get::<EntityPath>(m.0)).map(EntityPath::as_str),
-            })
-        }).collect();
+        let mut entities: Vec<_> = query
+            .iter(world)
+            .map(|entity| EntityEntry::new(world, entity))
+            .collect();
         entities.sort_by(|a, b| {
-            a["path"]
-                .as_str()
-                .cmp(&b["path"].as_str())
-                .then(a["stable_id"].as_str().cmp(&b["stable_id"].as_str()))
+            (a.path.as_deref(), a.stable_id.as_deref())
+                .cmp(&(b.path.as_deref(), b.stable_id.as_deref()))
         });
         Ok(entities)
     }
 
     /// Reflected component values plus names of unregistered components. `target` is an
     /// authored path or StableId, never a transient ECS entity number.
-    pub fn inspect_entity(&self, target: &str, playing: bool) -> Result<Value, SessionError> {
+    pub fn inspect_entity(
+        &self,
+        target: &str,
+        playing: bool,
+    ) -> Result<EntityInspection, SessionError> {
         let world = self.inspected_world(playing)?;
         let entry = self
             .entities(playing)?
             .into_iter()
-            .find(|e| e["path"].as_str() == Some(target) || e["stable_id"].as_str() == Some(target))
+            .find(|entry| entry.key() == target)
             .ok_or_else(|| SessionError::InvalidOperation(format!("unknown entity: {target}")))?;
-        let entity = Entity::from_bits(entry["entity"].as_str().unwrap().parse().unwrap());
         let types = world.resource::<AppTypeRegistry>().read();
         let mut components = BTreeMap::new();
         let mut unavailable = Vec::new();
         for info in world
-            .inspect_entity(entity)
+            .inspect_entity(entry.entity)
             .expect("entity from this world")
         {
             let registered = info.type_id().and_then(|id| types.get(id));
             let reflected = registered
                 .and_then(|r| r.data::<ReflectComponent>())
-                .and_then(|r| r.reflect(world.entity(entity)));
-            if let Some(value) = reflected {
-                match serde_json::to_value(TypedReflectSerializer::new(
-                    value.as_partial_reflect(),
-                    &types,
-                )) {
+                .and_then(|r| r.reflect(world.entity(entry.entity)));
+            let reason = match (registered, reflected) {
+                (Some(registered), Some(value)) => match reflect_value(value, &types) {
                     Ok(value) => {
-                        components.insert(registered.unwrap().type_info().type_path(), value);
+                        components.insert(registered.type_info().type_path().to_owned(), value);
+                        continue;
                     }
-                    Err(error) => unavailable.push(
-                        json!({"component":info.name().to_string(),"reason":error.to_string()}),
-                    ),
-                }
-            } else {
-                unavailable.push(json!({"component":info.name().to_string(),"reason":"component has no registered reflection"}));
-            }
+                    Err(error) => error.to_string(),
+                },
+                _ => "component has no registered reflection".into(),
+            };
+            unavailable.push(Unavailable {
+                component: info.name().to_string(),
+                reason,
+            });
         }
-        Ok(json!({"entity":entry,"components":components,"unavailable":unavailable}))
+        Ok(EntityInspection {
+            entity: entry,
+            components,
+            unavailable,
+        })
     }
+}
+
+fn reflect_value(
+    value: &dyn PartialReflect,
+    types: &TypeRegistry,
+) -> Result<Value, serde_json::Error> {
+    serde_json::to_value(TypedReflectSerializer::new(value, types))
+}
+
+/// A world entity as the hierarchy lists it.
+#[derive(Clone, Debug, Serialize)]
+pub struct EntityEntry {
+    /// Valid only in the world it was listed from; select by [`Self::key`] instead.
+    #[serde(serialize_with = "entity_bits")]
+    pub entity: Entity,
+    pub path: Option<String>,
+    pub source: Option<SpawnSource>,
+    pub definition: Option<String>,
+    pub stable_id: Option<String>,
+    pub position: Option<Vec3>,
+    pub rotation: Option<Quat>,
+    pub scale: Option<Vec3>,
+    pub disabled: bool,
+    /// Authored path of the master, when it has one.
+    pub master: Option<String>,
+}
+
+/// Where a zone's spawner or a spawn is authored.
+#[derive(Clone, Debug, Serialize)]
+pub struct SpawnSource {
+    pub file: String,
+    pub line: u32,
+    /// Field path in the scene file: `spawnerList.<spawner>` or
+    /// `spawnerList.<spawner>.spawns.<spawn>`.
+    pub path: Vec<String>,
+}
+
+fn entity_bits<S: serde::Serializer>(entity: &Entity, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&entity.to_bits())
+}
+
+impl EntityEntry {
+    fn new(world: &World, entity: Entity) -> Self {
+        let transform = world.get::<Transform>(entity);
+        let path = world.get::<EntityPath>(entity);
+        let source = path.and_then(|path| {
+            world
+                .resource::<SceneCatalog>()
+                .spawners()
+                .find_map(|spawner| {
+                    let (span, mut fields) = if *path == spawner.path {
+                        (&spawner.source, vec![])
+                    } else {
+                        let spawn = spawner.spawns.iter().find(|spawn| spawn.path == *path)?;
+                        (&spawn.source, vec!["spawns".into(), spawn.name.clone()])
+                    };
+                    fields.splice(0..0, ["spawnerList".into(), spawner.name.clone()]);
+                    Some(SpawnSource {
+                        file: span.file.to_string(),
+                        line: span.start.line,
+                        path: fields,
+                    })
+                })
+        });
+        Self {
+            entity,
+            path: path.map(ToString::to_string),
+            source,
+            definition: world.get::<Definition>(entity).map(|d| d.path.to_string()),
+            stable_id: world.get::<StableId>(entity).map(ToString::to_string),
+            position: transform.map(|t| t.translation),
+            rotation: transform.map(|t| t.rotation),
+            scale: transform.map(|t| t.scale),
+            disabled: world.get::<Disabled>(entity).is_some(),
+            master: world
+                .get::<MasterIs>(entity)
+                .and_then(|m| world.get::<EntityPath>(m.0))
+                .map(ToString::to_string),
+        }
+    }
+
+    /// How tools select it: its authored path, or its StableId if it was created at runtime.
+    pub fn key(&self) -> &str {
+        self.path
+            .as_deref()
+            .or(self.stable_id.as_deref())
+            .unwrap_or_default()
+    }
+
+    /// Definition instances, as opposed to zones and spawners.
+    pub fn is_instance(&self) -> bool {
+        self.definition.is_some()
+    }
+
+    /// Named spawns are the entities with an authored offset and overrides.
+    pub fn is_named_spawn(&self) -> bool {
+        self.source.as_ref().is_some_and(|s| s.path.len() == 4)
+    }
+
+    pub fn transform(&self) -> Option<Transform> {
+        Some(Transform {
+            translation: self.position?,
+            rotation: self.rotation?,
+            scale: self.scale?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EntityInspection {
+    pub entity: EntityEntry,
+    /// Reflected values by full type path.
+    pub components: BTreeMap<String, Value>,
+    pub unavailable: Vec<Unavailable>,
+}
+
+/// A component present on the entity whose value cannot be shown.
+#[derive(Clone, Debug, Serialize)]
+pub struct Unavailable {
+    pub component: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DefinitionInspection {
+    pub definition: String,
+    /// Ancestors, nearest first.
+    pub lineage: Vec<String>,
+    /// Merged data after inheritance, presets and overrides.
+    pub resolved: Value,
+    /// Reflected values by full type path.
+    pub components: BTreeMap<String, Value>,
 }

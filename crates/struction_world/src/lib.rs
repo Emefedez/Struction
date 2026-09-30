@@ -34,5 +34,5 @@ pub use save::{
 pub use scene::SceneCatalog;
 pub use spawn::{
     PendingMaster, RuntimeCreated, Spawned, Spawner, WorldEntity, WorldErrors, Zone, build_world,
-    link_masters, run_spawner, spawn_instance, spawn_runtime,
+    link_masters, run_pending_spawners, run_spawner, spawn_instance, spawn_runtime,
 };
