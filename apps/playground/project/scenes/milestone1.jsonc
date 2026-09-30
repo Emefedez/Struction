@@ -1,0 +1,65 @@
+// The README's Milestone 1 validation scene: floors with different surfaces, a pushable cube, a
+// water pool with a floating cube, an overhead camera zone and a small gravity planet.
+{
+  "zones": { "Playground": { "position": [0, 0, 0] } },
+  "spawnerList": {
+    "environment": {
+      "zone": "Playground",
+      "position": [0, 0, 0],
+      "spawns": {
+        "gravity": { "definition": "gravity/scene" }
+      }
+    },
+    // Tiles are half a meter thick with their top at y = 0.
+    "floors": {
+      "zone": "Playground",
+      "position": [0, -0.25, 0],
+      "spawns": {
+        "stone": { "definition": "ground/stone", "offset": [0, 0, 5] },
+        "slippery": { "definition": "ground/slippery", "offset": [0, 0, -7] },
+        "approach": { "definition": "ground/approach", "offset": [0, 0, -16.5] }
+      }
+    },
+    "pushable": {
+      "zone": "Playground",
+      "position": [0, 0.8, 3],
+      "spawns": {
+        "cube": { "definition": "props/pushable_cube" }
+      }
+    },
+    // To the right of the start. The water's surface is level with the floors.
+    "pool": {
+      "zone": "Playground",
+      "position": [10.5, 0, -5],
+      "spawns": {
+        "water": { "definition": "regions/water_pool", "offset": [0, -1, 0] },
+        "floor": { "definition": "ground/pool_floor", "offset": [0, -2.75, 0] },
+        "floating_cube": { "definition": "props/floating_cube", "offset": [0, 1, 0] }
+      }
+    },
+    // Over the slippery tile, on the way to the planet.
+    "overhead_camera": {
+      "zone": "Playground",
+      "position": [0, 1, -8],
+      "spawns": {
+        "zone": { "definition": "regions/overhead_camera" },
+        "left_post": { "definition": "props/marker_post", "offset": [-5.8, 0, 0] },
+        "right_post": { "definition": "props/marker_post", "offset": [5.8, 0, 0] }
+      }
+    },
+    "planet": {
+      "zone": "Playground",
+      "position": [0, 4, -20],
+      "spawns": {
+        "planet": { "definition": "ground/planet" }
+      }
+    },
+    "start": {
+      "zone": "Playground",
+      "position": [0, 0, 8],
+      "spawns": {
+        "player": { "definition": "Player", "offset": [0, 0.9, 0] }
+      }
+    }
+  }
+}

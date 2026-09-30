@@ -1,10 +1,12 @@
 //! Native physics playground with a procedurally animated player.
 
 mod camera_occlusion;
+mod scene;
 
 use camera_occlusion::{FadeMaterial, FadesWith, fade_material};
 #[cfg(test)]
 mod planet_tests;
+use scene::{Finish, Humanoid, Look, Player, ScenePlugin, Shape};
 
 use bevy::{
     app::AppExit,
@@ -19,14 +21,14 @@ use struction_anim::{
     rig::Rig,
 };
 use struction_character::{
-    CharacterAnimationPlugin, CharacterController, CharacterLook, CharacterState, InputActions,
-    InputMap, InputSystems, PlayerControlled, spawn_rig,
+    CharacterAnimationPlugin, CharacterLook, CharacterState, InputActions, InputMap, InputSystems,
+    spawn_rig,
 };
-use struction_debug::{DebugTracePlugin, TraceAppExt, TraceEntity, TraceWriter};
-use struction_gravity::{GravityField, GravityHysteresis, GravityInfluences, LocalUp};
+use struction_debug::{DebugTracePlugin, TraceAppExt, TraceWriter};
+use struction_gravity::{GravityInfluences, LocalUp};
 use struction_physics::{
-    CameraConstraint, CameraMode, CameraOcclusion, CameraTarget, CameraZone, InCameraZones,
-    PhysicsPlugin, Submersion, Surface, Volume, VolumeShape, avian3d::prelude::*, water,
+    CameraMode, CameraOcclusion, CameraZone, InCameraZones, PhysicsPlugin, Submersion, Volume,
+    VolumeShape, avian3d::prelude::*,
 };
 
 #[derive(Resource)]
@@ -37,9 +39,6 @@ struct PlaygroundOptions {
     escape_released_cursor: bool,
     footfalls: u32,
 }
-
-#[derive(Component)]
-struct Player;
 
 #[derive(Component)]
 struct Hud;
@@ -58,6 +57,7 @@ enum PlaygroundSystems {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut smoke = false;
     let mut trace = None;
+    let mut project = scene::default_project();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -68,8 +68,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .ok_or("--trace requires a new JSONL file path")?,
                 )
             }
+            "--project" => {
+                project = args
+                    .next()
+                    .ok_or("--project requires a project directory")?
+                    .into()
+            }
             "--help" | "-h" => {
-                println!("struction-playground [--smoke-test] [--trace FILE.jsonl]");
+                println!(
+                    "struction-playground [--smoke-test] [--trace FILE.jsonl] [--project DIR]"
+                );
                 return Ok(());
             }
             _ => return Err(format!("unknown option: {arg}").into()),
@@ -113,6 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         struction_character::CharacterPlugins,
         CharacterAnimationPlugin,
         camera_occlusion::SightFadePlugin,
+        ScenePlugin { root: project },
     ))
     .configure_sets(
         PreUpdate,
@@ -142,7 +151,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PreUpdate,
         camera_movement.in_set(PlaygroundSystems::MovementFrame),
     )
-    .add_systems(Update, dress_rigs.in_set(PlaygroundSystems::Dress))
+    .add_systems(
+        Update,
+        (attach_rigs, dress_looks, dress_rigs)
+            .chain()
+            .in_set(PlaygroundSystems::Dress),
+    )
     .add_systems(
         Update,
         (follow_camera, count_footfalls).in_set(PlaygroundSystems::Camera),
@@ -153,12 +167,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut ground_materials: ResMut<Assets<FadeMaterial>>,
-) {
+/// The scene itself is data (see `scene`); this adds what only the rendered host needs.
+fn setup(mut commands: Commands) {
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.68, 0.78, 1.0),
         brightness: 180.0,
@@ -177,13 +187,6 @@ fn setup(
         CameraOcclusion::default(),
         Transform::from_xyz(0.0, 4.0, 13.0).looking_at(Vec3::new(0.0, 1.4, 8.0), Vec3::Y),
     ));
-    spawn_scene_gravity(&mut commands);
-    spawn_floor(&mut commands, &mut meshes, &mut ground_materials);
-    spawn_pool(&mut commands, &mut meshes, &mut ground_materials);
-    spawn_planet(&mut commands, &mut meshes, &mut ground_materials);
-    spawn_camera_zone(&mut commands, &mut meshes, &mut materials);
-    spawn_cubes(&mut commands, &mut meshes, &mut materials);
-    spawn_player(&mut commands);
     spawn_hud(&mut commands);
 }
 
@@ -199,214 +202,80 @@ fn material(materials: &mut Assets<StandardMaterial>, color: Color) -> Handle<St
     materials.add(matte(color))
 }
 
-/// Ground that can hide the player gets a cut-out along the camera's line of sight.
-fn ground(materials: &mut Assets<FadeMaterial>, color: Color) -> Handle<FadeMaterial> {
-    fade_material(materials, matte(color))
-}
+type Dressed<'a> = (Entity, &'a Look, Option<&'a Shape>, Option<&'a Volume>);
 
-fn spawn_scene_gravity(commands: &mut Commands) {
-    commands.spawn((
-        Name::new("Scene gravity"),
-        GravityField::scene(Vec3::NEG_Y * 9.81),
-    ));
-}
-
-fn spawn_floor(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<FadeMaterial>,
+/// Gives authored entities their mesh and material from their `Shape` and `Look`.
+fn dress_looks(
+    mut commands: Commands,
+    looks: Query<Dressed, Added<Look>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut fading: ResMut<Assets<FadeMaterial>>,
 ) {
-    let tile = meshes.add(Cuboid::new(14.0, 0.5, 12.0));
-    for (name, z, surface, color) in [
-        (
-            "Stone floor",
-            5.0,
-            Surface::default(),
-            Color::srgb(0.31, 0.36, 0.38),
-        ),
-        (
-            "Slippery floor",
-            -7.0,
-            Surface::slippery(),
-            Color::srgb(0.20, 0.57, 0.72),
-        ),
-    ] {
-        commands.spawn((
-            Name::new(name),
-            RigidBody::Static,
-            TraceEntity,
-            Collider::cuboid(14.0, 0.5, 12.0),
-            surface,
-            Mesh3d(tile.clone()),
-            MeshMaterial3d(ground(materials, color)),
-            Transform::from_xyz(0.0, -0.25, z),
-        ));
-    }
-    commands.spawn((
-        Name::new("Planet approach"),
-        TraceEntity,
-        RigidBody::Static,
-        Collider::cuboid(4.0, 0.5, 7.0),
-        Surface::default(),
-        Mesh3d(meshes.add(Cuboid::new(4.0, 0.5, 7.0))),
-        MeshMaterial3d(ground(materials, Color::srgb(0.37, 0.34, 0.34))),
-        Transform::from_xyz(0.0, -0.25, -16.5),
-    ));
-    // A shallow rim makes the pool's edge readable and keeps its base solid.
-    commands.spawn((
-        Name::new("Pool floor"),
-        TraceEntity,
-        RigidBody::Static,
-        Collider::cuboid(7.0, 0.5, 8.0),
-        Mesh3d(meshes.add(Cuboid::new(7.0, 0.5, 8.0))),
-        MeshMaterial3d(ground(materials, Color::srgb(0.16, 0.30, 0.34))),
-        Transform::from_xyz(10.5, -2.75, -5.0),
-    ));
-}
-
-fn spawn_pool(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<FadeMaterial>,
-) {
-    let shape = VolumeShape::Box {
-        half_extents: Vec3::new(3.5, 1.5, 4.0),
-    };
-    let volume = commands
-        .spawn((
-            Name::new("Water pool"),
-            TraceEntity,
-            water(shape),
-            Transform::from_xyz(10.5, -1.0, -5.0),
-        ))
-        .id();
-    // A closed transparent box overlaps the pool floor and blends its own unsorted faces.
-    commands.spawn((
-        Name::new("Water surface"),
-        Transform::from_xyz(10.5, 0.5, -5.0),
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(7.0, 8.0))),
-        NotShadowCaster,
-        // A swimmer below the surface stays visible through it.
-        FadesWith(volume),
-        MeshMaterial3d(fade_material(
-            materials,
-            StandardMaterial {
-                base_color: Color::srgba(0.04, 0.46, 0.72, 0.48),
-                alpha_mode: AlphaMode::Blend,
-                perceptual_roughness: 0.24,
-                cull_mode: None,
-                double_sided: true,
-                ..default()
-            },
-        )),
-    ));
-}
-
-fn spawn_planet(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<FadeMaterial>,
-) {
-    let center = Vec3::new(0.0, 4.0, -20.0);
-    commands.spawn((
-        Name::new("Gravity planet"),
-        TraceEntity,
-        RigidBody::Static,
-        Collider::sphere(4.0),
-        GravityField::planet(24.0, 5.0),
-        GravityHysteresis { exit_margin: 0.5 },
-        Surface::default(),
-        Mesh3d(meshes.add(Sphere::new(4.0).mesh().ico(5).expect("valid sphere"))),
-        MeshMaterial3d(ground(materials, Color::srgb(0.52, 0.35, 0.24))),
-        Transform::from_translation(center),
-    ));
-}
-
-fn spawn_camera_zone(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) {
-    commands.spawn((
-        Name::new("Overhead camera zone"),
-        TraceEntity,
-        CameraZone::bundle(
-            Volume {
-                shape: VolumeShape::Box {
-                    half_extents: Vec3::new(6.0, 3.0, 2.2),
-                },
-            },
-            CameraConstraint {
-                mode: CameraMode::Fixed {
-                    position: Vec3::new(0.0, 14.0, -8.0),
-                },
-                weight: 1.0,
-                priority: 10,
-            },
-        ),
-        Transform::from_xyz(0.0, 1.0, -8.0),
-    ));
-    for x in [-5.8, 5.8] {
-        commands.spawn((
-            Name::new("Camera zone marker"),
-            Mesh3d(meshes.add(Cuboid::new(0.12, 2.0, 0.12))),
-            MeshMaterial3d(material(materials, Color::srgb(0.95, 0.77, 0.28))),
-            Transform::from_xyz(x, 1.0, -8.0),
-        ));
+    for (entity, look, shape, volume) in &looks {
+        let [red, green, blue] = look.color;
+        let color = Color::srgba(red, green, blue, look.opacity);
+        if look.finish == Finish::Water {
+            let Some(VolumeShape::Box { half_extents }) = volume.map(|v| v.shape) else {
+                warn!("a water look needs a box volume; {entity} is not drawn");
+                continue;
+            };
+            // A closed transparent box overlaps the pool floor and blends its own unsorted faces.
+            let size = half_extents.xz() * 2.0;
+            commands.entity(entity).insert(Visibility::default());
+            commands.spawn((
+                Name::new("Water surface"),
+                Transform::from_xyz(0.0, half_extents.y, 0.0),
+                Mesh3d(meshes.add(Plane3d::default().mesh().size(size.x, size.y))),
+                NotShadowCaster,
+                // A swimmer below the surface stays visible through it.
+                FadesWith(entity),
+                MeshMaterial3d(fade_material(
+                    &mut fading,
+                    StandardMaterial {
+                        base_color: color,
+                        alpha_mode: AlphaMode::Blend,
+                        perceptual_roughness: 0.24,
+                        cull_mode: None,
+                        double_sided: true,
+                        ..default()
+                    },
+                )),
+                ChildOf(entity),
+            ));
+            continue;
+        }
+        let Some(shape) = shape else {
+            warn!("{entity} has a look but no shape to draw");
+            continue;
+        };
+        let mesh = Mesh3d(meshes.add(shape.mesh()));
+        let mut entity = commands.entity(entity);
+        match look.finish {
+            // Ground that can hide the player gets a cut-out along the camera's line of sight.
+            Finish::Ground => entity.insert((
+                mesh,
+                MeshMaterial3d(fade_material(&mut fading, matte(color))),
+            )),
+            _ => entity.insert((mesh, MeshMaterial3d(material(&mut materials, color)))),
+        };
     }
 }
 
-fn spawn_cubes(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) {
-    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-    for (name, position, density, color) in [
-        (
-            "Pushable cube",
-            Vec3::new(0.0, 0.8, 3.0),
-            80.0,
-            Color::srgb(0.96, 0.52, 0.20),
-        ),
-        (
-            "Floating cube",
-            Vec3::new(10.5, 1.0, -5.0),
-            500.0,
-            Color::srgb(0.92, 0.72, 0.38),
-        ),
-    ] {
-        commands.spawn((
-            Name::new(name),
-            RigidBody::Dynamic,
-            TraceEntity,
-            Collider::cuboid(1.0, 1.0, 1.0),
-            ColliderDensity(density),
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(material(materials, color)),
-            Transform::from_translation(position),
-        ));
-    }
-}
-
-fn spawn_player(commands: &mut Commands) {
-    // The capsule is only the physics body; the visible player is the rig that follows it.
-    let body = commands
-        .spawn((
-            Name::new("Player"),
-            Player,
-            TraceEntity,
-            CharacterController::default(),
-            PlayerControlled,
-            CameraTarget,
-            Transform::from_xyz(0.0, 0.9, 8.0),
-        ))
-        .id();
-    let rig = spawn_rig(commands, body, humanoid::rig(), LocomotionParams::default())
+/// The capsule is only the physics body; a humanoid is drawn as the rig that follows it.
+fn attach_rigs(mut commands: Commands, bodies: Query<Entity, Added<Humanoid>>) {
+    for body in &bodies {
+        let rig = spawn_rig(
+            &mut commands,
+            body,
+            humanoid::rig(),
+            LocomotionParams::default(),
+        )
         .expect("the built-in humanoid is a valid rig");
-    commands
-        .entity(rig)
-        .insert((Name::new("Player rig"), Visibility::default()));
+        commands
+            .entity(rig)
+            .insert((Name::new("Humanoid rig"), Visibility::default()));
+    }
 }
 
 /// Gives new rigs a body made of simple shapes attached to their joint entities.
@@ -669,6 +538,7 @@ fn exit_control(
 mod tests {
     use super::*;
     use std::time::Duration;
+    use struction_physics::CameraConstraint;
 
     #[test]
     fn camera_movement_remains_defined_in_overhead_and_planet_views() {

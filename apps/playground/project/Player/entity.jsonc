@@ -1,0 +1,11 @@
+// The capsule is only the physics body; the visible player is the procedural humanoid rig that
+// follows it. `CharacterController` fields tune movement (speeds, jump height, slopes).
+{
+  "components": {
+    "Player": {},
+    "Humanoid": {},
+    "CharacterController": {},
+    "PlayerControlled": {},
+    "CameraTarget": {}
+  }
+}
