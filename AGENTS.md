@@ -25,8 +25,8 @@ Check this table before proceeding with changes. An active claim covers only its
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
 | Planet gravity and camera obstruction | **SUN** (from **MOON**) | Landed: MOON implemented gravity entry/exit hysteresis, simulation-owned `GravityPose` and `camera_obstructions`; SUN verified them, fixed the controller judging leaving the ground along up, and replaced whole-material fading with a sight-line shader cut-out (`apps/playground/src/sight_fade.wgsl`) for ground and water, reviewed natively with the user |
 | Character animation integration | **SUN** | Landed (implemented and verified by **SUN**): `CharacterAnimationPlugin` bridge, `CustomGround` hook, slope fixes in the controller and locomotion, animated player and working HUD in `apps/playground`; native Vulkan smoke run verified |
+| Editor GUI toolkit | **SUN** | Active: egui (`bevy_egui`) chosen over Dear ImGui with a custom theme. Basic GUI sprint in `apps/editor` bound to `AuthoringProject`: open project, hierarchy, inspector edits, validation/problems, undo/redo, spawn moves and play controls |
 
-| Editor GUI toolkit | **SUN** | Active: egui vs Dear ImGui validation and final decision; themed `apps/editor` shell (theme, panel layout, viewport) as the proof. No editor features yet |
 ## Adopted decisions
 
 From the design review's pending recommendations, treated as decided:
