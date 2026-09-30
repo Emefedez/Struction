@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use bevy::ecs::system::SystemId;
 use bevy::prelude::*;
-use struction_core::{ActionArgs, ActionError, ActionMeta, ParamSpec, ParamType};
+use struction_core::{ActionArgs, ArgError, ArgValue, ParamSpec, ParamType};
 
 /// Name of a registered condition, such as `sensing/sees_any`.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -93,11 +93,7 @@ impl ConditionMeta {
     }
 
     pub fn param(mut self, name: impl Into<String>, ty: ParamType) -> Self {
-        self.params.push(ParamSpec {
-            name: name.into(),
-            ty,
-            default: None,
-        });
+        self.params.push(ParamSpec::required(name, ty));
         self
     }
 
@@ -105,48 +101,29 @@ impl ConditionMeta {
         mut self,
         name: impl Into<String>,
         ty: ParamType,
-        default: impl Into<struction_core::ArgValue>,
+        default: impl Into<ArgValue>,
     ) -> Self {
-        let default = default.into();
-        debug_assert!(
-            ty.accepts(&default),
-            "default does not match parameter type"
-        );
-        self.params.push(ParamSpec {
-            name: name.into(),
-            ty,
-            default: Some(default),
-        });
+        self.params.push(ParamSpec::optional(name, ty, default));
         self
     }
 
     /// Checks `args` against the declared parameters and fills in defaults, with the same rules
     /// as actions.
     pub fn resolve_args(&self, args: &ActionArgs) -> Result<ActionArgs, ConditionError> {
-        let as_action = ActionMeta {
-            params: self.params.clone(),
-            ..ActionMeta::new(self.name.as_str())
-        };
         let condition = self.name.clone();
-        as_action.resolve_args(args).map_err(|error| match error {
-            ActionError::MissingArg { param, .. } => {
-                ConditionError::MissingArg { condition, param }
-            }
-            ActionError::UnknownArg { param, .. } => {
-                ConditionError::UnknownArg { condition, param }
-            }
-            ActionError::ArgType {
+        ParamSpec::resolve(&self.params, args).map_err(|error| match error {
+            ArgError::Missing(param) => ConditionError::MissingArg { condition, param },
+            ArgError::Unknown(param) => ConditionError::UnknownArg { condition, param },
+            ArgError::Type {
                 param,
                 expected,
                 found,
-                ..
             } => ConditionError::ArgType {
                 condition,
                 param,
                 expected,
                 found,
             },
-            other => unreachable!("argument resolution cannot fail with {other}"),
         })
     }
 

@@ -13,7 +13,7 @@ use bevy::prelude::*;
 
 pub use actions::{
     ActionAppExt, ActionArgs, ActionCall, ActionDescriptor, ActionError, ActionId, ActionMeta,
-    ActionName, ActionRegistry, ArgValue, ParamSpec, ParamType, RequiredComponent,
+    ActionName, ActionRegistry, ArgError, ArgValue, ParamSpec, ParamType, RequiredComponent,
 };
 pub use dispatch::{
     ActionCommands, ActionErrors, ActionInvocation, ActionQueue, Reaction, ReactionDepthLimit,

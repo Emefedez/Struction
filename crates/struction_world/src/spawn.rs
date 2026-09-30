@@ -263,7 +263,7 @@ pub fn run_spawner(world: &mut World, spawner: Entity) -> Vec<DataError> {
 }
 
 /// Runs loaded spawners that have not run yet, in path order so ids replay deterministically.
-pub(crate) fn run_pending_spawners(world: &mut World) {
+pub fn run_pending_spawners(world: &mut World) {
     let mut query = world.query::<(Entity, &EntityPath, &Spawner)>();
     let mut pending: Vec<_> = query
         .iter(world)
