@@ -23,7 +23,7 @@ Check this table before proceeding with changes. An active claim covers only its
 | Data/world authoring hooks | **MOON** | Landed: read-only candidate-source validation, scene-source provenance and integration tests; 69 data / 22 world tests and Clippy verified |
 | Asset pipeline verification | **MOON** | Landed: 23 tests, including actual Blender import/export, and Clippy verified; implementation predates this verification |
 | Playground/debug fixes | **MOON** | Landed: structured tracing, water rendering, camera movement and dry camera-zone fixes from the previous work session |
-| Planet gravity and camera obstruction | **SUN** (from **MOON**) | Active (**SUN**): shader-based sight-line fade replacing whole-material fading in `apps/playground` (ground and water surface), `CameraOcclusion` cut-out radius. Landed before: MOON implemented gravity entry/exit hysteresis, simulation-owned `GravityPose`, `camera_obstructions` and the playground ground-fade module; SUN verified them (tests, Clippy, native traced run), and fixed the controller judging leaving the ground along up, which made walking on the planet and up ramps read as airborne |
+| Planet gravity and camera obstruction | **SUN** (from **MOON**) | Landed: MOON implemented gravity entry/exit hysteresis, simulation-owned `GravityPose` and `camera_obstructions`; SUN verified them, fixed the controller judging leaving the ground along up, and replaced whole-material fading with a sight-line shader cut-out (`apps/playground/src/sight_fade.wgsl`) for ground and water, reviewed natively with the user |
 | Character animation integration | **SUN** | Landed (implemented and verified by **SUN**): `CharacterAnimationPlugin` bridge, `CustomGround` hook, slope fixes in the controller and locomotion, animated player and working HUD in `apps/playground`; native Vulkan smoke run verified |
 
 ## Adopted decisions
@@ -65,14 +65,14 @@ From the design review's pending recommendations, treated as decided:
 | `struction_assets` | Verified, 23 tests including real Blender 5.2.2 import/export, UVs, collision/LODs, compiled loading and hot reload; Clippy clean |
 | `struction_debug` | Implemented, 5 tests and native trace verified. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
 | `struction_editor` / `apps/editor` | Headless foundation verified by **MOON**, 32 tests and native JSONL smoke. Shared validation, source/history, hierarchy/inspection, world-space moves, templates and isolated play. GUI app remains a scaffold |
-| `apps/playground` | Milestone 1 scene runnable with a procedurally walking humanoid player; HUD renders (`bevy_ui_render`, `default_font`) (**SUN**). Water surface replaces overlapping transparent box; camera-relative movement, overhead orientation, planet escape/walking and ground fading covered by 5 tests; planet field ends 1 m above the surface with a 0.5 m exit margin; native Vulkan smoke run verified |
+| `apps/playground` | Milestone 1 scene runnable with a procedurally walking humanoid player; HUD renders (`bevy_ui_render`, `default_font`) (**SUN**). Water surface replaces overlapping transparent box; camera-relative movement, overhead orientation, planet escape/walking and sight-line fading covered by 7 tests; occluding ground and the water surface get a soft shader cut-out around the player (**SUN**); planet field ends 1 m above the surface with a 0.5 m exit margin; native Vulkan smoke run verified |
 
 ## Follow-ups
 
 - Brain arguments use tagged values (`{ "Float": 0.25 }`); switch to plain JSON values typed by the condition/action parameter metadata.
 - Animation looks: foot roll, hip sway, arm swing, longer strides (~110 steps/min), knee limits, turning in place.
 - Hot reload of a master's `grantsToWards` does not update existing wards.
-- Playground camera: walking up the planet's near side, the follow camera can sink under the approach floor; the ground fade then hides every surface and the player floats in a void. Pull the camera in toward the focus when the ground itself blocks it, and keep fading for thin occluders.
+- Playground camera: walking up the planet's near side, the follow camera can sink under the approach floor. The sight-line cut-out keeps the player visible, but the floor's underside still fills the rest of the view; pulling the camera in when the ground itself blocks it would avoid that.
 - World/physics integration must derive moving cells from simulation `Position` instead of interpolated `Transform`. Streaming still needs persistence of unloaded spawners that have not run yet; current saves record spawners after their first run.
 
 ## Next
