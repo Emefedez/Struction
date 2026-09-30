@@ -31,6 +31,7 @@ pub struct OpenIn {
 }
 
 impl Default for OpenIn {
+    /// The desktop's opener, and `.blend` files in the Blender the pipeline found.
     fn default() -> Self {
         Self {
             default_command: vec![DEFAULT_OPENER.into()],

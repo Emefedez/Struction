@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 use serde_json::Value;
 use struction_data::parse_jsonc;
-use struction_editor::{AuthoringProject, Diagnostic, EditRequest, Field, SessionError};
+use struction_editor::{
+    AuthoringProject, Diagnostic, EditRequest, EntityEntry, Field, SessionError,
+};
 
 use crate::game;
 
@@ -56,7 +58,7 @@ pub struct Play {
 
 pub enum Inspection {
     Entity {
-        entry: Value,
+        entry: Box<EntityEntry>,
         /// Short type name and reflected value, authored components first.
         components: Vec<(String, Value)>,
         authored: BTreeSet<String>,
@@ -79,7 +81,7 @@ pub enum Inspection {
 pub struct Editor {
     pub project: Option<AuthoringProject>,
     pub root: Option<PathBuf>,
-    pub entities: Vec<Value>,
+    pub entities: Vec<EntityEntry>,
     pub definitions: Vec<String>,
     pub diagnostics: Vec<Diagnostic>,
     pub rejection: Option<Rejection>,
@@ -93,18 +95,19 @@ pub struct Editor {
 
 impl Editor {
     pub fn apply(&mut self, command: Command) {
-        if let Command::Open(root) = command {
-            return self.open(root);
+        match command {
+            Command::Open(root) => self.open(root),
+            Command::Select(selected) => self.selected = selected,
+            command => self.apply_to_project(command),
         }
-        if let Command::Select(selected) = command {
-            self.selected = selected;
-            return;
-        }
+    }
+
+    fn apply_to_project(&mut self, command: Command) {
         let Some(project) = self.project.as_mut() else {
             return;
         };
         let (action, result) = match command {
-            Command::Open(_) | Command::Select(_) => unreachable!(),
+            Command::Open(_) | Command::Select(_) => return,
             Command::Refresh => ("Refresh", project.refresh().map(|()| None)),
             Command::Edit(request) => ("Edit", project.edit(request).map(|a| Some(a.label))),
             Command::Move {
@@ -212,7 +215,15 @@ impl Editor {
         if validate {
             self.definitions = project.definitions();
             self.definitions.sort();
+            // Errors reached through several paths can repeat once reduced to diagnostics.
             self.diagnostics = project.validate();
+            self.diagnostics.sort_by(|a, b| {
+                (&a.file, a.line, a.column, &a.message)
+                    .cmp(&(&b.file, b.line, b.column, &b.message))
+            });
+            self.diagnostics.dedup_by(|a, b| {
+                (&a.file, a.line, a.column, &a.message) == (&b.file, b.line, b.column, &b.message)
+            });
         }
     }
 
@@ -255,10 +266,8 @@ impl Editor {
         self.play.is_some()
     }
 
-    pub fn entity(&self, target: &str) -> Option<&Value> {
-        self.entities
-            .iter()
-            .find(|entity| entity_key(entity) == target)
+    pub fn entity(&self, target: &str) -> Option<&EntityEntry> {
+        self.entities.iter().find(|entity| entity.key() == target)
     }
 
     pub fn inspection(&mut self) -> Option<&Inspection> {
@@ -293,46 +302,45 @@ impl Editor {
                 let Ok(inspected) = project.inspect_entity(target, self.playing()) else {
                     return Some(Inspection::Missing(target.clone()));
                 };
-                let entry = inspected["entity"].clone();
-                let authored: BTreeSet<String> = entry["definition"]
-                    .as_str()
+                let entry = inspected.entity;
+                let authored: BTreeSet<String> = entry
+                    .definition
+                    .as_deref()
                     .and_then(|definition| project.inspect_definition(definition).ok())
-                    .and_then(|definition| {
-                        let components = definition["components"].as_object()?;
-                        Some(components.keys().map(|key| short_name(key)).collect())
+                    .map(|definition| {
+                        definition
+                            .components
+                            .keys()
+                            .map(|key| short_name(key))
+                            .collect()
                     })
                     .unwrap_or_default();
-                let mut components: Vec<_> = inspected["components"]
-                    .as_object()
+                let mut components: Vec<_> = inspected
+                    .components
                     .into_iter()
-                    .flatten()
-                    .map(|(key, value)| (short_name(key), value.clone()))
+                    .map(|(key, value)| (short_name(&key), value))
                     .collect();
                 components.sort_by_key(|(name, _)| (!authored.contains(name), name.clone()));
-                let spawn = entry["source"].as_object().and_then(|source| {
-                    let path: Vec<Field> = source["path"]
-                        .as_array()?
-                        .iter()
-                        .map(|key| Field::Key(key.as_str().unwrap_or_default().to_owned()))
-                        .collect();
-                    // Only named spawns (`spawnerList.<s>.spawns.<n>`) carry offsets/overrides.
-                    let file = source["file"].as_str()?.to_owned();
-                    (path.len() == 4).then_some((file, path))
-                });
+                let spawn = entry
+                    .source
+                    .as_ref()
+                    .filter(|_| entry.is_named_spawn())
+                    .map(|source| {
+                        let path: Vec<_> = source.path.iter().cloned().map(Field::Key).collect();
+                        (source.file.clone(), path)
+                    });
                 let overrides = spawn.as_ref().map_or(Value::Null, |(file, path)| {
                     let mut at = path.clone();
                     at.push(Field::Key("overrides".into()));
                     lookup(&source(file), &at).cloned().unwrap_or(Value::Null)
                 });
-                let unavailable = inspected["unavailable"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|entry| entry["component"].as_str())
-                    .map(short_name)
+                let unavailable = inspected
+                    .unavailable
+                    .iter()
+                    .map(|entry| short_name(&entry.component))
                     .collect();
                 Inspection::Entity {
-                    entry,
+                    entry: Box::new(entry),
                     components,
                     authored,
                     unavailable,
@@ -344,21 +352,14 @@ impl Editor {
                 let Ok(inspected) = project.inspect_definition(path) else {
                     return Some(Inspection::Missing(path.clone()));
                 };
-                let lineage = inspected["lineage"]
-                    .as_array()
+                let components = inspected
+                    .components
                     .into_iter()
-                    .flatten()
-                    .filter_map(|entry| entry.as_str().map(str::to_owned))
-                    .collect();
-                let components = inspected["components"]
-                    .as_object()
-                    .into_iter()
-                    .flatten()
-                    .map(|(key, value)| (short_name(key), value.clone()))
+                    .map(|(key, value)| (short_name(&key), value))
                     .collect();
                 Inspection::Definition {
                     path: path.clone(),
-                    lineage,
+                    lineage: inspected.lineage,
                     components,
                     local: source(&definition_file(path)),
                 }
@@ -382,14 +383,6 @@ fn rejection(action: &'static str, error: SessionError) -> Rejection {
     }
 }
 
-/// The key a selection uses for an entity: its authored path, or its StableId if runtime-made.
-pub fn entity_key(entity: &Value) -> &str {
-    entity["path"]
-        .as_str()
-        .or_else(|| entity["stable_id"].as_str())
-        .unwrap_or_default()
-}
-
 pub fn definition_file(path: &str) -> String {
     format!("{path}/entity.jsonc")
 }
@@ -408,23 +401,6 @@ pub fn lookup<'a>(value: &'a Value, path: &[Field]) -> Option<&'a Value> {
         Field::Key(key) => value.get(key),
         Field::Index(index) => value.get(index),
     })
-}
-
-pub fn vec3(value: &Value) -> Option<Vec3> {
-    let items = value.as_array()?;
-    let component = |i: usize| items.get(i)?.as_f64().map(|v| v as f32);
-    Some(Vec3::new(component(0)?, component(1)?, component(2)?))
-}
-
-pub fn quat(value: &Value) -> Option<Quat> {
-    let items = value.as_array()?;
-    let component = |i: usize| items.get(i)?.as_f64().map(|v| v as f32);
-    Some(Quat::from_xyzw(
-        component(0)?,
-        component(1)?,
-        component(2)?,
-        component(3)?,
-    ))
 }
 
 #[cfg(test)]
@@ -475,7 +451,7 @@ mod tests {
     }
 
     fn ogre_position(editor: &Editor) -> Vec3 {
-        vec3(&editor.entity(OGRE).unwrap()["position"]).unwrap()
+        editor.entity(OGRE).unwrap().position.unwrap()
     }
 
     #[test]

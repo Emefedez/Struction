@@ -28,7 +28,7 @@ pub fn make_test_blend(blender: &Blender, dir: &Path) -> PathBuf {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/make_test_scene.py");
     let blend = dir.join("scene.blend");
     blender
-        .run_script(&script, &[blend.clone().into()])
+        .run_generator(&script, &blend)
         .expect("test scene script runs");
     blend
 }

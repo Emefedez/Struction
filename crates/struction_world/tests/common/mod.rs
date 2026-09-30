@@ -77,6 +77,8 @@ pub struct Options {
     pub cell_size: f32,
     /// Prefix of the action paths the definitions reference (renames change it).
     pub ogre: &'static str,
+    /// Adds `LiveReloadPlugin`, so instances record what they were built from.
+    pub live: bool,
 }
 
 impl Default for Options {
@@ -85,6 +87,7 @@ impl Default for Options {
             seed: 7,
             cell_size: 50.0,
             ogre: "minions/ogre",
+            live: false,
         }
     }
 }
@@ -106,6 +109,11 @@ pub fn app_with(root: &Path, options: Options) -> App {
     .register_type::<Follower>()
     .register_type::<Flammable>()
     .register_type::<Scratch>();
+    if options.live {
+        app.add_plugins(LiveReloadPlugin {
+            interval: std::time::Duration::ZERO,
+        });
+    }
     for action in LOGGED_ACTIONS {
         app.register_action(
             ActionMeta::new(action),

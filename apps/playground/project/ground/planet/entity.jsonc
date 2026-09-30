@@ -1,0 +1,14 @@
+// A small planet with its own gravity. The field reaches 1 m above the surface, and bodies leave
+// it half a meter further out, so a jump near the boundary does not flicker between fields.
+{
+  "descendsFrom": "Ground",
+  "components": {
+    "Shape": { "Sphere": { "radius": 4 } },
+    "GravityField": {
+      "volume": { "Sphere": { "radius": 5 } },
+      "kind": { "Radial": { "strength": 24, "falloff": "Constant" } }
+    },
+    "GravityHysteresis": { "exit_margin": 0.5 },
+    "Look": { "color": [0.52, 0.35, 0.24] }
+  }
+}

@@ -172,6 +172,7 @@ pub fn spawn_instance(
             .unwrap_or_default(),
     );
     let cell = world.resource::<CellSize>().cell_of(transform.translation);
+    let live = world.contains_resource::<crate::live::LiveReload>();
 
     let mut entity = world.spawn((WorldEntity, cell));
     resolved.insert_into(&mut entity, &types);
@@ -181,6 +182,9 @@ pub fn spawn_instance(
     }
     if let Some(reactions) = reactions {
         entity.insert(reactions);
+    }
+    if live {
+        entity.insert(crate::live::Authored::new(&resolved));
     }
     Ok(entity.id())
 }
@@ -263,7 +267,7 @@ pub fn run_spawner(world: &mut World, spawner: Entity) -> Vec<DataError> {
 }
 
 /// Runs loaded spawners that have not run yet, in path order so ids replay deterministically.
-pub(crate) fn run_pending_spawners(world: &mut World) {
+pub fn run_pending_spawners(world: &mut World) {
     let mut query = world.query::<(Entity, &EntityPath, &Spawner)>();
     let mut pending: Vec<_> = query
         .iter(world)

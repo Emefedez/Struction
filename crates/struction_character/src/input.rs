@@ -1,4 +1,7 @@
-use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*};
+use bevy::{
+    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
+    prelude::*,
+};
 
 use crate::controller::CharacterIntent;
 
@@ -27,12 +30,19 @@ pub struct InputActions {
     /// Optional world-space forward for movement, captured by a camera input adapter.
     /// `None` keeps movement relative to the character's heading.
     pub movement_forward: Option<Vec3>,
+    /// Set by a camera input adapter whose view orbits freely: the character turns toward its
+    /// movement instead of following `look`.
+    pub face_movement: bool,
     /// `Look`: yaw and pitch change this frame in radians (positive x turns right, positive y
     /// looks down).
     pub look: Vec2,
     pub jump: ButtonAction,
     /// `Grab`: bound now, consumed by the grabbing package later.
     pub grab: ButtonAction,
+    /// `ToggleView`: switch between third and first person.
+    pub toggle_view: ButtonAction,
+    /// `Zoom`: positive moves the camera closer, in scroll lines this frame.
+    pub zoom: f32,
 }
 
 /// Keyboard and mouse bindings. Other devices add their own mapping systems in
@@ -46,8 +56,11 @@ pub struct InputMap {
     pub right: Vec<Binding>,
     pub jump: Vec<Binding>,
     pub grab: Vec<Binding>,
+    pub toggle_view: Vec<Binding>,
     /// Radians of look per pixel of mouse motion.
     pub look_sensitivity: f32,
+    /// `Zoom` per pixel of touchpad scrolling; wheels report whole lines.
+    pub zoom_pixel_scale: f32,
 }
 
 impl Default for InputMap {
@@ -71,7 +84,9 @@ impl Default for InputMap {
                 Binding::Key(KeyCode::KeyE),
                 Binding::Mouse(MouseButton::Left),
             ],
+            toggle_view: vec![Binding::Key(KeyCode::KeyV)],
             look_sensitivity: 0.003,
+            zoom_pixel_scale: 0.02,
         }
     }
 }
@@ -123,6 +138,7 @@ fn map_keyboard_and_mouse(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mouse: Option<Res<ButtonInput<MouseButton>>>,
     motion: Option<Res<AccumulatedMouseMotion>>,
+    scroll: Option<Res<AccumulatedMouseScroll>>,
     mut actions: ResMut<InputActions>,
 ) {
     let held = |bindings: &[Binding]| {
@@ -161,10 +177,18 @@ fn map_keyboard_and_mouse(
     if let Some(motion) = motion {
         actions.look += motion.delta * map.look_sensitivity;
     }
+    if let Some(scroll) = scroll {
+        actions.zoom += match scroll.unit {
+            MouseScrollUnit::Line => scroll.delta.y,
+            MouseScrollUnit::Pixel => scroll.delta.y * map.zoom_pixel_scale,
+        };
+    }
     let jump = button(&map.jump);
     let grab = button(&map.grab);
+    let toggle_view = button(&map.toggle_view);
     actions.jump = merge(actions.jump, jump);
     actions.grab = merge(actions.grab, grab);
+    actions.toggle_view = merge(actions.toggle_view, toggle_view);
 }
 
 /// Combines the same action from two devices.
@@ -184,6 +208,7 @@ fn send_player_intent(
     for mut intent in &mut players {
         intent.movement = actions.movement;
         intent.movement_forward = actions.movement_forward;
+        intent.face_movement = actions.face_movement;
         intent.jump_held = actions.jump.held;
         // Edges and look deltas are latched: several frames can pass between fixed ticks, and
         // the simulation clears them when it consumes them.

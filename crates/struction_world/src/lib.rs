@@ -9,6 +9,7 @@
 //!   and spawners, then applies the save.
 //! - [`rename`]: renaming a path across the project sources, with an alias for old saves.
 //! - [`cells`]: derived streaming cells; unloading disables entities (neither death nor removal).
+//! - [`live`]: applies saved sources to a running world, keeping runtime state.
 //!
 //! [`WorldPlugin`] needs `CorePlugin` and `DataPlugin`. It builds the world at `Startup` and runs
 //! [`WorldSet`] in `FixedUpdate`.
@@ -17,6 +18,7 @@
 
 pub mod cells;
 mod identity;
+pub mod live;
 mod plugin;
 pub mod rename;
 pub mod save;
@@ -25,6 +27,7 @@ pub mod spawn;
 
 pub use cells::{Cell, CellSize, load_cell, unload_cell};
 pub use identity::{EntityPath, EntityRef, find_entity};
+pub use live::{Authored, LiveReloadPlugin, LiveReloaded, reload_sources};
 pub use plugin::{WorldPlugin, WorldSet, setup_world};
 pub use rename::{PathAliases, RenameError, RenameReport, rename_path};
 pub use save::{
@@ -34,5 +37,5 @@ pub use save::{
 pub use scene::SceneCatalog;
 pub use spawn::{
     PendingMaster, RuntimeCreated, Spawned, Spawner, WorldEntity, WorldErrors, Zone, build_world,
-    link_masters, run_spawner, spawn_instance, spawn_runtime,
+    link_masters, run_pending_spawners, run_spawner, spawn_instance, spawn_runtime,
 };

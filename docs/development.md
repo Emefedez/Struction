@@ -38,13 +38,13 @@ Build natively for the host (`aarch64-apple-darwin` on Apple Silicon); the pinne
 
 2. Install Rust with the [official rustup installer](https://rustup.rs/), then open a new terminal or run `source "$HOME/.cargo/env"`. The first `cargo` command in the repository downloads the pinned 1.98.1 toolchain.
 
-3. Install [Blender](https://www.blender.org/download/) for `.blend` importing. The app bundle does not put `blender` on `PATH`; point Struction at it instead (for example in `~/.zshrc`):
+3. Install [Blender](https://www.blender.org/download/) for `.blend` importing. The app bundle does not put `blender` on `PATH`; `struction_assets` finds the newest `Blender*.app` in `/Applications` or `~/Applications` by itself (see [Blender bridge](#blender-bridge)). To use another one, set `STRUCTION_BLENDER` (for example in `~/.zshrc`):
 
    ```bash
    export STRUCTION_BLENDER=/Applications/Blender.app/Contents/MacOS/Blender
    ```
 
-   `struction_assets` (importing, its Blender tests and **Open in…** for `.blend` files) reads `STRUCTION_BLENDER`, and so does `./tools/check-environment.sh`. Other files open with `open` on macOS and `xdg-open` on Linux.
+   `./tools/check-environment.sh` reads `STRUCTION_BLENDER` too.
 
 Then follow [Native check](#native-check). No Linux packages, `pkg-config`, `cmake` or `ninja` are required.
 
@@ -71,13 +71,15 @@ On the Linux reference machine the renderer log identifies the Apple M1 Max and 
 
 ## Playground
 
-Run the physics scene with `cargo run -p struction-playground`. Use WASD to move, Space to jump or swim upward, and M to toggle mouse look and cursor grab. Escape releases a grabbed cursor; press it again to quit. The overlay shows contact, swimming, camera zone, footstep count, and FPS state. Walk over the blue slippery floor toward the gravity planet, or move right into the water pool.
+Run the physics scene with `cargo run -p struction-playground`. Use WASD to move, Space to jump or swim upward, and M to toggle mouse look and cursor grab. V switches between third and first person; the mouse wheel zooms the third-person camera, and zooming in past its closest distance enters first person (zooming out leaves it). Escape releases a grabbed cursor; press it again to quit. The overlay shows contact, swimming, camera zone, footstep count, and FPS state. Walk over the blue slippery floor toward the gravity planet, or move right into the water pool.
 
-Movement follows the camera's ground frame, including the overhead zone and changing gravity. The input adapter captures that frame in `CharacterIntent`; the fixed simulation never reads a camera. The player is a procedural `struction_anim` humanoid drawn with simple shapes: `CharacterAnimationPlugin` keeps its rig on the interpolated capsule and plants its feet with physics ray casts, on slopes, underwater floors and the planet alike. Ground and the water surface use a `StandardMaterial` extension (`sight_fade.wgsl`): when they block the camera's view of the player, a soft cylinder along the line of sight fades out, so the rest of the surface stays visible and a swimmer shows through the water. The water uses a two-sided surface at the fluid's upper boundary, separate from its buoyancy volume, to avoid blending overlapping box faces against the pool floor.
+The player camera (`struction_camera`) has only two views, never a free camera. In third person, mouse look orbits the camera around the player, the player turns toward where it walks, and a sphere cast pulls the camera in front of walls and ground behind it (water and camera zones do not). In first person the camera sits at the eyes and mouse look turns the player; the player's own rig is hidden. Switching views keeps the direction you were looking. Both views follow the player's local up, easing across gravity field changes, and the overhead camera zone reframes the third-person view only. Movement follows the camera's ground frame; the camera's input adapter captures that frame in `CharacterIntent`, and the fixed simulation never reads a camera. The player is a procedural `struction_anim` humanoid dressed as the Blender-authored blood knight (see [Blender bridge](#blender-bridge)), or with simple shapes when no Blender or compiled model is available: `CharacterAnimationPlugin` keeps its rig on the interpolated capsule and plants its feet with physics ray casts, on slopes, underwater floors and the planet alike. Ground and the water surface use a `StandardMaterial` extension (`sight_fade.wgsl`): when they block the camera's view of the player, a soft cylinder along the line of sight fades out, so the rest of the surface stays visible and a swimmer shows through the water. The water uses a two-sided surface at the fluid's upper boundary, separate from its buoyancy volume, to avoid blending overlapping box faces against the pool floor.
+
+The scene is data. `apps/playground/project/` is a `struction_data` project: definitions such as `ground/slippery` (descending from `ground/stone`, which descends from the primordial `Ground`) and `scenes/milestone1.jsonc`, whose spawners place every floor, cube, volume, the planet and the player. `struction_world` spawns them in the first fixed tick. Only the camera, lights and HUD stay in code. Playground components carry the authoring side: `Shape` is a box or sphere that becomes the collider of anything with a `RigidBody` (and its mesh), `Look` gives the color and finish (`Matte`, `Ground` with the sight-line cut-out, or `Water`, a translucent surface on the top of a box `Volume`), and `Humanoid` attaches the animated rig. Engine components (`Surface`, `GravityField`, `Volume`, `CameraZone`, `CharacterController`, Avian's `RigidBody` and `ColliderDensity`) are written directly by their Rust names and fields. Saved edits apply to the running playground (see [live reload](live-reload.md)); `--project DIR` loads another copy. Data problems are logged with `file:line` at startup, and `cargo test -p struction-playground` fails on any of them.
 
 `cargo run -p struction-playground -- --smoke-test` drives the character forward and jumps once, then logs its position and footstep count and exits after about ten seconds.
 
-Headless world integration checks run with `cargo test -p struction_world --locked`. They load the fortress JSONC fixture, exercise boss/minion actions and adoption, restore saves, and rename paths while retaining comments and old save identities. Camera movement and overhead transitions have regression checks in `struction_character` and `struction-playground`; `cargo test -p struction_character --test animation` covers the rig following the body and foot placement on floors, slopes and in water.
+Headless world integration checks run with `cargo test -p struction_world --locked`. They load the fortress JSONC fixture, exercise boss/minion actions and adoption, restore saves, and rename paths while retaining comments and old save identities. Camera views, zoom, collision, planets and overhead transitions have regression checks in `cargo test -p struction_camera`, and camera-relative movement in `struction_character`; `cargo test -p struction_character --test animation` covers the rig following the body and foot placement on floors, slopes and in water.
 
 For structured status and position changes, add `--trace /tmp/struction-trace.jsonl` (a new file). This can be combined with `--smoke-test`. See [debugging](debugging.md) for the event format, filtering examples, and headless trace API.
 
@@ -85,6 +87,25 @@ For structured status and position changes, add `--trace /tmp/struction-trace.js
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+## Blender bridge
+
+`struction_assets` runs Blender headless as a subprocess; games load the compiled `.smesh` and never need Blender. It uses `$STRUCTION_BLENDER` if set, else `blender` on `PATH`, else on macOS the newest `Blender*.app` in `/Applications` or `~/Applications` (`/Applications/Blender.app/Contents/MacOS/Blender`). "Open in…" opens `.blend` files in that same Blender, and other files with `open` on macOS or `xdg-open` on Linux.
+
+- `struction-assets build <generator.py> <out.blend|.glb>` runs a Blender Python script that builds an asset from code (it receives the output path after `--`).
+- `struction-assets compile <source>` converts `.blend`/glTF to `.smesh`: geometry, UVs, LODs, collision, the node hierarchy and each material's base color, metallic, roughness and emission (constant factors; textures are not exported yet).
+- `struction-assets inspect <file.smesh>` lists what was compiled.
+
+Run them with `cargo run -p struction_assets --bin struction-assets -- <command> …`.
+
+The playground's player model, `apps/playground/assets/models/blood_knight.blend`, is generated by `blood_knight.py` next to it and committed so it opens in Blender directly. Each object is a rigid armor piece named `<joint>.<piece>` after the `struction_anim` humanoid joint it rides on, with its origin at that joint's rest position (Blender Z up, facing +Y, arms hanging, soles on Z = 0). On start the playground compiles the `.blend` when it changed (the `.smesh` is ignored by git), and while it runs it watches the file: edit the knight in Blender, save, and the running playground re-dresses the player. Regenerate from the script with:
+
+```bash
+cargo run -p struction_assets --bin struction-assets -- build \
+  apps/playground/assets/models/blood_knight.py apps/playground/assets/models/blood_knight.blend
+```
+
+Saving over the generated file discards manual edits, so choose one: edit the script and regenerate, or keep editing the `.blend`. A `.blend` saved by a newer Blender may not open in an older one; it was generated with Blender 5.0. `cargo test -p struction-playground` checks that every piece sits on a humanoid joint (skipped without Blender).
 
 ## WebAssembly
 

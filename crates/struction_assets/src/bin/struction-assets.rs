@@ -1,3 +1,4 @@
+//! `struction-assets build <generator.py> <out.blend|.glb>`
 //! `struction-assets compile <source> [-o <out>] [--force]`
 //! `struction-assets inspect <compiled>`
 
@@ -6,15 +7,17 @@ use std::process::ExitCode;
 
 use struction_assets::compile::default_output;
 use struction_assets::format::FORMAT_VERSION;
-use struction_assets::{CompileSettings, CompileStatus, MappedBundle, compile_asset_with};
+use struction_assets::{Blender, CompileSettings, CompileStatus, MappedBundle, compile_asset_with};
 
 const USAGE: &str = "usage:
+  struction-assets build <generator.py> <out.blend|.glb>
   struction-assets compile <source.blend|.gltf|.glb> [-o <out.smesh>] [--force]
   struction-assets inspect <compiled.smesh>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
+        Some("build") if args.len() == 3 => build(&args[1], &args[2]),
         Some("compile") => compile(&args[1..]),
         Some("inspect") if args.len() == 2 => inspect(&args[1]),
         _ => Err(USAGE.to_owned()),
@@ -26,6 +29,22 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Runs a Blender generator script (headless) that builds and saves an asset.
+fn build(script: &str, out: &str) -> Result<(), String> {
+    let blender = Blender::default();
+    if !blender.is_available() {
+        return Err(format!(
+            "Blender not found at {:?}; set STRUCTION_BLENDER to its executable",
+            blender.executable
+        ));
+    }
+    blender
+        .run_generator(script.as_ref(), out.as_ref())
+        .map_err(|error| error.to_string())?;
+    println!("built {out}");
+    Ok(())
 }
 
 fn compile(args: &[String]) -> Result<(), String> {
@@ -83,6 +102,16 @@ fn inspect(path: &str) -> Result<(), String> {
             "  collision: hull {hull}, trimesh {} triangles, {} convex parts",
             collision.trimesh.triangles.len(),
             collision.parts.len()
+        );
+    }
+    for material in bundle.materials.iter() {
+        let color = material.base_color.map(|c| c.to_native());
+        let emissive = material.emissive.map(|c| c.to_native());
+        println!(
+            "material {:?} color {color:?} metallic {:.2} roughness {:.2} emissive {emissive:?}",
+            material.name.as_str(),
+            material.metallic.to_native(),
+            material.roughness.to_native()
         );
     }
     for node in bundle.nodes.iter() {

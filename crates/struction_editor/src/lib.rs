@@ -5,5 +5,8 @@ pub mod project;
 pub mod protocol;
 pub mod session;
 
-pub use project::{AuthoringProject, Diagnostic};
+pub use project::{
+    AuthoringProject, DefinitionInspection, Diagnostic, EntityEntry, EntityInspection, SpawnSource,
+    Unavailable,
+};
 pub use session::{Applied, EditRequest, EditSession, Field, SessionError};

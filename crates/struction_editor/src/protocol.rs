@@ -6,9 +6,39 @@ use bevy::prelude::Vec3;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use struction_core::{ActionDescriptor, ArgValue};
+
+use crate::history::Transaction;
+use crate::session::revision;
 use crate::{AuthoringProject, Diagnostic, EditRequest, SessionError};
 
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Bounds one request's work, so a typo cannot hang the session.
+const MAX_STEP_TICKS: usize = 10_000;
+
+const COMMANDS: [&str; 20] = [
+    "describe",
+    "validate",
+    "schema",
+    "actions",
+    "definitions",
+    "inspect_definition",
+    "read",
+    "entities",
+    "inspect_entity",
+    "edit",
+    "move_spawn",
+    "history",
+    "undo",
+    "redo",
+    "end_group",
+    "refresh",
+    "create_definition",
+    "start_play",
+    "step_play",
+    "stop_play",
+];
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -122,78 +152,101 @@ pub fn execute(project: &mut AuthoringProject, request: Request) -> Response {
 }
 
 fn apply(project: &mut AuthoringProject, command: Command) -> Result<Value, SessionError> {
-    match command {
-        Command::Describe {} => {
-            return Ok(json!({"protocol_version":PROTOCOL_VERSION,
-            "commands":["describe","validate","schema","actions","definitions","inspect_definition","read","entities","inspect_entity","edit","move_spawn","history","undo","redo","end_group","refresh","create_definition","start_play","step_play","stop_play"],
-            "max_step_ticks":10000}));
-        }
-        Command::Validate {} => return Ok(json!({"diagnostics":project.validate()})),
-        Command::Schema {} => return Ok(project.schema()),
-        Command::Actions {} => return Ok(Value::Array(project.actions().into_iter().map(|action| {
-            let params: Vec<_> = action.params.into_iter().map(|param| {
-                let default = param.default.as_ref().map(|value| match value {
-                    struction_core::ArgValue::Bool(v) => json!(v),
-                    struction_core::ArgValue::Int(v) => json!(v),
-                    struction_core::ArgValue::Float(v) => json!(v),
-                    struction_core::ArgValue::Str(v) => json!(v),
-                    struction_core::ArgValue::Entity(v) => json!({"entity":v.to_bits().to_string()}),
-                });
-                json!({"name":param.name,"type":format!("{:?}",param.ty).to_lowercase(),"required":default.is_none(),"default":default})
-            }).collect();
-            json!({"name":action.name,"doc":action.doc,"params":params,"requires":action.requires})
-        }).collect())),
-        Command::Definitions {} => return Ok(json!(project.definitions())),
-        Command::InspectDefinition { path } => return project.inspect_definition(&path),
+    Ok(match command {
+        Command::Describe {} => json!({
+            "protocol_version": PROTOCOL_VERSION,
+            "commands": COMMANDS,
+            "max_step_ticks": MAX_STEP_TICKS,
+        }),
+        Command::Validate {} => json!({ "diagnostics": project.validate() }),
+        Command::Schema {} => project.schema(),
+        Command::Actions {} => project.actions().into_iter().map(action).collect(),
+        Command::Definitions {} => json!(project.definitions()),
+        Command::InspectDefinition { path } => json!(project.inspect_definition(&path)?),
         Command::Read { file } => {
             let source = project.session().read(&file)?;
-            return Ok(json!({"revision":crate::session::revision(&source),"source":source}));
+            json!({ "revision": revision(&source), "source": source })
         }
-        Command::Entities { playing } => return Ok(json!(project.entities(playing)?)),
+        Command::Entities { playing } => json!(project.entities(playing)?),
         Command::InspectEntity { target, playing } => {
-            return project.inspect_entity(&target, playing);
+            json!(project.inspect_entity(&target, playing)?)
         }
-        Command::Edit { edit } => return Ok(json!(project.edit(edit)?)),
+        Command::Edit { edit } => json!(project.edit(edit)?),
         Command::MoveSpawn {
             path,
             position,
             group,
-        } => {
-            return Ok(json!(project.move_spawn(
-                &path,
-                Vec3::from_array(position),
-                group
-            )?));
-        }
+        } => json!(project.move_spawn(&path, Vec3::from_array(position), group)?),
         Command::History {} => {
             let history = project.session().history();
-            let stack = |transactions: &[crate::history::Transaction]| {
+            let stack = |transactions: &[Transaction]| -> Vec<Value> {
                 transactions
                     .iter()
-                    .map(|t| json!({"label":t.label,"files":t.files()}))
-                    .collect::<Vec<_>>()
+                    .map(|t| json!({ "label": t.label, "files": t.files() }))
+                    .collect()
             };
-            return Ok(
-                json!({"undo":stack(history.undo_stack()),"redo":stack(history.redo_stack()),"grouping":history.is_grouping(),"playing":project.session().is_playing()}),
-            );
+            json!({
+                "undo": stack(history.undo_stack()),
+                "redo": stack(history.redo_stack()),
+                "grouping": history.is_grouping(),
+                "playing": project.session().is_playing(),
+            })
         }
-        Command::Undo {} => return Ok(json!(project.undo()?)),
-        Command::Redo {} => return Ok(json!(project.redo()?)),
-        Command::EndGroup {} => project.end_group(),
-        Command::Refresh {} => project.refresh()?,
-        Command::CreateDefinition { path, parent } => project.create_definition(&path, &parent)?,
-        Command::StartPlay {} => project.start_play()?,
+        Command::Undo {} => json!(project.undo()?),
+        Command::Redo {} => json!(project.redo()?),
+        Command::EndGroup {} => {
+            project.end_group();
+            Value::Null
+        }
+        Command::Refresh {} => {
+            project.refresh()?;
+            Value::Null
+        }
+        Command::CreateDefinition { path, parent } => {
+            project.create_definition(&path, &parent)?;
+            Value::Null
+        }
+        Command::StartPlay {} => {
+            project.start_play()?;
+            Value::Null
+        }
         Command::StepPlay { ticks } => {
-            if ticks > 10000 {
-                return Err(SessionError::InvalidOperation(
-                    "step_play accepts at most 10000 ticks per request".into(),
-                ));
+            if ticks > MAX_STEP_TICKS {
+                return Err(SessionError::InvalidOperation(format!(
+                    "step_play accepts at most {MAX_STEP_TICKS} ticks per request"
+                )));
             }
             project.step_play(ticks)?;
+            Value::Null
         }
-        Command::StopPlay {} => project.stop_play(),
-    }
-    Ok(Value::Null)
+        Command::StopPlay {} => {
+            project.stop_play();
+            Value::Null
+        }
+    })
+}
+
+fn action(action: ActionDescriptor) -> Value {
+    let params: Vec<_> = action
+        .params
+        .into_iter()
+        .map(|param| {
+            let default = param.default.map(|value| match value {
+                ArgValue::Bool(v) => json!(v),
+                ArgValue::Int(v) => json!(v),
+                ArgValue::Float(v) => json!(v),
+                ArgValue::Str(v) => json!(v),
+                ArgValue::Entity(v) => json!({ "entity": v.to_bits().to_string() }),
+            });
+            json!({
+                "name": param.name,
+                "type": format!("{:?}", param.ty).to_lowercase(),
+                "required": default.is_none(),
+                "default": default,
+            })
+        })
+        .collect();
+    json!({ "name": action.name, "doc": action.doc, "params": params, "requires": action.requires })
 }
 
 /// One response per nonblank input line, flushed immediately. Invalid requests do not terminate

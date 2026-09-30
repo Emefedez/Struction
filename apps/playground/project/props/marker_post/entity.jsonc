@@ -1,0 +1,8 @@
+// Marks the edge of a camera zone. Visual only: no body, so nothing collides with it.
+{
+  "descendsFrom": "Prop",
+  "components": {
+    "Shape": { "Box": { "size": [0.12, 2, 0.12] } },
+    "Look": { "color": [0.95, 0.77, 0.28] }
+  }
+}

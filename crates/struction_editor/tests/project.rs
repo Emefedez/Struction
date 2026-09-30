@@ -109,11 +109,9 @@ fn authoring_loop_validates_inheritance_and_preserves_exact_undo() {
     assert_eq!(project.actions().len(), 1);
     assert_eq!(health(&project, false), 50.0);
     let inspected = project.inspect_definition("guards/ogre").unwrap();
-    assert_eq!(inspected["components"][Health::type_path()]["max"], 60.0);
-    assert_eq!(
-        inspected["components"][Health::type_path()]["current"],
-        50.0
-    );
+    let health_of = &inspected.components[Health::type_path()];
+    assert_eq!(health_of["max"], 60.0);
+    assert_eq!(health_of["current"], 50.0);
     project
         .edit(set(GUARD, &["components", "Health", "current"], json!(30)))
         .unwrap();
@@ -301,9 +299,9 @@ fn gizmo_moves_account_for_all_parent_frames_and_keep_identity() {
             .move_spawn(path, Vec3::from_array(position), Some("drag".into()))
             .unwrap();
         let after = project.inspect_entity(path, false).unwrap();
-        assert_eq!(after["entity"]["stable_id"], before["entity"]["stable_id"]);
-        let actual: [f32; 3] = serde_json::from_value(after["entity"]["position"].clone()).unwrap();
-        assert!(Vec3::from_array(actual).distance(Vec3::from_array(position)) < 1e-4);
+        assert_eq!(after.entity.stable_id, before.entity.stable_id);
+        let actual = after.entity.position.unwrap();
+        assert!(actual.distance(Vec3::from_array(position)) < 1e-4);
     }
     project.end_group();
     project.undo().unwrap();
@@ -333,6 +331,7 @@ fn command_stream_survives_bad_requests_and_reports_runtime_state() {
         json!({"id":9,"command":{"op":"entities","playing":true}}).to_string(),
         json!({"id":10,"command":{"op":"validate","typo":true}}).to_string(),
         json!({"id":11,"command":{"op":"actions"}}).to_string(),
+        json!({"id":12,"command":{"op":"entities"}}).to_string(),
     ].join("\n");
     let mut output = Vec::new();
     serve(&mut project, requests.as_bytes(), &mut output).unwrap();
@@ -341,7 +340,7 @@ fn command_stream_survives_bad_requests_and_reports_runtime_state() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(replies.len(), 12);
+    assert_eq!(replies.len(), 13);
     assert_eq!(replies[0]["error"]["code"], "invalid_request");
     assert_eq!(replies[1]["result"]["protocol_version"], 1);
     assert_eq!(replies[2]["error"]["code"], "validation");
@@ -361,6 +360,21 @@ fn command_stream_survives_bad_requests_and_reports_runtime_state() {
     assert_eq!(replies[10]["id"], 10);
     assert_eq!(replies[10]["error"]["code"], "invalid_request");
     assert_eq!(replies[11]["result"][0]["name"], "hurt");
+    let ogre = replies[12]["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entity| entity["path"] == "Court/guards/ogre")
+        .unwrap();
+    assert!(ogre["entity"].is_string());
+    assert_eq!(ogre["definition"], "guards/ogre");
+    assert_eq!(ogre["master"], "Court/guards/boss");
+    assert_eq!(
+        ogre["source"]["path"],
+        json!(["spawnerList", "guards", "spawns", "ogre"])
+    );
+    assert_eq!(ogre["position"].as_array().unwrap().len(), 3);
+    assert_eq!(ogre["rotation"].as_array().unwrap().len(), 4);
     assert_eq!(health(&project, false), 50.0);
 }
 
@@ -395,14 +409,12 @@ fn hierarchy_reports_authored_sources_and_disabled_play_entities() {
     })
     .unwrap();
     let before = project.inspect_entity("Court/guards/ogre", false).unwrap();
-    assert_eq!(before["entity"]["source"]["file"], SCENE);
-    assert_eq!(
-        before["entity"]["source"]["path"],
-        json!(["spawnerList", "guards", "spawns", "ogre"])
-    );
+    let source = before.entity.source.unwrap();
+    assert_eq!(source.file, SCENE);
+    assert_eq!(source.path, ["spawnerList", "guards", "spawns", "ogre"]);
     project.start_play().unwrap();
     project.step_play(1).unwrap();
     let after = project.inspect_entity("Court/guards/ogre", true).unwrap();
-    assert_eq!(after["entity"]["disabled"], true);
-    assert_eq!(after["components"][Health::type_path()]["current"], 49.5);
+    assert!(after.entity.disabled);
+    assert_eq!(after.components[Health::type_path()]["current"], 49.5);
 }

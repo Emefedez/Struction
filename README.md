@@ -197,7 +197,7 @@ Menus are entities with layout, visibility, labels, focus, input scope, and acti
 
 Each milestone ends in something runnable on Linux.
 
-0. **Risk spikes:** procedural legs with IK, springs, and base poses; Bevy hotpatching; comment-preserving JSONC edits; physics library compatibility.
+0. **Risk spikes:** procedural legs with IK, springs, and base poses; Bevy hotpatching (done: opt-in, see [live reload](docs/live-reload.md)); comment-preserving JSONC edits; physics library compatibility.
 1. **Physics playground:** physics and gravity-field packages, character controller with variable up, keyboard input, cube, slippery floor, water, camera zone, fixed timestep with interpolation, headless tests.
 2. **Data:** JSONC loading through `Reflect`, `descendsFrom` inheritance, presets, overrides, hot reload, `file:line` errors.
 3. **Actions, AI, and encounters:** action registry and reactions, `masterIs` with grants, decision trees and sensing, spawners, boss and minions, save/load.

@@ -14,7 +14,7 @@ const FALLBACK_GRAVITY: f32 = 9.81;
 /// the character is asked to do lives in [`CharacterIntent`]. Override the required `Collider`
 /// to change its shape.
 #[derive(Component, Reflect, Clone, Debug, PartialEq)]
-#[reflect(Component)]
+#[reflect(Component, Default)]
 #[require(
     RigidBody::Dynamic,
     Collider = Collider::capsule(0.3, 1.0),
@@ -51,6 +51,9 @@ pub struct CharacterController {
     pub max_slope: f32,
     /// How quickly the body turns to its target orientation (1/s).
     pub align_rate: f32,
+    /// How fast the heading turns toward movement when [`CharacterIntent::face_movement`] is
+    /// set (radians/s).
+    pub turn_speed: f32,
 }
 
 impl Default for CharacterController {
@@ -66,6 +69,7 @@ impl Default for CharacterController {
             ground_probe: 0.15,
             max_slope: 50.0_f32.to_radians(),
             align_rate: 12.0,
+            turn_speed: 12.0,
         }
     }
 }
@@ -87,6 +91,9 @@ pub struct CharacterIntent {
     pub jump_requested: bool,
     /// Jump is held: swims upward in water.
     pub jump_held: bool,
+    /// Turn the heading toward the movement direction instead of keeping it, so a camera can
+    /// orbit freely while the body faces where it goes.
+    pub face_movement: bool,
 }
 
 /// Where the character faces. `forward` is kept tangent to the local up, so movement stays
@@ -178,6 +185,12 @@ fn step_toward(current: Vec3, target: Vec3, max_delta: f32) -> Vec3 {
     } else {
         current + delta * (max_delta / length)
     }
+}
+
+/// Rotates `from` about `up` toward `to` by at most `max_angle`; both are tangent to `up`.
+fn turn_toward(from: Vec3, to: Vec3, up: Vec3, max_angle: f32) -> Vec3 {
+    let angle = from.cross(to).dot(up).atan2(from.dot(to));
+    Quat::from_axis_angle(up, angle.clamp(-max_angle, max_angle)) * from
 }
 
 /// Rotation with local Y along `up` and local -Z along `forward` (tangent to `up`).
@@ -301,6 +314,11 @@ fn control_characters(
 
         let wish = (movement_forward * intent.movement.y + right * intent.movement.x)
             .clamp_length_max(1.0);
+        if intent.face_movement
+            && let Some(direction) = wish.try_normalize()
+        {
+            look.forward = turn_toward(forward, direction, up, controller.turn_speed * dt);
+        }
         if swimming {
             let target = wish * controller.swim_speed;
             tangent = step_toward(tangent, target, controller.swim_acceleration * dt);
@@ -344,7 +362,7 @@ fn control_characters(
         }
 
         // Turn toward the target orientation; up changes discretely as fields change.
-        let target = orientation(forward, up);
+        let target = orientation(look.forward, up);
         let blend = 1.0 - (-controller.align_rate * dt).exp();
         rotation.0 = rotation.0.slerp(target, blend).normalize();
     }

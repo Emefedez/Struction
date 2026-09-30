@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{AssetError, FormatError};
 
 pub const MAGIC: [u8; 8] = *b"STRMESH\0";
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 pub const HEADER_LEN: usize = 16;
 /// Alignment the archive needs in memory (largest archived field alignment is 4).
 pub const ARCHIVE_ALIGN: usize = 16;
@@ -43,6 +43,31 @@ pub struct MeshBundle {
     pub meshes: Vec<BundleMesh>,
     /// Scene hierarchy; parents come before their children.
     pub nodes: Vec<SceneNode>,
+    /// Named materials that meshes refer to by name.
+    pub materials: Vec<BundleMaterial>,
+}
+
+/// Surface appearance of a named source material (glTF metallic-roughness). Only
+/// constant factors: the pipeline does not export textures.
+#[derive(
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+)]
+#[rkyv(derive(Debug))]
+pub struct BundleMaterial {
+    pub name: String,
+    /// Linear RGBA.
+    pub base_color: [f32; 4],
+    pub metallic: f32,
+    pub roughness: f32,
+    /// Linear RGB, already multiplied by the emission strength.
+    pub emissive: [f32; 3],
 }
 
 /// One glTF primitive: a single material, its LOD chain and collision shapes.
@@ -324,6 +349,13 @@ mod tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: [1.0; 3],
                 meshes: vec![0],
+            }],
+            materials: vec![BundleMaterial {
+                name: "Stone".into(),
+                base_color: [0.5, 0.5, 0.5, 1.0],
+                metallic: 0.0,
+                roughness: 0.9,
+                emissive: [0.0; 3],
             }],
         }
     }

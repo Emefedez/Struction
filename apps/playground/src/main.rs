@@ -1,10 +1,13 @@
 //! Native physics playground with a procedurally animated player.
 
 mod camera_occlusion;
+mod knight;
+mod scene;
 
 use camera_occlusion::{FadeMaterial, FadesWith, fade_material};
 #[cfg(test)]
 mod planet_tests;
+use scene::{Finish, Humanoid, Look, Player, ScenePlugin, Shape};
 
 use bevy::{
     app::AppExit,
@@ -18,15 +21,16 @@ use struction_anim::{
     plugin::{Locomotor, RigJoints},
     rig::Rig,
 };
+use struction_camera::{CameraSystems, PlayerCamera, PlayerCameraPlugin, ViewMode};
 use struction_character::{
-    CharacterAnimationPlugin, CharacterController, CharacterLook, CharacterState, InputActions,
-    InputMap, InputSystems, PlayerControlled, spawn_rig,
+    CharacterAnimationPlugin, CharacterLook, CharacterState, InputActions, InputMap, InputSystems,
+    RigOf, spawn_rig,
 };
-use struction_debug::{DebugTracePlugin, TraceAppExt, TraceEntity, TraceWriter};
-use struction_gravity::{GravityField, GravityHysteresis, GravityInfluences, LocalUp};
+use struction_debug::{DebugTracePlugin, TraceAppExt, TraceWriter};
+use struction_gravity::{GravityInfluences, LocalUp};
 use struction_physics::{
-    CameraConstraint, CameraMode, CameraOcclusion, CameraTarget, CameraZone, InCameraZones,
-    PhysicsPlugin, Submersion, Surface, Volume, VolumeShape, avian3d::prelude::*, water,
+    CameraOcclusion, InCameraZones, PhysicsPlugin, Submersion, Volume, VolumeShape,
+    avian3d::prelude::*,
 };
 
 #[derive(Resource)]
@@ -39,16 +43,12 @@ struct PlaygroundOptions {
 }
 
 #[derive(Component)]
-struct Player;
-
-#[derive(Component)]
 struct Hud;
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum PlaygroundSystems {
     Cursor,
     Script,
-    MovementFrame,
     Dress,
     Camera,
     Hud,
@@ -58,6 +58,7 @@ enum PlaygroundSystems {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut smoke = false;
     let mut trace = None;
+    let mut project = scene::default_project();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -68,8 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .ok_or("--trace requires a new JSONL file path")?,
                 )
             }
+            "--project" => {
+                project = std::path::absolute(
+                    args.next()
+                        .ok_or("--project requires a project directory")?,
+                )?
+            }
             "--help" | "-h" => {
-                println!("struction-playground [--smoke-test] [--trace FILE.jsonl]");
+                println!(
+                    "struction-playground [--smoke-test] [--trace FILE.jsonl] [--project DIR]"
+                );
                 return Ok(());
             }
             _ => return Err(format!("unknown option: {arg}").into()),
@@ -112,7 +121,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PhysicsPlugin::default(),
         struction_character::CharacterPlugins,
         CharacterAnimationPlugin,
+        PlayerCameraPlugin,
         camera_occlusion::SightFadePlugin,
+        ScenePlugin { root: project },
+        knight::KnightPlugin,
     ))
     .configure_sets(
         PreUpdate,
@@ -120,10 +132,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .configure_sets(
         PreUpdate,
-        (PlaygroundSystems::Script, PlaygroundSystems::MovementFrame)
-            .chain()
+        PlaygroundSystems::Script
             .after(InputSystems::Map)
-            .before(InputSystems::Command),
+            .before(CameraSystems::Input),
     )
     .configure_sets(
         Update,
@@ -135,17 +146,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
             .chain(),
     )
+    .configure_sets(
+        Update,
+        CameraSystems::Follow.in_set(PlaygroundSystems::Camera),
+    )
     .add_systems(Startup, setup)
     .add_systems(PreUpdate, cursor_controls.in_set(PlaygroundSystems::Cursor))
     .add_systems(PreUpdate, scripted_input.in_set(PlaygroundSystems::Script))
     .add_systems(
-        PreUpdate,
-        camera_movement.in_set(PlaygroundSystems::MovementFrame),
+        Update,
+        (
+            attach_rigs,
+            attach_camera,
+            dress_looks,
+            knight::dress_knights,
+            dress_rigs.run_if(knight::uses_shapes),
+        )
+            .chain()
+            .in_set(PlaygroundSystems::Dress),
     )
-    .add_systems(Update, dress_rigs.in_set(PlaygroundSystems::Dress))
     .add_systems(
         Update,
-        (follow_camera, count_footfalls).in_set(PlaygroundSystems::Camera),
+        (hide_rig_in_first_person, count_footfalls).in_set(PlaygroundSystems::Camera),
     )
     .add_systems(Update, update_hud.in_set(PlaygroundSystems::Hud))
     .add_systems(Update, exit_control.in_set(PlaygroundSystems::Exit))
@@ -153,12 +175,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut ground_materials: ResMut<Assets<FadeMaterial>>,
-) {
+/// The scene itself is data (see `scene`); this adds what only the rendered host needs.
+fn setup(mut commands: Commands) {
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.68, 0.78, 1.0),
         brightness: 180.0,
@@ -172,18 +190,6 @@ fn setup(
         },
         Transform::from_xyz(8.0, 16.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    commands.spawn((
-        Camera3d::default(),
-        CameraOcclusion::default(),
-        Transform::from_xyz(0.0, 4.0, 13.0).looking_at(Vec3::new(0.0, 1.4, 8.0), Vec3::Y),
-    ));
-    spawn_scene_gravity(&mut commands);
-    spawn_floor(&mut commands, &mut meshes, &mut ground_materials);
-    spawn_pool(&mut commands, &mut meshes, &mut ground_materials);
-    spawn_planet(&mut commands, &mut meshes, &mut ground_materials);
-    spawn_camera_zone(&mut commands, &mut meshes, &mut materials);
-    spawn_cubes(&mut commands, &mut meshes, &mut materials);
-    spawn_player(&mut commands);
     spawn_hud(&mut commands);
 }
 
@@ -199,224 +205,133 @@ fn material(materials: &mut Assets<StandardMaterial>, color: Color) -> Handle<St
     materials.add(matte(color))
 }
 
-/// Ground that can hide the player gets a cut-out along the camera's line of sight.
-fn ground(materials: &mut Assets<FadeMaterial>, color: Color) -> Handle<FadeMaterial> {
-    fade_material(materials, matte(color))
-}
+type Dressed<'a> = (
+    Entity,
+    &'a Look,
+    Option<&'a Shape>,
+    Option<&'a Volume>,
+    Option<&'a WaterSurface>,
+);
 
-fn spawn_scene_gravity(commands: &mut Commands) {
-    commands.spawn((
-        Name::new("Scene gravity"),
-        GravityField::scene(Vec3::NEG_Y * 9.81),
-    ));
-}
+type Redrawn = (
+    With<Look>,
+    Or<(Changed<Look>, Changed<Shape>, Changed<Volume>)>,
+);
 
-fn spawn_floor(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<FadeMaterial>,
+/// The surface drawn for a water volume, replaced when live reload changes the volume's look.
+#[derive(Component)]
+struct WaterSurface(Entity);
+
+/// Gives authored entities their mesh and material from their `Shape` and `Look`, again whenever
+/// live reload edits either.
+fn dress_looks(
+    mut commands: Commands,
+    looks: Query<Dressed, Redrawn>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut fading: ResMut<Assets<FadeMaterial>>,
 ) {
-    let tile = meshes.add(Cuboid::new(14.0, 0.5, 12.0));
-    for (name, z, surface, color) in [
-        (
-            "Stone floor",
-            5.0,
-            Surface::default(),
-            Color::srgb(0.31, 0.36, 0.38),
-        ),
-        (
-            "Slippery floor",
-            -7.0,
-            Surface::slippery(),
-            Color::srgb(0.20, 0.57, 0.72),
-        ),
-    ] {
-        commands.spawn((
-            Name::new(name),
-            RigidBody::Static,
-            TraceEntity,
-            Collider::cuboid(14.0, 0.5, 12.0),
-            surface,
-            Mesh3d(tile.clone()),
-            MeshMaterial3d(ground(materials, color)),
-            Transform::from_xyz(0.0, -0.25, z),
-        ));
-    }
-    commands.spawn((
-        Name::new("Planet approach"),
-        TraceEntity,
-        RigidBody::Static,
-        Collider::cuboid(4.0, 0.5, 7.0),
-        Surface::default(),
-        Mesh3d(meshes.add(Cuboid::new(4.0, 0.5, 7.0))),
-        MeshMaterial3d(ground(materials, Color::srgb(0.37, 0.34, 0.34))),
-        Transform::from_xyz(0.0, -0.25, -16.5),
-    ));
-    // A shallow rim makes the pool's edge readable and keeps its base solid.
-    commands.spawn((
-        Name::new("Pool floor"),
-        TraceEntity,
-        RigidBody::Static,
-        Collider::cuboid(7.0, 0.5, 8.0),
-        Mesh3d(meshes.add(Cuboid::new(7.0, 0.5, 8.0))),
-        MeshMaterial3d(ground(materials, Color::srgb(0.16, 0.30, 0.34))),
-        Transform::from_xyz(10.5, -2.75, -5.0),
-    ));
-}
-
-fn spawn_pool(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<FadeMaterial>,
-) {
-    let shape = VolumeShape::Box {
-        half_extents: Vec3::new(3.5, 1.5, 4.0),
-    };
-    let volume = commands
-        .spawn((
-            Name::new("Water pool"),
-            TraceEntity,
-            water(shape),
-            Transform::from_xyz(10.5, -1.0, -5.0),
-        ))
-        .id();
-    // A closed transparent box overlaps the pool floor and blends its own unsorted faces.
-    commands.spawn((
-        Name::new("Water surface"),
-        Transform::from_xyz(10.5, 0.5, -5.0),
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(7.0, 8.0))),
-        NotShadowCaster,
-        // A swimmer below the surface stays visible through it.
-        FadesWith(volume),
-        MeshMaterial3d(fade_material(
-            materials,
-            StandardMaterial {
-                base_color: Color::srgba(0.04, 0.46, 0.72, 0.48),
-                alpha_mode: AlphaMode::Blend,
-                perceptual_roughness: 0.24,
-                cull_mode: None,
-                double_sided: true,
-                ..default()
-            },
-        )),
-    ));
-}
-
-fn spawn_planet(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<FadeMaterial>,
-) {
-    let center = Vec3::new(0.0, 4.0, -20.0);
-    commands.spawn((
-        Name::new("Gravity planet"),
-        TraceEntity,
-        RigidBody::Static,
-        Collider::sphere(4.0),
-        GravityField::planet(24.0, 5.0),
-        GravityHysteresis { exit_margin: 0.5 },
-        Surface::default(),
-        Mesh3d(meshes.add(Sphere::new(4.0).mesh().ico(5).expect("valid sphere"))),
-        MeshMaterial3d(ground(materials, Color::srgb(0.52, 0.35, 0.24))),
-        Transform::from_translation(center),
-    ));
-}
-
-fn spawn_camera_zone(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) {
-    commands.spawn((
-        Name::new("Overhead camera zone"),
-        TraceEntity,
-        CameraZone::bundle(
-            Volume {
-                shape: VolumeShape::Box {
-                    half_extents: Vec3::new(6.0, 3.0, 2.2),
-                },
-            },
-            CameraConstraint {
-                mode: CameraMode::Fixed {
-                    position: Vec3::new(0.0, 14.0, -8.0),
-                },
-                weight: 1.0,
-                priority: 10,
-            },
-        ),
-        Transform::from_xyz(0.0, 1.0, -8.0),
-    ));
-    for x in [-5.8, 5.8] {
-        commands.spawn((
-            Name::new("Camera zone marker"),
-            Mesh3d(meshes.add(Cuboid::new(0.12, 2.0, 0.12))),
-            MeshMaterial3d(material(materials, Color::srgb(0.95, 0.77, 0.28))),
-            Transform::from_xyz(x, 1.0, -8.0),
-        ));
+    for (entity, look, shape, volume, surface) in &looks {
+        if let Some(surface) = surface {
+            commands.entity(surface.0).despawn();
+        }
+        commands.entity(entity).remove::<(
+            WaterSurface,
+            Mesh3d,
+            MeshMaterial3d<StandardMaterial>,
+            MeshMaterial3d<FadeMaterial>,
+        )>();
+        let [red, green, blue] = look.color;
+        let color = Color::srgba(red, green, blue, look.opacity);
+        if look.finish == Finish::Water {
+            let Some(VolumeShape::Box { half_extents }) = volume.map(|v| v.shape) else {
+                warn!("a water look needs a box volume; {entity} is not drawn");
+                continue;
+            };
+            // A closed transparent box overlaps the pool floor and blends its own unsorted faces.
+            let size = half_extents.xz() * 2.0;
+            let surface = commands
+                .spawn((
+                    Name::new("Water surface"),
+                    Transform::from_xyz(0.0, half_extents.y, 0.0),
+                    Mesh3d(meshes.add(Plane3d::default().mesh().size(size.x, size.y))),
+                    NotShadowCaster,
+                    // A swimmer below the surface stays visible through it.
+                    FadesWith(entity),
+                    MeshMaterial3d(fade_material(
+                        &mut fading,
+                        StandardMaterial {
+                            base_color: color,
+                            alpha_mode: AlphaMode::Blend,
+                            perceptual_roughness: 0.24,
+                            cull_mode: None,
+                            double_sided: true,
+                            ..default()
+                        },
+                    )),
+                    ChildOf(entity),
+                ))
+                .id();
+            commands
+                .entity(entity)
+                .insert((Visibility::default(), WaterSurface(surface)));
+            continue;
+        }
+        let Some(shape) = shape else {
+            warn!("{entity} has a look but no shape to draw");
+            continue;
+        };
+        let mesh = Mesh3d(meshes.add(shape.mesh()));
+        let mut entity = commands.entity(entity);
+        match look.finish {
+            // Ground that can hide the player gets a cut-out along the camera's line of sight.
+            Finish::Ground => entity.insert((
+                mesh,
+                MeshMaterial3d(fade_material(&mut fading, matte(color))),
+            )),
+            _ => entity.insert((mesh, MeshMaterial3d(material(&mut materials, color)))),
+        };
     }
 }
 
-fn spawn_cubes(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) {
-    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-    for (name, position, density, color) in [
-        (
-            "Pushable cube",
-            Vec3::new(0.0, 0.8, 3.0),
-            80.0,
-            Color::srgb(0.96, 0.52, 0.20),
-        ),
-        (
-            "Floating cube",
-            Vec3::new(10.5, 1.0, -5.0),
-            500.0,
-            Color::srgb(0.92, 0.72, 0.38),
-        ),
-    ] {
-        commands.spawn((
-            Name::new(name),
-            RigidBody::Dynamic,
-            TraceEntity,
-            Collider::cuboid(1.0, 1.0, 1.0),
-            ColliderDensity(density),
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(material(materials, color)),
-            Transform::from_translation(position),
-        ));
-    }
-}
-
-fn spawn_player(commands: &mut Commands) {
-    // The capsule is only the physics body; the visible player is the rig that follows it.
-    let body = commands
-        .spawn((
-            Name::new("Player"),
-            Player,
-            TraceEntity,
-            CharacterController::default(),
-            PlayerControlled,
-            CameraTarget,
-            Transform::from_xyz(0.0, 0.9, 8.0),
-        ))
-        .id();
-    let rig = spawn_rig(commands, body, humanoid::rig(), LocomotionParams::default())
+/// The capsule is only the physics body; a humanoid is drawn as the rig that follows it.
+fn attach_rigs(mut commands: Commands, bodies: Query<Entity, Added<Humanoid>>) {
+    for body in &bodies {
+        let rig = spawn_rig(
+            &mut commands,
+            body,
+            humanoid::rig(),
+            LocomotionParams::default(),
+        )
         .expect("the built-in humanoid is a valid rig");
-    commands
-        .entity(rig)
-        .insert((Name::new("Player rig"), Visibility::default()));
+        commands
+            .entity(rig)
+            .insert((Name::new("Humanoid rig"), Visibility::default()));
+    }
 }
 
-/// Gives new rigs a body made of simple shapes attached to their joint entities.
+/// The player comes from scene data, so its camera is attached once it spawns.
+fn attach_camera(mut commands: Commands, players: Query<Entity, Added<Player>>) {
+    for player in &players {
+        commands.spawn((
+            Name::new("Player camera"),
+            Camera3d::default(),
+            CameraOcclusion::default(),
+            PlayerCamera::new(player),
+        ));
+    }
+}
+
+/// Without the blood knight, gives rigs a body made of simple shapes attached to their joint
+/// entities.
 fn dress_rigs(
     mut commands: Commands,
-    rigs: Query<(&Rig, &RigJoints), Added<RigJoints>>,
+    rigs: Query<(Entity, &Rig, &RigJoints), Without<knight::Dressed>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (rig, joints) in &rigs {
+    for (rig_entity, rig, joints) in &rigs {
+        commands.entity(rig_entity).insert(knight::Dressed);
         let skin = material(&mut materials, Color::srgb(0.96, 0.86, 0.44));
         let dark = material(&mut materials, Color::srgb(0.30, 0.27, 0.34));
         let defs = rig.skeleton.joints();
@@ -552,62 +467,21 @@ fn scripted_input(
     }
 }
 
-fn follow_camera(
-    player: Query<(&Transform, &LocalUp, &CharacterLook, &InCameraZones), With<Player>>,
-    zones: Query<&CameraZone>,
-    mut camera: Query<&mut Transform, (With<Camera3d>, Without<Player>)>,
-    time: Res<Time>,
+/// The first-person camera sits inside the head, so the player's own rig is not drawn.
+fn hide_rig_in_first_person(
+    cameras: Query<&PlayerCamera>,
+    mut rigs: Query<(&RigOf, &mut Visibility)>,
 ) {
-    let (Ok((player, up, look, in_zones)), Ok(mut camera)) = (player.single(), camera.single_mut())
-    else {
-        return;
-    };
-    let up = *up.0;
-    let focus = player.translation + up * 0.5;
-    let default = CameraMode::Follow {
-        distance: 5.5,
-        pitch: 0.35,
-    };
-    let mode = in_zones
-        .active()
-        .and_then(|zone| zones.get(zone).ok())
-        .map_or(default, |zone| zone.constraint.mode);
-    let target = match mode {
-        CameraMode::Follow { distance, pitch } => {
-            let angle = (look.pitch + pitch).clamp(-1.3, 1.3);
-            focus - look.forward * (distance * angle.cos()) + up * (distance * angle.sin() + 0.7)
+    for camera in &cameras {
+        for (rig, mut visibility) in &mut rigs {
+            if rig.0 == camera.target {
+                visibility.set_if_neq(match camera.view {
+                    ViewMode::FirstPerson => Visibility::Hidden,
+                    ViewMode::ThirdPerson => Visibility::Inherited,
+                });
+            }
         }
-        CameraMode::Fixed { position } => position,
-    };
-    let smoothing = 1.0 - (-8.0 * time.delta_secs()).exp();
-    camera.translation = camera.translation.lerp(target, smoothing);
-    // Overhead views use the ground heading as screen-up, avoiding the look-at pole.
-    let view_up = match mode {
-        CameraMode::Fixed { .. } => look.forward,
-        CameraMode::Follow { .. } => up,
-    };
-    let target_rotation = camera.looking_at(focus, view_up).rotation;
-    camera.rotation = camera
-        .rotation
-        .slerp(target_rotation, smoothing)
-        .normalize();
-}
-
-fn camera_movement(
-    camera: Query<&Transform, With<Camera3d>>,
-    player: Query<&LocalUp, With<Player>>,
-    mut actions: ResMut<InputActions>,
-) {
-    if let (Ok(camera), Ok(up)) = (camera.single(), player.single()) {
-        actions.movement_forward = camera_ground_forward(camera, *up.0);
     }
-}
-
-fn camera_ground_forward(camera: &Transform, up: Vec3) -> Option<Vec3> {
-    // Screen-right remains defined when a camera points straight down at the player.
-    let right = *camera.right();
-    let right = (right - up * right.dot(up)).try_normalize()?;
-    Some(up.cross(right))
 }
 
 fn count_footfalls(rigs: Query<&Locomotor>, mut options: ResMut<PlaygroundOptions>) {
@@ -616,6 +490,7 @@ fn count_footfalls(rigs: Query<&Locomotor>, mut options: ResMut<PlaygroundOption
 
 fn update_hud(
     player: Query<(&CharacterState, &Submersion, &InCameraZones), With<Player>>,
+    camera: Query<&PlayerCamera>,
     mut hud: Query<&mut Text, With<Hud>>,
     time: Res<Time>,
     options: Res<PlaygroundOptions>,
@@ -623,10 +498,10 @@ fn update_hud(
     let (Ok((state, submersion, zones)), Ok(mut text)) = (player.single(), hud.single_mut()) else {
         return;
     };
-    let zone = if zones.active().is_some() {
-        "overhead"
-    } else {
-        "follow"
+    let view = match camera.single().map(|camera| camera.view) {
+        Ok(ViewMode::FirstPerson) => "first person",
+        _ if zones.active().is_some() => "third person (overhead)",
+        _ => "third person",
     };
     let fps = if time.delta_secs() > 0.0 {
         1.0 / time.delta_secs()
@@ -634,12 +509,12 @@ fn update_hud(
         0.0
     };
     **text = format!(
-        "STRUCTION / PLAYGROUND\nWASD move  |  Space jump / swim  |  M mouse look [{}]  |  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Camera: {}   Steps: {}   FPS: {:.0}\nBlue tile: slippery   |   Orange cube: push   |   Right: water   |   Ahead: gravity planet",
+        "STRUCTION / PLAYGROUND\nWASD move  |  Space jump / swim  |  M mouse look [{}]  |  V or wheel: third / first person  |  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Camera: {}   Steps: {}   FPS: {:.0}\nBlue tile: slippery   |   Orange cube: push   |   Right: water   |   Ahead: gravity planet",
         if options.cursor_grabbed { "on" } else { "off" },
         state.grounded,
         state.swimming,
         submersion.0 * 100.0,
-        zone,
+        view,
         options.footfalls,
         fps
     );
@@ -668,84 +543,74 @@ fn exit_control(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use struction_character::{CharacterControllerPlugin, InputActionsPlugin};
+    use struction_physics::testing::*;
 
     #[test]
-    fn camera_movement_remains_defined_in_overhead_and_planet_views() {
-        for (up, forward) in [
-            (Vec3::Y, Vec3::NEG_Z),
-            (Vec3::Z, Vec3::Y),
-            (Vec3::NEG_Y, Vec3::Z),
-        ] {
-            let overhead = Transform::from_translation(up * 10.0).looking_at(Vec3::ZERO, forward);
-            assert!(
-                camera_ground_forward(&overhead, up)
-                    .unwrap()
-                    .abs_diff_eq(forward, 1e-5)
-            );
-            let follow =
-                Transform::from_translation(up * 3.0 - forward * 5.0).looking_at(Vec3::ZERO, up);
-            assert!(
-                camera_ground_forward(&follow, up)
-                    .unwrap()
-                    .abs_diff_eq(forward, 1e-5)
-            );
-        }
+    fn the_data_spawned_player_gets_the_player_camera() {
+        let mut app = headless_app_with((
+            CharacterControllerPlugin,
+            InputActionsPlugin,
+            PlayerCameraPlugin,
+            ScenePlugin {
+                root: scene::default_project(),
+            },
+        ));
+        app.add_systems(Update, attach_camera);
+        // Spawners run in the first fixed tick; the camera follows in the updates after it.
+        step(&mut app, 30);
+
+        let mut players = app
+            .world_mut()
+            .query_filtered::<(Entity, &Transform), With<Player>>();
+        let (player, body) = players.single(app.world()).expect("one player");
+        let focus = body.translation;
+        let mut cameras = app.world_mut().query::<(&PlayerCamera, &Transform)>();
+        let cameras: Vec<_> = cameras.iter(app.world()).collect();
+        assert_eq!(cameras.len(), 1);
+        let (camera, transform) = cameras[0];
+        assert_eq!(camera.target, player);
+        assert_eq!(camera.view, ViewMode::ThirdPerson);
+        let distance = transform.translation.distance(focus);
+        assert!((1.0..12.0).contains(&distance), "camera {distance} m away");
     }
 
     #[test]
-    fn passing_under_the_overhead_camera_does_not_reverse_screen_right() {
+    fn a_reloaded_water_look_is_redrawn_once() {
         let mut app = App::new();
-        let mut time = Time::<()>::default();
-        time.advance_by(Duration::from_secs_f32(1.0 / 60.0));
-        app.insert_resource(time).add_systems(Update, follow_camera);
-        let position = Vec3::new(0.0, 14.0, -8.0);
-        let zone = app
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<FadeMaterial>>()
+            .add_systems(Update, dress_looks);
+        let pool = app
             .world_mut()
-            .spawn(CameraZone {
-                constraint: CameraConstraint {
-                    mode: CameraMode::Fixed { position },
-                    weight: 1.0,
-                    priority: 1,
+            .spawn((
+                Look {
+                    finish: Finish::Water,
+                    ..default()
                 },
-            })
-            .id();
-        let player = app
-            .world_mut()
-            .spawn((
-                Player,
-                Transform::from_xyz(0.0, 0.9, -6.0),
-                LocalUp::default(),
-                CharacterLook::default(),
-                InCameraZones(vec![zone]),
+                Volume {
+                    shape: VolumeShape::Box {
+                        half_extents: Vec3::ONE,
+                    },
+                },
             ))
             .id();
-        let camera = app
+        app.update();
+        // What live reload does to an edited field.
+        app.world_mut().get_mut::<Look>(pool).unwrap().color = [0.1, 0.2, 0.3];
+        app.update();
+
+        let mut surfaces = app
             .world_mut()
-            .spawn((
-                Camera3d::default(),
-                Transform::from_translation(position)
-                    .looking_at(Vec3::new(0.0, 1.4, -6.0), Vec3::NEG_Z),
-            ))
-            .id();
-        for frame in 0..120 {
-            app.world_mut()
-                .get_mut::<Transform>(player)
-                .unwrap()
-                .translation
-                .z = -6.0 - frame as f32 / 30.0;
-            let previous = app.world().get::<Transform>(camera).unwrap().rotation;
-            app.world_mut().run_schedule(Update);
-            let transform = app.world().get::<Transform>(camera).unwrap();
-            assert!(transform.rotation.is_finite());
-            assert!(transform.rotation.angle_between(previous) < 0.1);
-            assert!(transform.right().dot(Vec3::X) > 0.99);
-            assert!(
-                camera_ground_forward(transform, Vec3::Y)
-                    .unwrap()
-                    .dot(Vec3::NEG_Z)
-                    > 0.99
-            );
-        }
+            .query_filtered::<&MeshMaterial3d<FadeMaterial>, With<FadesWith>>();
+        let surfaces: Vec<_> = surfaces.iter(app.world()).collect();
+        assert_eq!(surfaces.len(), 1);
+        let material = app
+            .world()
+            .resource::<Assets<FadeMaterial>>()
+            .get(&surfaces[0].0)
+            .unwrap();
+        assert_eq!(material.base.base_color, Color::srgba(0.1, 0.2, 0.3, 1.0));
     }
 }

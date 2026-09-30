@@ -35,14 +35,18 @@ else
     fi
 fi
 
-# Same lookup as struction_assets: $STRUCTION_BLENDER, else `blender` on PATH.
+# Like struction_assets: $STRUCTION_BLENDER, else `blender` on PATH, else on macOS the app bundle.
 blender=${STRUCTION_BLENDER:-blender}
+if [[ $os == Darwin ]] && ! command -v "$blender" >/dev/null \
+    && [[ -x /Applications/Blender.app/Contents/MacOS/Blender ]]; then
+    blender=/Applications/Blender.app/Contents/MacOS/Blender
+fi
 if command -v "$blender" >/dev/null; then
     "$blender" --background --factory-startup --python-expr \
         'import bpy; print("Blender ready:", bpy.app.version_string)'
 else
     echo "Blender is unavailable; needed for .blend importing."
     if [[ $os == Darwin ]]; then
-        echo "Set STRUCTION_BLENDER=/Applications/Blender.app/Contents/MacOS/Blender if it is installed there."
+        echo "Install Blender.app in /Applications, or set STRUCTION_BLENDER to its executable."
     fi
 fi
