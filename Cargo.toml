@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "tools/smoke-test",
+    "apps/playground",
     "crates/struction_data",
     "crates/struction_core",
     "crates/struction_gravity",

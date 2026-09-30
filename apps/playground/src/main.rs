@@ -1,0 +1,3 @@
+//! Validation playground.
+
+fn main() {}
