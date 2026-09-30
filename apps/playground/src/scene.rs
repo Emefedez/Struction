@@ -1,7 +1,8 @@
 //! The playground scene is data: definitions and `scenes/milestone1.jsonc` under `project/`,
 //! loaded by `struction_data` and spawned by `struction_world`. This module registers the
 //! components the data uses and gives the authoring ones effect: a [`Shape`] becomes a collider
-//! here, and the rendered host turns [`Look`] and [`Humanoid`] into meshes and a rig.
+//! here, and the rendered host turns [`Look`] and [`Humanoid`] into meshes and a rig. Saved edits
+//! to the project apply to the running scene through `struction_world`'s live reload.
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +13,7 @@ use bevy::{
 use struction_core::CorePlugin;
 use struction_data::DataPlugin;
 use struction_physics::avian3d::prelude::*;
-use struction_world::WorldPlugin;
+use struction_world::{LiveReloadPlugin, LiveReloaded, WorldPlugin, WorldSet};
 
 /// The playground's own project, next to its sources.
 pub fn default_project() -> PathBuf {
@@ -41,6 +42,34 @@ impl Shape {
         match self {
             Self::Box { size } => Cuboid::from_size(size).into(),
             Self::Sphere { radius } => Sphere::new(radius).mesh().ico(5).expect("valid sphere"),
+        }
+    }
+}
+
+type ChangedShape = (Changed<Shape>, With<RigidBody>);
+
+/// Live reload edits a `Shape` in place, which the insert hook does not see.
+fn refresh_shape_colliders(
+    mut commands: Commands,
+    shapes: Query<(Entity, Ref<Shape>), ChangedShape>,
+) {
+    for (entity, shape) in &shapes {
+        if !shape.is_added() {
+            commands.entity(entity).insert(shape.collider());
+        }
+    }
+}
+
+/// Physics drives a body's `Transform` from its `Position`, so a body the editor moved is
+/// teleported there.
+fn place_reloaded_bodies(
+    mut reloads: MessageReader<LiveReloaded>,
+    mut bodies: Query<(&Transform, &mut Position, &mut Rotation), With<RigidBody>>,
+) {
+    for entity in reloads.read().flat_map(|reload| &reload.placed) {
+        if let Ok((transform, mut position, mut rotation)) = bodies.get_mut(*entity) {
+            position.0 = transform.translation;
+            rotation.0 = transform.rotation;
         }
     }
 }
@@ -110,7 +139,10 @@ impl Plugin for ScenePlugin {
             CorePlugin::default(),
             DataPlugin::new(&self.root),
             WorldPlugin::default(),
+            LiveReloadPlugin::default(),
         ))
+        .add_systems(Update, refresh_shape_colliders)
+        .add_systems(First, place_reloaded_bodies.after(WorldSet::Reload))
         // Avian does not register these for reflection.
         .register_type::<RigidBody>()
         .register_type::<ColliderDensity>()
@@ -132,15 +164,17 @@ mod tests {
     use struction_world::{EntityPath, WorldErrors};
 
     fn scene_app() -> App {
+        scene_app_at(default_project())
+    }
+
+    fn scene_app_at(root: PathBuf) -> App {
         let mut app = headless_app_with((
             CharacterControllerPlugin,
             // Registers `PlayerControlled` without the input devices of `CharacterPlugins`.
             |app: &mut App| {
                 app.register_type::<PlayerControlled>();
             },
-            ScenePlugin {
-                root: default_project(),
-            },
+            ScenePlugin { root },
         ));
         // Spawners run in the first fixed tick, which the first update does not reach.
         step(&mut app, 2);
@@ -229,5 +263,68 @@ mod tests {
         let cube = entity(&mut app, "Playground/pool/floating_cube");
         let submersion = app.world().get::<Submersion>(cube).unwrap().0;
         assert!(submersion > 0.0 && submersion < 1.0, "{submersion}");
+    }
+
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            if entry.path().is_dir() {
+                copy(&entry.path(), &to.join(entry.file_name()));
+            } else {
+                std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+            }
+        }
+    }
+
+    fn edit(path: &Path, from: &str, to: &str) {
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains(from), "{from} not in {}", path.display());
+        std::fs::write(path, text.replace(from, to)).unwrap();
+    }
+
+    #[test]
+    fn saved_edits_reach_the_running_scene() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        copy(&default_project(), &root);
+        let mut app = scene_app_at(root.clone());
+        let stone = entity(&mut app, "Playground/floors/stone");
+        let planet = entity(&mut app, "Playground/planet/planet");
+
+        edit(
+            &root.join("scenes/milestone1.jsonc"),
+            r#""offset": [0, 0, 5]"#,
+            r#""offset": [0, 0, 6]"#,
+        );
+        edit(
+            &root.join("ground/planet/entity.jsonc"),
+            r#""radius": 4 }"#,
+            r#""radius": 3 }"#,
+        );
+        // Past the default scan interval.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        step(&mut app, 2);
+
+        let world = app.world();
+        let moved = world.get::<Transform>(stone).unwrap().translation;
+        assert!(
+            moved.abs_diff_eq(Vec3::new(0.0, -0.25, 6.0), 1e-5),
+            "{moved}"
+        );
+        let position = world.get::<Position>(stone).unwrap().0;
+        assert!(position.abs_diff_eq(moved, 1e-5), "{position}");
+        assert_eq!(
+            *world.get::<Shape>(planet).unwrap(),
+            Shape::Sphere { radius: 3.0 }
+        );
+        let radius = world
+            .get::<Collider>(planet)
+            .unwrap()
+            .shape()
+            .as_ball()
+            .unwrap()
+            .radius;
+        assert!((radius - 3.0).abs() < 1e-5, "{radius}");
+        assert!(world.resource::<WorldErrors>().iter().next().is_none());
     }
 }

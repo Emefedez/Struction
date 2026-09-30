@@ -69,10 +69,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
             }
             "--project" => {
-                project = args
-                    .next()
-                    .ok_or("--project requires a project directory")?
-                    .into()
+                project = std::path::absolute(
+                    args.next()
+                        .ok_or("--project requires a project directory")?,
+                )?
             }
             "--help" | "-h" => {
                 println!(
@@ -197,17 +197,42 @@ fn material(materials: &mut Assets<StandardMaterial>, color: Color) -> Handle<St
     materials.add(matte(color))
 }
 
-type Dressed<'a> = (Entity, &'a Look, Option<&'a Shape>, Option<&'a Volume>);
+type Dressed<'a> = (
+    Entity,
+    &'a Look,
+    Option<&'a Shape>,
+    Option<&'a Volume>,
+    Option<&'a WaterSurface>,
+);
 
-/// Gives authored entities their mesh and material from their `Shape` and `Look`.
+type Redrawn = (
+    With<Look>,
+    Or<(Changed<Look>, Changed<Shape>, Changed<Volume>)>,
+);
+
+/// The surface drawn for a water volume, replaced when live reload changes the volume's look.
+#[derive(Component)]
+struct WaterSurface(Entity);
+
+/// Gives authored entities their mesh and material from their `Shape` and `Look`, again whenever
+/// live reload edits either.
 fn dress_looks(
     mut commands: Commands,
-    looks: Query<Dressed, Added<Look>>,
+    looks: Query<Dressed, Redrawn>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut fading: ResMut<Assets<FadeMaterial>>,
 ) {
-    for (entity, look, shape, volume) in &looks {
+    for (entity, look, shape, volume, surface) in &looks {
+        if let Some(surface) = surface {
+            commands.entity(surface.0).despawn();
+        }
+        commands.entity(entity).remove::<(
+            WaterSurface,
+            Mesh3d,
+            MeshMaterial3d<StandardMaterial>,
+            MeshMaterial3d<FadeMaterial>,
+        )>();
         let [red, green, blue] = look.color;
         let color = Color::srgba(red, green, blue, look.opacity);
         if look.finish == Finish::Water {
@@ -217,27 +242,31 @@ fn dress_looks(
             };
             // A closed transparent box overlaps the pool floor and blends its own unsorted faces.
             let size = half_extents.xz() * 2.0;
-            commands.entity(entity).insert(Visibility::default());
-            commands.spawn((
-                Name::new("Water surface"),
-                Transform::from_xyz(0.0, half_extents.y, 0.0),
-                Mesh3d(meshes.add(Plane3d::default().mesh().size(size.x, size.y))),
-                NotShadowCaster,
-                // A swimmer below the surface stays visible through it.
-                FadesWith(entity),
-                MeshMaterial3d(fade_material(
-                    &mut fading,
-                    StandardMaterial {
-                        base_color: color,
-                        alpha_mode: AlphaMode::Blend,
-                        perceptual_roughness: 0.24,
-                        cull_mode: None,
-                        double_sided: true,
-                        ..default()
-                    },
-                )),
-                ChildOf(entity),
-            ));
+            let surface = commands
+                .spawn((
+                    Name::new("Water surface"),
+                    Transform::from_xyz(0.0, half_extents.y, 0.0),
+                    Mesh3d(meshes.add(Plane3d::default().mesh().size(size.x, size.y))),
+                    NotShadowCaster,
+                    // A swimmer below the surface stays visible through it.
+                    FadesWith(entity),
+                    MeshMaterial3d(fade_material(
+                        &mut fading,
+                        StandardMaterial {
+                            base_color: color,
+                            alpha_mode: AlphaMode::Blend,
+                            perceptual_roughness: 0.24,
+                            cull_mode: None,
+                            double_sided: true,
+                            ..default()
+                        },
+                    )),
+                    ChildOf(entity),
+                ))
+                .id();
+            commands
+                .entity(entity)
+                .insert((Visibility::default(), WaterSurface(surface)));
             continue;
         }
         let Some(shape) = shape else {
@@ -534,5 +563,44 @@ mod tests {
         assert_eq!(camera.view, ViewMode::ThirdPerson);
         let distance = transform.translation.distance(focus);
         assert!((1.0..12.0).contains(&distance), "camera {distance} m away");
+    }
+
+    #[test]
+    fn a_reloaded_water_look_is_redrawn_once() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<FadeMaterial>>()
+            .add_systems(Update, dress_looks);
+        let pool = app
+            .world_mut()
+            .spawn((
+                Look {
+                    finish: Finish::Water,
+                    ..default()
+                },
+                Volume {
+                    shape: VolumeShape::Box {
+                        half_extents: Vec3::ONE,
+                    },
+                },
+            ))
+            .id();
+        app.update();
+        // What live reload does to an edited field.
+        app.world_mut().get_mut::<Look>(pool).unwrap().color = [0.1, 0.2, 0.3];
+        app.update();
+
+        let mut surfaces = app
+            .world_mut()
+            .query_filtered::<&MeshMaterial3d<FadeMaterial>, With<FadesWith>>();
+        let surfaces: Vec<_> = surfaces.iter(app.world()).collect();
+        assert_eq!(surfaces.len(), 1);
+        let material = app
+            .world()
+            .resource::<Assets<FadeMaterial>>()
+            .get(&surfaces[0].0)
+            .unwrap();
+        assert_eq!(material.base.base_color, Color::srgba(0.1, 0.2, 0.3, 1.0));
     }
 }

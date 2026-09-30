@@ -8,6 +8,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Rust hotpatching through subsecond; run under `dx serve --hot-patch` (docs/live-reload.md).
+hotpatching = ["bevy/hotpatching"]
+
 [dependencies]
 bevy = { workspace = true, features = [
     "bevy_color",
@@ -43,3 +47,6 @@ struction_debug = { workspace = true }
 struction_core = { workspace = true }
 struction_data = { workspace = true }
 struction_world = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

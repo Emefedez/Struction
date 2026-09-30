@@ -19,6 +19,9 @@ pub enum WorldSet {
     Link,
     /// Derived cells follow moved entities.
     Cells,
+    /// Saved sources are applied to the running world. Runs in `First`, between fixed ticks,
+    /// when `LiveReloadPlugin` is added.
+    Reload,
 }
 
 /// Spawners, zones, saves and streaming cells. Add after `CorePlugin` and `DataPlugin`.
