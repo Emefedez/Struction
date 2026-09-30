@@ -16,7 +16,8 @@ pub const EXPORT_SCRIPT: &str = include_str!("../scripts/export_gltf.py");
 /// Lines of Blender output kept in error messages.
 const OUTPUT_TAIL_LINES: usize = 40;
 
-/// How to run Blender. Defaults to `$STRUCTION_BLENDER` or `blender` on `PATH`.
+/// How to run Blender. Defaults to `$STRUCTION_BLENDER`, else `blender` on `PATH`,
+/// else (macOS) the newest `Blender*.app` in `/Applications` or `~/Applications`.
 #[derive(Debug, Clone)]
 pub struct Blender {
     pub executable: PathBuf,
@@ -25,11 +26,84 @@ pub struct Blender {
 
 impl Default for Blender {
     fn default() -> Self {
+        let app_dirs = if cfg!(target_os = "macos") {
+            let home =
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Applications"));
+            [Some(PathBuf::from("/Applications")), home]
+                .into_iter()
+                .flatten()
+                .collect()
+        } else {
+            Vec::new()
+        };
         Self {
-            executable: std::env::var_os("STRUCTION_BLENDER")
-                .map_or_else(|| PathBuf::from("blender"), PathBuf::from),
+            executable: find_executable(
+                std::env::var_os("STRUCTION_BLENDER"),
+                std::env::var_os("PATH"),
+                &app_dirs,
+            ),
             timeout: Duration::from_secs(300),
         }
+    }
+}
+
+/// The override if set, else `blender` when it is on `path`, else the executable
+/// of the newest `Blender*.app` bundle in `app_dirs`, else plain `blender`.
+fn find_executable(
+    override_path: Option<OsString>,
+    path: Option<OsString>,
+    app_dirs: &[PathBuf],
+) -> PathBuf {
+    if let Some(executable) = override_path {
+        return executable.into();
+    }
+    let name = PathBuf::from("blender");
+    if on_path(&name, path) {
+        return name;
+    }
+    // Newest version first; an unversioned "Blender.app" is the installer's
+    // current one, and earlier directories win ties.
+    app_dirs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, dir)| Some((index, std::fs::read_dir(dir).ok()?)))
+        .flat_map(|(index, entries)| entries.map(move |entry| (index, entry)))
+        .filter_map(|(index, entry)| {
+            let entry = entry.ok()?;
+            let file_name = entry.file_name().into_string().ok()?;
+            let version = file_name.strip_prefix("Blender")?.strip_suffix(".app")?;
+            let version: Vec<u32> = if version.is_empty() {
+                vec![u32::MAX]
+            } else {
+                version
+                    .trim()
+                    .split('.')
+                    .map(|part| part.parse().ok())
+                    .collect::<Option<_>>()?
+            };
+            let executable = entry.path().join("Contents/MacOS/Blender");
+            is_executable(&executable).then_some(((version, std::cmp::Reverse(index)), executable))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map_or(name, |(_, executable)| executable)
+}
+
+fn on_path(name: &Path, path: Option<OsString>) -> bool {
+    path.is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(name)))
+    })
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
     }
 }
 
@@ -37,11 +111,30 @@ impl Blender {
     /// Whether the executable exists (a path, or a name found on `PATH`).
     pub fn is_available(&self) -> bool {
         if self.executable.components().count() > 1 {
-            return self.executable.is_file();
+            return is_executable(&self.executable);
         }
-        std::env::var_os("PATH").is_some_and(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(&self.executable).is_file())
-        })
+        on_path(&self.executable, std::env::var_os("PATH"))
+    }
+
+    /// Runs a generator script that builds an asset from code and saves it to
+    /// `output` (`.blend`, or glTF when the script exports one). The script
+    /// receives an absolute path after `--`: a sibling of `output` with the same
+    /// extension, renamed over `output` on success so watchers never see a
+    /// missing or partial file.
+    pub fn run_generator(&self, script: &Path, output: &Path) -> Result<String, BlenderError> {
+        let output = absolute(output);
+        let name = output.file_name().unwrap_or_default().to_string_lossy();
+        let building = output.with_file_name(format!(".building-{name}"));
+        let _ = std::fs::remove_file(&building);
+        let log = self.run_script(&absolute(script), &[building.clone().into()])?;
+        if !building.is_file() {
+            return Err(BlenderError::NoOutput { output: log });
+        }
+        std::fs::rename(&building, &output).map_err(|source| BlenderError::Move {
+            path: output.clone(),
+            source,
+        })?;
+        Ok(log)
     }
 
     /// Converts a `.blend` or glTF file to GLB with engine axes (+Y up), optionally
@@ -182,6 +275,63 @@ mod tests {
             .export_gltf(Path::new("a.blend"), Path::new("a.glb"), false)
             .unwrap_err();
         assert!(matches!(error, BlenderError::Spawn { .. }), "{error}");
+    }
+
+    #[test]
+    fn finds_blender_by_override_path_and_app_bundle() {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = |path: &Path| {
+            std::fs::write(path, "").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let apps = dir.path().join("Applications");
+        let home_apps = dir.path().join("home/Applications");
+        for (root, bundle) in [
+            (&apps, "Blender 9.2.app"),
+            (&apps, "Blender 10.1.app"),
+            (&home_apps, "Blender 10.1.app"),
+            (&home_apps, "Blender 4.2.app"),
+        ] {
+            let macos = root.join(bundle).join("Contents/MacOS");
+            std::fs::create_dir_all(&macos).unwrap();
+            executable(&macos.join("Blender"));
+        }
+        // Not a Blender bundle, and a bundle without its executable.
+        std::fs::create_dir_all(apps.join("Other.app/Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(apps.join("Blender 99.app")).unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let dirs = [apps.clone(), home_apps.clone()];
+
+        assert_eq!(
+            find_executable(Some("/opt/b".into()), Some(bin.clone().into()), &dirs),
+            PathBuf::from("/opt/b")
+        );
+        // 10.1 beats 9.2 numerically; /Applications wins the tie.
+        assert_eq!(
+            find_executable(None, Some(bin.clone().into()), &dirs),
+            apps.join("Blender 10.1.app/Contents/MacOS/Blender")
+        );
+        let macos = home_apps.join("Blender.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        executable(&macos.join("Blender"));
+        assert_eq!(
+            find_executable(None, Some(bin.clone().into()), &dirs),
+            macos.join("Blender")
+        );
+        assert_eq!(find_executable(None, None, &[]), PathBuf::from("blender"));
+        // A non-executable `blender` on PATH does not count.
+        std::fs::write(bin.join("blender"), "").unwrap();
+        assert_ne!(
+            find_executable(None, Some(bin.clone().into()), &dirs),
+            PathBuf::from("blender")
+        );
+        executable(&bin.join("blender"));
+        assert_eq!(
+            find_executable(None, Some(bin.into()), &dirs),
+            PathBuf::from("blender")
+        );
     }
 
     #[test]

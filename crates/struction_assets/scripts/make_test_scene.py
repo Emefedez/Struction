@@ -7,6 +7,9 @@ Objects (Blender Z-up coordinates, meters):
 - "Tower": box 2 x 1 x 4 (X x Y x Z) at (1, 2, 3), material "Stone", no UV map.
 - "Ball": smooth UV sphere of radius 1 (32 segments, 16 rings) at (-3, 0, 1),
   material "Metal", with a UV map.
+
+"Metal" is a Principled BSDF with base color (0.8, 0.1, 0.1), metallic 1 and
+roughness 0.25; "Stone" keeps Blender's defaults.
 """
 
 import sys
@@ -17,6 +20,15 @@ import bpy
 
 def material(name):
     return bpy.data.materials.get(name) or bpy.data.materials.new(name)
+
+
+def principled(name, color, metallic, roughness):
+    mat = material(name)
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = (*color, 1.0)
+    bsdf.inputs["Metallic"].default_value = metallic
+    bsdf.inputs["Roughness"].default_value = roughness
 
 
 def add_object(name, mesh, location, material_name):
@@ -53,6 +65,7 @@ def ball():
 def main():
     output = sys.argv[sys.argv.index("--") + 1]
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    principled("Metal", (0.8, 0.1, 0.1), 1.0, 0.25)
     tower()
     ball()
     bpy.ops.wm.save_as_mainfile(filepath=output)

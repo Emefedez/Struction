@@ -44,7 +44,11 @@ bevy_transform_interpolation = "0.5"
 uuid = { version = "1", default-features = false }
 # Asset pipeline: zero-copy compiled format, glTF parsing, simplification (meshoptimizer), hulls.
 rkyv = "0.8"
-gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+gltf = { version = "1.4", default-features = false, features = [
+    "utils",
+    "names",
+    "KHR_materials_emissive_strength",
+] }
 meshopt = "0.6"
 parry3d = { version = "0.27", default-features = false, features = ["required-features", "std", "alloc"] }
 base64 = "0.22"

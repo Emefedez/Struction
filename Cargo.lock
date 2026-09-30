@@ -5519,6 +5519,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "struction_anim",
+ "struction_assets",
  "struction_camera",
  "struction_character",
  "struction_core",

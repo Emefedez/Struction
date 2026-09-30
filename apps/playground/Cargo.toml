@@ -47,6 +47,7 @@ struction_debug = { workspace = true }
 struction_core = { workspace = true }
 struction_data = { workspace = true }
 struction_world = { workspace = true }
+struction_assets = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
