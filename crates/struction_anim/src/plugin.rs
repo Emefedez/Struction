@@ -34,6 +34,7 @@ use crate::humanoid;
 use crate::locomotion::{Ground, LocomotionInput, LocomotionParams, LocomotionState};
 use crate::pose::Pose;
 use crate::rig::{Limb, Rig};
+use crate::roll::RollPose;
 use crate::solve::{PoseSolver, SolveFrame, SolverSettings, foot_goals};
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -66,6 +67,7 @@ impl Plugin for AnimPlugin {
             .register_type::<AnimMotion>()
             .register_type::<MotionFromTransform>()
             .register_type::<CustomGround>()
+            .register_type::<RollPose>()
             .register_type::<AnimConstraints>()
             .register_type::<AnimIntent>()
             .register_type::<Locomotor>()
@@ -546,6 +548,7 @@ type SolveData = (
     &'static AnimConstraints,
     Option<&'static Locomotor>,
     Option<&'static LocalUp>,
+    Option<&'static RollPose>,
 );
 
 fn solve_poses(
@@ -555,15 +558,19 @@ fn solve_poses(
     transforms: WorldTransforms,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut solver, mut solved, constraints, locomotor, up) in &mut characters {
+    for (entity, mut solver, mut solved, constraints, locomotor, up, roll) in &mut characters {
         let Some(root) = transforms.get(entity) else {
             continue;
         };
         let up = up.map_or(Vec3::Y, |u| u.0).normalize_or(Vec3::Y);
         let mut goals = core::mem::take(&mut solver.goals);
+        let ordinary_weight = 1.0 - roll.map_or(0.0, RollPose::blend_weight);
+        for goal in &mut goals {
+            goal.weight *= ordinary_weight;
+        }
         let (output, body_weight) = match locomotor {
             Some(l) => {
-                let w = l.weight.value();
+                let w = l.weight.value() * ordinary_weight;
                 goals.extend(foot_goals(l.state.output(), up, root.rotation, w));
                 (Some(l.state.output()), w)
             }
@@ -578,6 +585,7 @@ fn solve_poses(
             goals: &goals,
             locomotion: output,
             body_weight,
+            roll,
             dt,
         };
         match solver.solver.solve(&frame) {

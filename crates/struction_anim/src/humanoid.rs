@@ -211,6 +211,20 @@ pub fn base_poses() -> BasePoseSet {
             ],
         },
     );
+    let mut roll = vec![
+        euler("spine", -35.0, 0.0, 0.0),
+        euler("chest", -30.0, 0.0, 0.0),
+        euler("head", -20.0, 0.0, 0.0),
+    ];
+    roll.extend(both(&|s, side| {
+        vec![
+            euler(&format!("thigh_{s}"), 135.0, 0.0, side * 6.0),
+            euler(&format!("shin_{s}"), -150.0, 0.0, 0.0),
+            euler(&format!("upper_arm_{s}"), 65.0, 0.0, side * 12.0),
+            euler(&format!("forearm_{s}"), 120.0, 0.0, 0.0),
+        ]
+    }));
+    set.poses.insert("roll".into(), BasePose { joints: roll });
     set
 }
 
@@ -236,7 +250,7 @@ mod tests {
     #[test]
     fn every_base_pose_resolves() {
         let rig = rig();
-        for name in ["idle", "grip", "fist", "seated", "aim"] {
+        for name in ["idle", "grip", "fist", "seated", "aim", "roll"] {
             base_poses().resolve(name, &rig.skeleton).unwrap();
         }
     }

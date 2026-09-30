@@ -378,8 +378,10 @@ pub struct MeshReport {
     pub trimesh: TrimeshReport,
     /// Point count of each convex part.
     pub parts: Vec<usize>,
-    /// Plain-language feedback on the result.
-    pub notes: Vec<String>,
+    /// Plain-language feedback on the LODs.
+    pub lod_notes: Vec<String>,
+    /// Plain-language feedback on the collision shapes.
+    pub collision_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -437,35 +439,35 @@ fn report(mesh: &BundleMesh, settings: &PrepareSettings) -> MeshReport {
         share: share(collision.trimesh.triangles.len()),
     };
 
-    let mut notes = Vec::new();
+    let (mut lod_notes, mut collision_notes) = (Vec::new(), Vec::new());
     let produced = lods.len().saturating_sub(1);
     let wanted = settings.lod.levels as usize;
     if base > 0 && produced < wanted {
-        notes.push(format!(
+        lod_notes.push(format!(
             "Stopped at {produced} of {wanted} LOD levels: the next would exceed the error \
              limit or remove too little. Raise Max error to go further."
         ));
     }
     if collision.hull.is_none() {
-        notes.push("Flat or degenerate: no convex hull, so only a static trimesh fits.".into());
+        collision_notes.push("Flat or degenerate: no convex hull, so only a static trimesh fits.".into());
     }
     let (ratio, collision_settings) = (settings.collision.trimesh_ratio, &settings.collision);
     if base > 0 && ratio < 1.0 && trimesh.triangles >= base {
-        notes.push(
+        collision_notes.push(
             "The trimesh kept every triangle: its error limit allows no simplification.".into(),
         );
     }
     if trimesh.triangles > LARGE_TRIMESH {
-        notes.push(format!(
+        collision_notes.push(format!(
             "Large trimesh ({} triangles): fine for static scenery, costly for moving bodies.",
             trimesh.triangles
         ));
     }
     if collision_settings.convex_decomposition {
         if collision.parts.is_empty() {
-            notes.push("The decomposition found no convex parts.".into());
+            collision_notes.push("The decomposition found no convex parts.".into());
         } else if collision.parts.len() >= collision_settings.max_parts as usize {
-            notes.push(format!(
+            collision_notes.push(format!(
                 "Used all {} parts; raise Max parts for a closer fit.",
                 collision_settings.max_parts
             ));
@@ -483,6 +485,7 @@ fn report(mesh: &BundleMesh, settings: &PrepareSettings) -> MeshReport {
         }),
         trimesh,
         parts: collision.parts.iter().map(Vec::len).collect(),
-        notes,
+        lod_notes,
+        collision_notes,
     }
 }

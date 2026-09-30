@@ -14,3 +14,4 @@ bevy = { workspace = true, features = ["keyboard", "mouse"] }
 struction_physics = { workspace = true }
 struction_gravity = { workspace = true }
 struction_anim = { workspace = true }
+struction_core = { workspace = true }

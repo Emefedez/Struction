@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::state::{Command, Editor, Selected};
 use crate::ui::Typing;
 use bevy::{
-    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
+    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
     prelude::*,
     window::PrimaryWindow,
 };
@@ -215,9 +215,8 @@ fn orbit(
     } else if !buttons_down {
         *held = false;
     }
-    let scroll = scroll.delta.y.signum();
-    if over && scroll != 0.0 {
-        orbit.distance = (orbit.distance * 0.88f32.powf(scroll)).clamp(1.5, 400.0);
+    if over {
+        orbit.distance = (orbit.distance * zoom_factor(&scroll)).clamp(1.5, 400.0);
     }
     if !*held {
         return;
@@ -231,6 +230,16 @@ fn orbit(
         orbit.yaw -= delta.x * 0.006;
         orbit.pitch = (orbit.pitch - delta.y * 0.006).clamp(-1.5, 1.5);
     }
+}
+
+/// How much this frame's scrolling scales an orbit distance. Proportional to the amount, since
+/// trackpads send many small pixel deltas (with momentum) where a wheel sends whole lines.
+pub fn zoom_factor(scroll: &AccumulatedMouseScroll) -> f32 {
+    let lines = match scroll.unit {
+        MouseScrollUnit::Line => scroll.delta.y,
+        MouseScrollUnit::Pixel => scroll.delta.y / 60.0,
+    };
+    0.88f32.powf(lines.clamp(-3.0, 3.0))
 }
 
 fn place_camera(orbit: Res<Orbit>, mut camera: Single<&mut Transform, With<SceneCamera>>) {
@@ -480,6 +489,23 @@ mod tests {
 
     fn ray(origin: Vec3, toward: Vec3) -> Ray3d {
         Ray3d::new(origin, Dir3::new(toward - origin).unwrap())
+    }
+
+    #[test]
+    fn zoom_follows_the_scroll_amount() {
+        let scroll = |unit, y| AccumulatedMouseScroll {
+            unit,
+            delta: Vec2::new(0.0, y),
+        };
+        assert_eq!(zoom_factor(&scroll(MouseScrollUnit::Line, 0.0)), 1.0);
+        let notch = zoom_factor(&scroll(MouseScrollUnit::Line, 1.0));
+        assert!((notch - 0.88).abs() < 1e-6);
+        // A small trackpad movement zooms a little, not a whole notch.
+        let pixels = zoom_factor(&scroll(MouseScrollUnit::Pixel, 3.0));
+        assert!(pixels > 0.99 && pixels < 1.0, "{pixels}");
+        // A burst is capped per frame.
+        let burst = zoom_factor(&scroll(MouseScrollUnit::Line, 50.0));
+        assert!((burst - 0.88f32.powi(3)).abs() < 1e-6);
     }
 
     #[test]

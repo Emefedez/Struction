@@ -19,6 +19,7 @@ pub mod locomotion;
 pub mod plugin;
 pub mod pose;
 pub mod rig;
+pub mod roll;
 pub mod skeleton;
 pub mod solve;
 pub mod spring;

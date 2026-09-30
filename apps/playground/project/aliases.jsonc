@@ -1,0 +1,7 @@
+// Preserve saved definition paths after separating case-colliding directories on macOS.
+{
+  "aliases": {
+    "ground": "terrain",
+    "gravity": "fields"
+  }
+}

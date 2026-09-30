@@ -1,6 +1,6 @@
 //! Character package: input actions, and a character controller for variable up.
 //!
-//! Input flows one way. Devices are mapped to [`InputActions`] (`Move`, `Look`, `Jump`, `Grab`);
+//! Input flows one way. Devices are mapped to [`InputActions`] (`Move`, `Look`, `Jump`, `Roll`, `Grab`);
 //! for entities marked [`PlayerControlled`] the actions are copied into a [`CharacterIntent`]
 //! command; the fixed-step simulation reads only the intent. AI or remote players write intents
 //! directly and never touch input.
@@ -15,6 +15,9 @@ use bevy::{app::PluginGroupBuilder, prelude::*};
 mod animation;
 mod controller;
 mod input;
+mod roll;
+
+pub use roll::{RollAbility, RollActionsPlugin, RollRecovery, Rolling};
 
 pub use animation::{CharacterAnimationPlugin, RigOf, spawn_rig};
 pub use controller::{
@@ -30,7 +33,7 @@ pub mod prelude {
     pub use crate::{
         Binding, ButtonAction, CharacterController, CharacterIntent, CharacterLook,
         CharacterPlugins, CharacterState, CharacterSystems, InputActions, InputMap,
-        PlayerControlled,
+        PlayerControlled, RollAbility, RollRecovery, Rolling,
     };
 }
 

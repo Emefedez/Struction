@@ -18,6 +18,8 @@ use crate::game;
 pub enum Selected {
     Entity(String),
     Definition(String),
+    /// A mesh source, by project-relative path.
+    Asset(String),
 }
 
 pub enum Command {
@@ -75,6 +77,8 @@ pub enum Inspection {
         local: Value,
     },
     Missing(String),
+    /// Drawn from the toolbox, not the project.
+    Asset,
 }
 
 #[derive(Default)]
@@ -348,6 +352,7 @@ impl Editor {
                     overrides,
                 }
             }
+            Selected::Asset(_) => Inspection::Asset,
             Selected::Definition(path) => {
                 let Ok(inspected) = project.inspect_definition(path) else {
                     return Some(Inspection::Missing(path.clone()));

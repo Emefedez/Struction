@@ -3,12 +3,17 @@ use bevy::prelude::*;
 use struction_gravity::{LocalGravity, LocalUp};
 use struction_physics::{EnvironmentSystems, Submersion, Surface};
 
+use crate::{RollAbility, RollRecovery, Rolling};
+
 /// Speed (m/s) away from the ground above which a character counts as airborne even if the
 /// ground probe still reaches: it is leaving the ground, not standing on it.
 const LEAVING_GROUND_SPEED: f32 = 1.0;
 const PITCH_LIMIT: f32 = 1.5;
 /// Gravity assumed for jump speed when there is none to derive it from.
 const FALLBACK_GRAVITY: f32 = 9.81;
+// Resting contacts can sit slightly inside a collider; start the probe above that overlap so
+// the shape cast returns a surface normal instead of an unreliable penetration normal.
+const GROUND_PROBE_LIFT: f32 = 0.02;
 
 /// A capsule character driven by velocity changes, oriented to local up. Tuning lives here; what
 /// the character is asked to do lives in [`CharacterIntent`]. Override the required `Collider`
@@ -89,6 +94,8 @@ pub struct CharacterIntent {
     pub look: Vec2,
     /// A jump was asked for since the last tick; cleared by the simulation.
     pub jump_requested: bool,
+    /// A roll was asked for since the last tick; consumed even when it cannot start.
+    pub roll_requested: bool,
     /// Jump is held: swims upward in water.
     pub jump_held: bool,
     /// Turn the heading toward the movement direction instead of keeping it, so a camera can
@@ -160,6 +167,9 @@ impl Plugin for CharacterControllerPlugin {
             .register_type::<CharacterIntent>()
             .register_type::<CharacterLook>()
             .register_type::<CharacterState>()
+            .register_type::<RollAbility>()
+            .register_type::<Rolling>()
+            .register_type::<RollRecovery>()
             .configure_sets(
                 FixedPostUpdate,
                 CharacterSystems::Control
@@ -222,14 +232,14 @@ fn probe_ground(
         let extents = collider.aabb(Vec3::ZERO, Quat::IDENTITY);
         let feet = -extents.min.y;
         let probe_radius = 0.9 * extents.max.x.min(extents.max.z);
-        let origin = position.0 - up * (feet - probe_radius);
+        let origin = position.0 - up * (feet - probe_radius - GROUND_PROBE_LIFT);
         let hit = Dir3::new(-up).ok().and_then(|down| {
             spatial.cast_shape_predicate(
                 &Collider::sphere(probe_radius),
                 origin,
                 Quat::IDENTITY,
                 down,
-                &ShapeCastConfig::from_max_distance(controller.ground_probe),
+                &ShapeCastConfig::from_max_distance(controller.ground_probe + GROUND_PROBE_LIFT),
                 &SpatialQueryFilter::default(),
                 &|other| {
                     let own = colliders.get(other).is_ok_and(|of| of.body == entity);
@@ -255,8 +265,10 @@ fn probe_ground(
 
 #[allow(clippy::type_complexity)]
 fn control_characters(
+    mut commands: Commands,
     time: Res<Time>,
     mut characters: Query<(
+        Entity,
         &CharacterController,
         &mut CharacterIntent,
         &mut CharacterState,
@@ -266,10 +278,14 @@ fn control_characters(
         &Submersion,
         &mut Rotation,
         &mut LinearVelocity,
+        Option<&RollAbility>,
+        Option<&Rolling>,
+        Option<&mut RollRecovery>,
     )>,
 ) {
     let dt = time.delta_secs();
     for (
+        entity,
         controller,
         mut intent,
         mut state,
@@ -279,6 +295,9 @@ fn control_characters(
         submersion,
         mut rotation,
         mut velocity,
+        ability,
+        rolling,
+        mut recovery,
     ) in &mut characters
     {
         let up = *up.0;
@@ -314,12 +333,59 @@ fn control_characters(
 
         let wish = (movement_forward * intent.movement.y + right * intent.movement.x)
             .clamp_length_max(1.0);
-        if intent.face_movement
+        let was_rolling = rolling.is_some();
+        let mut rolling = rolling.copied();
+        if let Some(recovery) = recovery.as_mut() {
+            recovery.remaining = (recovery.remaining - dt).max(0.0);
+        }
+        if let Some(active) = rolling
+            && (active.phase() >= 1.0 || !state.grounded || swimming || ability.is_none())
+        {
+            if let Some(recovery) = recovery.as_mut() {
+                recovery.remaining = active.ability.recovery;
+            }
+            rolling = None;
+            commands.entity(entity).remove::<Rolling>();
+        }
+        let requested = core::mem::take(&mut intent.roll_requested);
+        if requested
+            && !was_rolling
+            && state.grounded
+            && !swimming
+            && recovery.as_ref().is_some_and(|r| r.remaining <= 0.0)
+            && let Some(ability) = ability
+        {
+            match ability.validate() {
+                Ok(()) => {
+                    rolling = Some(Rolling {
+                        elapsed: 0.0,
+                        direction: wish.try_normalize().unwrap_or(forward),
+                        up,
+                        ability: *ability,
+                    })
+                }
+                Err(error) => warn!("{entity}: {error}"),
+            }
+        }
+        let rolling_this_tick = rolling.is_some() || was_rolling;
+        if !rolling_this_tick
+            && intent.face_movement
             && let Some(direction) = wish.try_normalize()
         {
             look.forward = turn_toward(forward, direction, up, controller.turn_speed * dt);
         }
-        if swimming {
+        if let Some(active) = rolling.as_mut() {
+            let speed = active.advance(dt, up);
+            let ground_direction = (active.direction - normal * active.direction.dot(normal))
+                .normalize_or(active.direction);
+            let linear = ground_direction * speed;
+            vertical = linear.dot(up);
+            tangent = linear - up * vertical;
+            if intent.face_movement {
+                look.forward = active.direction;
+            }
+            commands.entity(entity).insert(*active);
+        } else if swimming {
             let target = wish * controller.swim_speed;
             tangent = step_toward(tangent, target, controller.swim_acceleration * dt);
             if intent.jump_held {
@@ -333,12 +399,16 @@ fn control_characters(
                 target,
                 controller.traction * state.ground_friction * dt,
             );
-        } else if wish != Vec3::ZERO {
+        } else if !was_rolling && wish != Vec3::ZERO {
             let target = wish * controller.move_speed;
             tangent = step_toward(tangent, target, controller.air_acceleration * dt);
         }
 
-        if core::mem::take(&mut intent.jump_requested) && state.grounded && !swimming {
+        if core::mem::take(&mut intent.jump_requested)
+            && !rolling_this_tick
+            && state.grounded
+            && !swimming
+        {
             let gravity = gravity.0.length();
             let gravity = if gravity > struction_gravity::MIN_GRAVITY {
                 gravity

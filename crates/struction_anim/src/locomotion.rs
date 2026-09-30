@@ -295,6 +295,12 @@ impl LocomotionState {
         &self.output
     }
 
+    /// Forget planted contacts after a full-body move; the next update finds ground anew.
+    pub fn reset(&mut self) {
+        let specs = self.legs.iter().map(|leg| leg.spec).collect();
+        *self = Self::new(specs, self.params);
+    }
+
     /// Advances the legs and secondary motion by `dt` seconds.
     pub fn update(
         &mut self,

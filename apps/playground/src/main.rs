@@ -24,7 +24,7 @@ use struction_anim::{
 use struction_camera::{CameraSystems, PlayerCamera, PlayerCameraPlugin, ViewMode};
 use struction_character::{
     CharacterAnimationPlugin, CharacterLook, CharacterState, InputActions, InputMap, InputSystems,
-    RigOf, spawn_rig,
+    RigOf, RollRecovery, Rolling, spawn_rig,
 };
 use struction_debug::{DebugTracePlugin, TraceAppExt, TraceWriter};
 use struction_gravity::{GravityInfluences, LocalUp};
@@ -37,6 +37,7 @@ use struction_physics::{
 struct PlaygroundOptions {
     smoke: bool,
     jump_sent: bool,
+    roll_sent: bool,
     cursor_grabbed: bool,
     escape_released_cursor: bool,
     footfalls: u32,
@@ -96,6 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .trace_component::<LinearVelocity>()
             .trace_component::<CharacterState>()
             .trace_component::<CharacterLook>()
+            .trace_component::<Rolling>()
+            .trace_component::<RollRecovery>()
             .trace_component::<struction_character::CharacterIntent>()
             .trace_component::<LocalUp>()
             .trace_component::<GravityInfluences>()
@@ -105,6 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.insert_resource(PlaygroundOptions {
         smoke,
         jump_sent: false,
+        roll_sent: false,
         cursor_grabbed: false,
         escape_released_cursor: false,
         footfalls: 0,
@@ -465,6 +469,10 @@ fn scripted_input(
         actions.jump.held = true;
         options.jump_sent = true;
     }
+    if seconds >= 3.0 && !options.roll_sent {
+        actions.roll.pressed = true;
+        options.roll_sent = true;
+    }
 }
 
 /// The first-person camera sits inside the head, so the player's own rig is not drawn.
@@ -489,13 +497,23 @@ fn count_footfalls(rigs: Query<&Locomotor>, mut options: ResMut<PlaygroundOption
 }
 
 fn update_hud(
-    player: Query<(&CharacterState, &Submersion, &InCameraZones), With<Player>>,
+    player: Query<
+        (
+            &CharacterState,
+            &Submersion,
+            &InCameraZones,
+            Option<&Rolling>,
+        ),
+        With<Player>,
+    >,
     camera: Query<&PlayerCamera>,
     mut hud: Query<&mut Text, With<Hud>>,
     time: Res<Time>,
     options: Res<PlaygroundOptions>,
 ) {
-    let (Ok((state, submersion, zones)), Ok(mut text)) = (player.single(), hud.single_mut()) else {
+    let (Ok((state, submersion, zones, rolling)), Ok(mut text)) =
+        (player.single(), hud.single_mut())
+    else {
         return;
     };
     let view = match camera.single().map(|camera| camera.view) {
@@ -509,11 +527,12 @@ fn update_hud(
         0.0
     };
     **text = format!(
-        "STRUCTION / PLAYGROUND\nWASD move  |  Space jump / swim  |  M mouse look [{}]  |  V or wheel: third / first person  |  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Camera: {}   Steps: {}   FPS: {:.0}\nBlue tile: slippery   |   Orange cube: push   |   Right: water   |   Ahead: gravity planet",
+        "STRUCTION / PLAYGROUND\nWASD move  |  Space jump / swim  |  Left Shift roll  |  M mouse look [{}]\nV or wheel: third / first person  |  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Rolling: {}   Camera: {}   Steps: {}   FPS: {:.0}\nBlue tile: slippery   |   Orange cube: push   |   Right: water   |   Ahead: gravity planet",
         if options.cursor_grabbed { "on" } else { "off" },
         state.grounded,
         state.swimming,
         submersion.0 * 100.0,
+        rolling.is_some(),
         view,
         options.footfalls,
         fps

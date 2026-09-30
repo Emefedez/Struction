@@ -16,6 +16,7 @@ use struction_editor::{Diagnostic, EditRequest, EntityEntry, Field};
 
 use crate::state::{Command, Editor, Inspection, Selected, definition_file, lookup};
 use crate::theme;
+use crate::tools::{self, Mode, Request, Toolbox};
 use crate::viewport::SceneCamera;
 
 /// Text fields that must survive between passes.
@@ -31,6 +32,7 @@ pub fn editor_ui(
     mut themed: Local<bool>,
     mut drafts: Local<Drafts>,
     mut editor: NonSendMut<Editor>,
+    mut toolbox: ResMut<Toolbox>,
     mut typing: ResMut<Typing>,
     mut camera: Single<&mut Camera, (With<SceneCamera>, Without<EguiContext>)>,
     window: Single<&Window, With<PrimaryWindow>>,
@@ -74,6 +76,7 @@ pub fn editor_ui(
         .show(&mut root, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 hierarchy(ui, &editor, &mut drafts, &mut commands);
+                assets(ui, &editor, &mut toolbox, &mut commands);
             });
             ui.allocate_rect(ui.available_rect_before_wrap(), Sense::hover());
         })
@@ -90,7 +93,7 @@ pub fn editor_ui(
             ui.label(theme::section("Inspector"));
             ui.add_space(4.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                inspector(ui, &mut editor, &mut commands);
+                inspector(ui, &mut editor, &mut toolbox, &mut commands);
             });
             ui.allocate_rect(ui.available_rect_before_wrap(), Sense::hover());
         })
@@ -231,6 +234,14 @@ fn top_bar(ui: &mut Ui, editor: &Editor, commands: &mut Vec<Command>) {
                 commands.push(Command::Undo);
             }
             if ui
+                .add_enabled(editing, egui::Button::new("Open…"))
+                .on_hover_text("Open another project folder")
+                .clicked()
+                && let Some(folder) = pick_project()
+            {
+                commands.push(Command::Open(folder));
+            }
+            if ui
                 .add_enabled(editing, egui::Button::new("Refresh"))
                 .on_hover_text("Revalidate sources edited outside the editor")
                 .clicked()
@@ -241,8 +252,15 @@ fn top_bar(ui: &mut Ui, editor: &Editor, commands: &mut Vec<Command>) {
     });
 }
 
+/// The system's folder picker. It blocks this frame while open, like any modal dialog.
+fn pick_project() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Open a Struction project")
+        .pick_folder()
+}
+
 fn welcome(root: &mut Ui, free: egui::Rect, drafts: &mut Drafts, commands: &mut Vec<Command>) {
-    let size = egui::vec2(420.0, 150.0);
+    let size = egui::vec2(460.0, 150.0);
     let rect = egui::Rect::from_center_size(free.center(), size);
     root.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
         Frame::new()
@@ -260,11 +278,20 @@ fn welcome(root: &mut Ui, free: egui::Rect, drafts: &mut Drafts, commands: &mut 
                     let field = ui.add(
                         TextEdit::singleline(&mut drafts.open_path)
                             .hint_text("/path/to/project")
-                            .desired_width(300.0),
+                            .desired_width(260.0),
                     );
                     let entered = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                     if (ui.button("Open").clicked() || entered) && !drafts.open_path.is_empty() {
                         commands.push(Command::Open(PathBuf::from(drafts.open_path.trim())));
+                    }
+                    if ui
+                        .button("Browse…")
+                        .on_hover_text("Choose the project folder")
+                        .clicked()
+                        && let Some(folder) = pick_project()
+                    {
+                        drafts.open_path = folder.display().to_string();
+                        commands.push(Command::Open(folder));
                     }
                 });
             });
@@ -395,13 +422,137 @@ fn entity_row(
     }
 }
 
-fn inspector(ui: &mut Ui, editor: &mut Editor, commands: &mut Vec<Command>) {
+/// Mesh sources in the project; each opens in the mesh tool.
+fn assets(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut Vec<Command>) {
+    if editor.project.is_none() {
+        return;
+    }
+    ui.add_space(14.0);
+    ui.horizontal(|ui| {
+        ui.label(theme::section("Assets"));
+        if ui
+            .small_button("↻")
+            .on_hover_text("Look for new mesh sources")
+            .clicked()
+        {
+            toolbox.rescan();
+        }
+    });
+    ui.add_space(4.0);
+    if toolbox.assets.is_empty() {
+        hint(ui, "No .blend, .gltf or .glb sources in the project.");
+        return;
+    }
+    ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
+        for asset in &toolbox.assets {
+            let selected = editor.selected == Some(Selected::Asset(asset.clone()));
+            let row = ui
+                .selectable_label(selected, asset.as_str())
+                .on_hover_text("Double-click to open in the mesh tool");
+            if row.clicked() {
+                commands.push(Command::Select(Some(Selected::Asset(asset.clone()))));
+            }
+            if row.double_clicked() {
+                toolbox.requests.push(Request::Open {
+                    asset: asset.clone(),
+                    mode: Mode::Inspect,
+                });
+            }
+        }
+    });
+}
+
+fn asset_inspector(ui: &mut Ui, asset: &str, editor: &Editor, toolbox: &mut Toolbox) {
+    let name = asset.rsplit('/').next().unwrap_or(asset);
+    ui.heading(name);
+    ui.label(RichText::new(asset).monospace().small().color(theme::MUTED));
+    ui.add_space(6.0);
+    let Some(source) = editor.root.as_ref().map(|root| root.join(asset)) else {
+        return;
+    };
+    let recipe = struction_assets::recipe_path(&source).is_file();
+    let compiled = struction_assets::compile::default_output(&source).is_file();
+    egui::Grid::new("asset_facts")
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            fact(ui, "Recipe");
+            ui.label(if recipe {
+                "Custom settings"
+            } else {
+                "Defaults"
+            });
+            ui.end_row();
+            fact(ui, "Compiled");
+            ui.label(if compiled { "Yes" } else { "Not yet" });
+            ui.end_row();
+        });
+    ui.add_space(8.0);
+    let (mut open, mut external) = (None, false);
+    ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
+        if ui
+            .button("Inspect mesh…")
+            .on_hover_text("Open the mesh tool: bounds, counts and a 3D preview")
+            .clicked()
+        {
+            open = Some(Mode::Inspect);
+        }
+        if ui
+            .button("Generate LODs…")
+            .on_hover_text("Preview levels of detail from presets, then apply")
+            .clicked()
+        {
+            open = Some(Mode::Lods);
+        }
+        if ui
+            .button("Generate collision…")
+            .on_hover_text("Preview hull, trimesh and convex parts from presets, then apply")
+            .clicked()
+        {
+            open = Some(Mode::Collision);
+        }
+        ui.add_space(4.0);
+        if ui
+            .button(tools::open_in_label(&source))
+            .on_hover_text("Edit the source in its full application")
+            .clicked()
+        {
+            external = true;
+        }
+    });
+    if let Some(mode) = open {
+        toolbox.requests.push(Request::Open {
+            asset: asset.to_owned(),
+            mode,
+        });
+    }
+    if external {
+        toolbox
+            .requests
+            .push(Request::OpenExternally(asset.to_owned()));
+    }
+    if let Some(error) = &toolbox.open_error {
+        ui.label(
+            RichText::new(error)
+                .small()
+                .color(ui.visuals().error_fg_color),
+        );
+    }
+}
+
+fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: &mut Vec<Command>) {
+    if let Some(Selected::Asset(asset)) = editor.selected.clone() {
+        asset_inspector(ui, &asset, editor, toolbox);
+        return;
+    }
     let playing = editor.playing();
     let Some(inspection) = editor.inspection() else {
         ui.label(RichText::new("Select an entity or definition.").color(theme::MUTED));
         return;
     };
     match inspection {
+        // Drawn by `asset_inspector` above.
+        Inspection::Asset => {}
         Inspection::Missing(target) => {
             ui.label(RichText::new(format!("{target} no longer exists.")).color(theme::MUTED));
         }

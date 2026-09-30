@@ -137,6 +137,7 @@ impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             CorePlugin::default(),
+            struction_character::RollActionsPlugin,
             DataPlugin::new(&self.root),
             WorldPlugin::default(),
             LiveReloadPlugin::default(),
@@ -203,6 +204,15 @@ mod tests {
     }
 
     #[test]
+    fn renamed_definitions_keep_save_aliases() {
+        let aliases = struction_world::PathAliases::load(&default_project()).unwrap();
+        assert_eq!(aliases.resolve("ground/stone"), "terrain/stone");
+        assert_eq!(aliases.resolve("gravity/scene"), "fields/scene");
+        assert_eq!(aliases.resolve("Ground"), "Ground");
+        assert_eq!(aliases.resolve("Gravity"), "Gravity");
+    }
+
+    #[test]
     fn spawns_keep_the_milestone_one_layout() {
         let mut app = scene_app();
         for (path, translation) in [
@@ -265,6 +275,32 @@ mod tests {
         assert!(submersion > 0.0 && submersion < 1.0, "{submersion}");
     }
 
+    #[test]
+    fn authored_player_can_roll_through_the_registered_action() {
+        use struction_character::{RollAbility, Rolling};
+        use struction_core::{ActionArgs, ActionInvocation, ActionQueue};
+
+        let mut app = scene_app();
+        step(&mut app, 60);
+        let player = entity(&mut app, "Playground/start/player");
+        assert_eq!(
+            app.world().get::<RollAbility>(player),
+            Some(&RollAbility::default())
+        );
+        let start = app.world().get::<Position>(player).unwrap().0;
+        app.world_mut()
+            .resource_mut::<ActionQueue>()
+            .invoke(ActionInvocation::new(
+                "character/roll",
+                player,
+                ActionArgs::new(),
+            ));
+        step(&mut app, 20);
+        assert!(app.world().get::<Rolling>(player).is_some());
+        let at = app.world().get::<Position>(player).unwrap().0;
+        assert!(start.z - at.z > 2.0, "{start} -> {at}");
+    }
+
     fn copy(from: &Path, to: &Path) {
         std::fs::create_dir_all(to).unwrap();
         for entry in std::fs::read_dir(from).unwrap().flatten() {
@@ -297,7 +333,7 @@ mod tests {
             r#""offset": [0, 0, 6]"#,
         );
         edit(
-            &root.join("ground/planet/entity.jsonc"),
+            &root.join("terrain/planet/entity.jsonc"),
             r#""radius": 4 }"#,
             r#""radius": 3 }"#,
         );

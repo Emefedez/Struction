@@ -5,10 +5,11 @@ use struction_anim::{
     locomotion::{Ground, GroundHit, LocomotionParams},
     plugin::{AnimMotion, CustomGround, Locomotor, spawn_character},
     rig::Rig,
+    roll::RollPose,
 };
 use struction_gravity::{LocalGravity, LocalUp};
 
-use crate::{CharacterState, CharacterSystems};
+use crate::{CharacterState, CharacterSystems, Rolling};
 
 /// On an animation rig root: the character body it follows. The rig stays unparented so
 /// animation reads this frame's root instead of last frame's `GlobalTransform`.
@@ -48,7 +49,9 @@ pub fn spawn_rig(
     params: LocomotionParams,
 ) -> Result<Entity, AnimError> {
     let root = spawn_character(commands, rig, Transform::IDENTITY, params)?;
-    commands.entity(root).insert((RigOf(body), CustomGround));
+    commands
+        .entity(root)
+        .insert((RigOf(body), CustomGround, RollPose::default()));
     Ok(root)
 }
 
@@ -59,19 +62,23 @@ type Body = (
     &'static LinearVelocity,
     &'static CharacterState,
     &'static Collider,
+    Option<&'static Rolling>,
 );
 
 fn follow_bodies(
+    time: Res<Time>,
+    fixed: Res<Time<Fixed>>,
     bodies: Query<Body, Without<RigOf>>,
     mut rigs: Query<(
         &RigOf,
         &mut Transform,
         &mut AnimMotion,
         &mut struction_anim::plugin::LocalUp,
+        &mut RollPose,
     )>,
 ) {
-    for (of, mut root, mut motion, mut anim_up) in &mut rigs {
-        let Ok((body, up, gravity, velocity, state, collider)) = bodies.get(of.0) else {
+    for (of, mut root, mut motion, mut anim_up, mut pose) in &mut rigs {
+        let Ok((body, up, gravity, velocity, state, collider, rolling)) = bodies.get(of.0) else {
             continue;
         };
         // The rig origin is on the ground below the pelvis; the body origin is the capsule center.
@@ -79,6 +86,18 @@ fn follow_bodies(
         root.translation = body.translation - body.rotation * Vec3::Y * feet;
         root.rotation = body.rotation;
         anim_up.0 = *up.0;
+        if let Some(rolling) = rolling {
+            let elapsed = (rolling.elapsed
+                - fixed.timestep().as_secs_f32() * (1.0 - fixed.overstep_fraction()))
+            .max(0.0);
+            *pose = RollPose {
+                phase: (elapsed / rolling.ability.duration).clamp(0.0, 1.0),
+                weight: 1.0,
+                direction: rolling.direction,
+            };
+        } else {
+            pose.weight = (pose.weight - time.delta_secs() / 0.12).max(0.0);
+        }
         *motion = AnimMotion {
             velocity: velocity.0,
             // Swimming legs should not plant on the pool floor.
@@ -130,6 +149,7 @@ fn step_locomotion(
             &AnimMotion,
             &struction_anim::plugin::LocalUp,
             &mut Locomotor,
+            &RollPose,
         ),
         With<CustomGround>,
     >,
@@ -138,7 +158,7 @@ fn step_locomotion(
     if dt <= 0.0 {
         return;
     }
-    for (of, root, motion, up, mut locomotor) in &mut rigs {
+    for (of, root, motion, up, mut locomotor, roll) in &mut rigs {
         // Feet stand on solid colliders other than the character's own body.
         let body = of.0;
         let solid = |other: Entity| {
@@ -149,7 +169,11 @@ fn step_locomotion(
             spatial: &spatial,
             solid: &solid,
         };
-        let input = motion.locomotion_input(*root, up.0);
+        let mut input = motion.locomotion_input(*root, up.0);
+        if roll.weight > 0.0 {
+            locomotor.state.reset();
+            input.grounded = false;
+        }
         locomotor.state.update(&input, &ground, dt);
     }
 }

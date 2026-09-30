@@ -38,9 +38,11 @@ bevy = { workspace = true, features = [
 ] }
 bevy_egui = { workspace = true }
 serde_json = { workspace = true }
+rfd = { workspace = true }
 struction_data = { workspace = true }
 struction_editor = { workspace = true }
 struction_core = { workspace = true }
+struction_assets = { workspace = true }
 struction_world = { workspace = true }
 
 [dev-dependencies]

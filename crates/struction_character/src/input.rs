@@ -37,6 +37,7 @@ pub struct InputActions {
     /// looks down).
     pub look: Vec2,
     pub jump: ButtonAction,
+    pub roll: ButtonAction,
     /// `Grab`: bound now, consumed by the grabbing package later.
     pub grab: ButtonAction,
     /// `ToggleView`: switch between third and first person.
@@ -55,6 +56,7 @@ pub struct InputMap {
     pub left: Vec<Binding>,
     pub right: Vec<Binding>,
     pub jump: Vec<Binding>,
+    pub roll: Vec<Binding>,
     pub grab: Vec<Binding>,
     pub toggle_view: Vec<Binding>,
     /// Radians of look per pixel of mouse motion.
@@ -80,6 +82,7 @@ impl Default for InputMap {
                 Binding::Key(KeyCode::ArrowRight),
             ],
             jump: vec![Binding::Key(KeyCode::Space)],
+            roll: vec![Binding::Key(KeyCode::ShiftLeft)],
             grab: vec![
                 Binding::Key(KeyCode::KeyE),
                 Binding::Mouse(MouseButton::Left),
@@ -187,6 +190,7 @@ fn map_keyboard_and_mouse(
     let grab = button(&map.grab);
     let toggle_view = button(&map.toggle_view);
     actions.jump = merge(actions.jump, jump);
+    actions.roll = merge(actions.roll, button(&map.roll));
     actions.grab = merge(actions.grab, grab);
     actions.toggle_view = merge(actions.toggle_view, toggle_view);
 }
@@ -213,6 +217,7 @@ fn send_player_intent(
         // Edges and look deltas are latched: several frames can pass between fixed ticks, and
         // the simulation clears them when it consumes them.
         intent.jump_requested |= actions.jump.pressed;
+        intent.roll_requested |= actions.roll.pressed;
         intent.look += actions.look;
     }
 }

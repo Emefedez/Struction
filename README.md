@@ -160,6 +160,21 @@ Templates scaffold enemies, spawners, and menus with ordered definitions, commen
 
 ## Editor and toolboxes
 
+The toolbox contains lightweight mini-programs that open in separate native
+windows, plus click-to-run utilities with a few choices. Each provides a complete
+simple workflow with useful controls, feedback and revision. Its backend may
+use a small library, a narrow internal toolset or a full app such as headless
+Blender when that makes the task straightforward without requiring the user to
+delve into the larger app. Merely launching an operation is not sufficient.
+**Open in…** separately offers the full application's interface when the user
+needs more power. The
+[toolbox plan](docs/toolbox.md) maps tools to their bases, handoffs,
+implementation gaps and MOON's planned work, including attribution for reused
+or modified open-source tools.
+
+Keep the toolset narrow: reuse existing editor controls, add mini-programs only
+for concrete tasks, and leave vector editing and SVG support out of scope.
+
 Native editor, Linux first. Edits are recorded as undoable changes (file, field, previous and next value); continuous edits such as a gizmo drag form one transaction. Play mode runs on a copy of the world and is excluded from history. **Open in…** hands a source file to the full application; saving triggers reimport and hot reload. `.blend` files are converted through headless Blender and glTF; shipped games do not need Blender.
 
 **AI authoring is a first-class requirement.** Inspection, validation and editing operations must be callable without a window, using structured data and the same headless APIs as the editor. Component schemas and action metadata make capabilities discoverable; edits preserve comments and stable identities, participate in undo/redo, and return actionable source errors. Command-line or tool-protocol adapters should expose those operations as they become available. An AI should be able to inspect a game, change its definitions or scene, and verify the result without automating mouse clicks.
