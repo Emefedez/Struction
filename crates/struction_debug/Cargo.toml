@@ -1,0 +1,15 @@
+[package]
+name = "struction_debug"
+description = "Opt-in structured simulation traces for people and AI tools."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bevy = { workspace = true, features = ["serialize"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+struction_core = { workspace = true }

@@ -5248,6 +5248,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "struction_character",
+ "struction_debug",
  "struction_gravity",
  "struction_physics",
 ]
@@ -5327,6 +5328,16 @@ dependencies = [
  "struction_core",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "struction_debug"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "serde",
+ "serde_json",
+ "struction_core",
 ]
 
 [[package]]

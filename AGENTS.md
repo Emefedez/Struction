@@ -36,6 +36,7 @@ From the design review's pending recommendations, treated as decided:
 | `struction_ai` | 3 | Behavior trees, condition registry, sensing by lineage, boids |
 | `struction_world` | 3 | Spawners, zones, save/load, path renaming, data↔core integration |
 | `struction_assets` | 6 | Blender/glTF import, UVs, collision, LODs, rkyv binary format, Open in… |
+| `struction_debug` | Cross-cutting | Opt-in headless component-change tracing, bounded event log and JSONL output for tools |
 
 ## Status
 
@@ -48,6 +49,7 @@ From the design review's pending recommendations, treated as decided:
 | `struction_ai` | Done, 23 tests. Loading `brain`/`sensing` from definitions and a physics line-of-sight are left to integration |
 | `struction_world` | Spawners, save/load, aliases and boss/minion integration verified with 21 tests. Rejects inconsistent save identities and rename key collisions; renamed/removed spawns keep correct save bookkeeping |
 | `struction_assets` | Implementation and tests present; verification pending |
+| `struction_debug` | Implemented, 5 tests. Fixed-tick snapshots and before/after changes, stable identities, component/activation/lifecycle changes, optional JSONL sink. See `docs/debugging.md` |
 | `struction_editor` / `apps/editor` | History/session source present but not exported; editor app remains a scaffold |
 | `apps/playground` | Milestone 1 scene runnable. Water surface replaces overlapping transparent box; camera-relative movement and overhead orientation covered by 2 tests; native Vulkan smoke run verified |
 

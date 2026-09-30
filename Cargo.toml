@@ -10,6 +10,7 @@ members = [
     "crates/struction_anim",
     "crates/struction_ai",
     "crates/struction_world",
+    "crates/struction_debug",
     "crates/struction_assets",
     "crates/struction_editor",
     "apps/editor",
@@ -58,6 +59,7 @@ struction_character = { path = "crates/struction_character" }
 struction_anim = { path = "crates/struction_anim" }
 struction_ai = { path = "crates/struction_ai" }
 struction_world = { path = "crates/struction_world" }
+struction_debug = { path = "crates/struction_debug" }
 struction_assets = { path = "crates/struction_assets" }
 struction_editor = { path = "crates/struction_editor" }
 # Editor UI (adopted decision). 0.42 is the release for Bevy 0.19; 0.43 targets Bevy 0.20.
