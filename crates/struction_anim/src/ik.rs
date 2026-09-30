@@ -25,7 +25,13 @@ pub struct TwoBoneSolution {
 }
 
 /// Analytic two-bone solve. `pole` is a direction the middle joint bends toward.
-pub fn solve_two_bone(root: Vec3, upper: f32, lower: f32, target: Vec3, pole: Vec3) -> TwoBoneSolution {
+pub fn solve_two_bone(
+    root: Vec3,
+    upper: f32,
+    lower: f32,
+    target: Vec3,
+    pole: Vec3,
+) -> TwoBoneSolution {
     let to_target = target - root;
     let raw = to_target.length();
     let dir = if raw > EPS { to_target / raw } else { Vec3::Y };
@@ -48,7 +54,13 @@ pub fn solve_two_bone(root: Vec3, upper: f32, lower: f32, target: Vec3, pole: Ve
 }
 
 /// Rotates `joint` by `delta` (model-space rotation about the joint) and refreshes its subtree.
-pub fn rotate_joint(skeleton: &Skeleton, pose: &mut Pose, model: &mut [Transform], joint: usize, delta: Quat) {
+pub fn rotate_joint(
+    skeleton: &Skeleton,
+    pose: &mut Pose,
+    model: &mut [Transform],
+    joint: usize,
+    delta: Quat,
+) {
     let parent_rotation = skeleton.joints()[joint]
         .parent
         .map_or(Quat::IDENTITY, |p| model[p].rotation);
@@ -90,7 +102,13 @@ pub fn apply_two_bone(
     let goal = end.lerp(target, weight.clamp(0.0, 1.0));
     let solution = solve_two_bone(root, root.distance(mid), mid.distance(end), goal, pole);
 
-    rotate_joint(skeleton, pose, model, a, arc(mid - root, solution.mid - root));
+    rotate_joint(
+        skeleton,
+        pose,
+        model,
+        a,
+        arc(mid - root, solution.mid - root),
+    );
     let mid = model[b].translation;
     let end = model[c].translation;
     rotate_joint(skeleton, pose, model, b, arc(end - mid, solution.end - mid));
@@ -154,7 +172,13 @@ pub fn apply_chain(
     for i in 0..chain.len() - 1 {
         let here = model[chain[i]].translation;
         let current = model[chain[i + 1]].translation - here;
-        rotate_joint(skeleton, pose, model, chain[i], arc(current, points[i + 1] - here));
+        rotate_joint(
+            skeleton,
+            pose,
+            model,
+            chain[i],
+            arc(current, points[i + 1] - here),
+        );
     }
     IkResult {
         error: model[*chain.last().expect("chain has joints")]
@@ -209,6 +233,7 @@ pub struct GazeResult {
 /// Turns the head chain (`chain` root to head, distributed with increasing share toward the
 /// head) so the head's `forward` axis looks along `direction` (model space), limited by
 /// `limits` relative to the model's forward. `weight` scales the turn.
+#[expect(clippy::too_many_arguments, reason = "plain math entry point")]
 pub fn apply_look_at(
     skeleton: &Skeleton,
     pose: &mut Pose,
@@ -246,7 +271,13 @@ pub fn align_axis(
     weight: f32,
 ) {
     let full = arc(model[joint].rotation * axis, direction);
-    rotate_joint(skeleton, pose, model, joint, Quat::IDENTITY.slerp(full, weight.clamp(0.0, 1.0)));
+    rotate_joint(
+        skeleton,
+        pose,
+        model,
+        joint,
+        Quat::IDENTITY.slerp(full, weight.clamp(0.0, 1.0)),
+    );
 }
 
 /// Blends `joint`'s model-space rotation toward `rotation`.
@@ -259,7 +290,13 @@ pub fn align_rotation(
     weight: f32,
 ) {
     let full = rotation * model[joint].rotation.inverse();
-    rotate_joint(skeleton, pose, model, joint, Quat::IDENTITY.slerp(full, weight.clamp(0.0, 1.0)));
+    rotate_joint(
+        skeleton,
+        pose,
+        model,
+        joint,
+        Quat::IDENTITY.slerp(full, weight.clamp(0.0, 1.0)),
+    );
 }
 
 #[cfg(test)]
@@ -274,7 +311,9 @@ mod tests {
         let (u, l) = (0.45, 0.4);
         for i in 0..200 {
             let t = i as f32 * 0.37;
-            let target = root + Vec3::new(t.sin(), t.cos() * 0.8, (t * 1.7).sin()) * (0.1 + (i % 10) as f32 * 0.07);
+            let target = root
+                + Vec3::new(t.sin(), t.cos() * 0.8, (t * 1.7).sin())
+                    * (0.1 + (i % 10) as f32 * 0.07);
             if root.distance(target) > u + l - 0.01 || root.distance(target) < 0.06 {
                 continue;
             }
@@ -313,7 +352,12 @@ mod tests {
         let mut half = pose.clone();
         let mut half_model = model.clone();
         apply_two_bone(sk, &mut half, &mut half_model, chain, target, arm.pole, 0.5);
-        assert!(half_model[chain[2]].translation.distance(start.lerp(target, 0.5)) < 1e-4);
+        assert!(
+            half_model[chain[2]]
+                .translation
+                .distance(start.lerp(target, 0.5))
+                < 1e-4
+        );
 
         let r = apply_two_bone(sk, &mut pose, &mut model, chain, target, arm.pole, 1.0);
         assert!(r.reached && r.error < 1e-4);
@@ -323,7 +367,9 @@ mod tests {
 
     #[test]
     fn fabrik_reaches_and_preserves_lengths() {
-        let mut pts: Vec<Vec3> = (0..5).map(|i| Vec3::new(0.0, i as f32 * 0.3, 0.0)).collect();
+        let mut pts: Vec<Vec3> = (0..5)
+            .map(|i| Vec3::new(0.0, i as f32 * 0.3, 0.0))
+            .collect();
         let target = Vec3::new(0.5, 0.6, 0.3);
         assert!(fabrik(&mut pts, target, 1e-3, 32));
         assert!(pts[4].distance(target) < 1e-3);
@@ -368,13 +414,31 @@ mod tests {
         let mut pose = sk.rest_pose();
         let mut model = sk.model_transforms(&pose);
         let dir = Vec3::new(-0.5, 0.2, -1.0).normalize();
-        let r = apply_look_at(sk, &mut pose, &mut model, &head.chain, Vec3::NEG_Z, dir, GazeLimits::default(), 1.0);
+        let r = apply_look_at(
+            sk,
+            &mut pose,
+            &mut model,
+            &head.chain,
+            Vec3::NEG_Z,
+            dir,
+            GazeLimits::default(),
+            1.0,
+        );
         assert!(r.within_limits && r.error < 1e-3);
         assert!((model[head_joint].rotation * Vec3::NEG_Z).angle_between(dir) < 1e-3);
 
         let mut pose = sk.rest_pose();
         let mut model = sk.model_transforms(&pose);
-        let r = apply_look_at(sk, &mut pose, &mut model, &head.chain, Vec3::NEG_Z, Vec3::Z, GazeLimits::default(), 1.0);
+        let r = apply_look_at(
+            sk,
+            &mut pose,
+            &mut model,
+            &head.chain,
+            Vec3::NEG_Z,
+            Vec3::Z,
+            GazeLimits::default(),
+            1.0,
+        );
         assert!(!r.within_limits && r.error < 1e-3);
     }
 }

@@ -86,7 +86,10 @@ pub struct Climbable {
 /// Greedy grip assignment: repeatedly pairs the closest (grip, free hand) that the grip's
 /// preference accepts, so a one-grip object goes to the nearest hand and a two-grip object
 /// to both. `grips` holds (preference, world position); `hands` (limb, world position).
-pub fn assign_grips(grips: &[(HandPreference, Vec3)], hands: &[(Limb, Vec3)]) -> Vec<(usize, Limb)> {
+pub fn assign_grips(
+    grips: &[(HandPreference, Vec3)],
+    hands: &[(Limb, Vec3)],
+) -> Vec<(usize, Limb)> {
     let mut pairs: Vec<(f32, usize, Limb)> = grips
         .iter()
         .enumerate()

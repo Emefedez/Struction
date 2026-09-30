@@ -55,28 +55,68 @@ pub fn rig() -> Rig {
     ];
     for (side, suffix) in [(-1.0_f32, "l"), (1.0, "r")] {
         let n = |base: &str| format!("{base}_{suffix}");
-        let arm = b.add(&n("upper_arm"), Some("chest"), Vec3::new(side * 0.19, 0.16, 0.0));
-        let fore = b.add(&n("forearm"), Some(&n("upper_arm")), Vec3::new(0.0, -0.28, 0.0));
+        let arm = b.add(
+            &n("upper_arm"),
+            Some("chest"),
+            Vec3::new(side * 0.19, 0.16, 0.0),
+        );
+        let fore = b.add(
+            &n("forearm"),
+            Some(&n("upper_arm")),
+            Vec3::new(0.0, -0.28, 0.0),
+        );
         let hand = b.add(&n("hand"), Some(&n("forearm")), Vec3::new(0.0, -0.26, 0.0));
-        b.add(&n("fingers_0"), Some(&n("hand")), Vec3::new(0.0, -0.03, 0.0));
-        b.add(&n("fingers_1"), Some(&n("fingers_0")), Vec3::new(0.0, -0.04, 0.0));
-        b.add(&n("fingers_2"), Some(&n("fingers_1")), Vec3::new(0.0, -0.03, 0.0));
-        b.add(&n("thumb_0"), Some(&n("hand")), Vec3::new(-side * 0.03, -0.02, -0.02));
-        b.add(&n("thumb_1"), Some(&n("thumb_0")), Vec3::new(0.0, -0.03, 0.0));
+        b.add(
+            &n("fingers_0"),
+            Some(&n("hand")),
+            Vec3::new(0.0, -0.03, 0.0),
+        );
+        b.add(
+            &n("fingers_1"),
+            Some(&n("fingers_0")),
+            Vec3::new(0.0, -0.04, 0.0),
+        );
+        b.add(
+            &n("fingers_2"),
+            Some(&n("fingers_1")),
+            Vec3::new(0.0, -0.03, 0.0),
+        );
+        b.add(
+            &n("thumb_0"),
+            Some(&n("hand")),
+            Vec3::new(-side * 0.03, -0.02, -0.02),
+        );
+        b.add(
+            &n("thumb_1"),
+            Some(&n("thumb_0")),
+            Vec3::new(0.0, -0.03, 0.0),
+        );
         limbs.push(LimbBinding {
-            limb: if side < 0.0 { Limb::LeftHand } else { Limb::RightHand },
+            limb: if side < 0.0 {
+                Limb::LeftHand
+            } else {
+                Limb::RightHand
+            },
             chain: vec![arm, fore, hand],
             pole: Vec3::new(side * 0.3, -0.2, 1.0).normalize(),
         });
     }
     for (side, suffix) in [(-1.0_f32, "l"), (1.0, "r")] {
         let n = |base: &str| format!("{base}_{suffix}");
-        let thigh = b.add(&n("thigh"), Some("hips"), Vec3::new(side * 0.09, -0.04, 0.0));
+        let thigh = b.add(
+            &n("thigh"),
+            Some("hips"),
+            Vec3::new(side * 0.09, -0.04, 0.0),
+        );
         let shin = b.add(&n("shin"), Some(&n("thigh")), Vec3::new(0.0, -0.46, 0.0));
         let foot_y = -(HIPS_HEIGHT - 0.04 - 0.46 - ANKLE_HEIGHT);
         let foot = b.add(&n("foot"), Some(&n("shin")), Vec3::new(0.0, foot_y, 0.0));
         limbs.push(LimbBinding {
-            limb: if side < 0.0 { Limb::LeftFoot } else { Limb::RightFoot },
+            limb: if side < 0.0 {
+                Limb::LeftFoot
+            } else {
+                Limb::RightFoot
+            },
             chain: vec![thigh, shin, foot],
             pole: Vec3::NEG_Z,
         });
@@ -91,7 +131,8 @@ pub fn rig() -> Rig {
 
 pub fn base_poses() -> BasePoseSet {
     let mut set = BasePoseSet::default();
-    let euler = |joint: &str, x: f32, y: f32, z: f32| JointPose::rotation(joint, Vec3::new(x, y, z));
+    let euler =
+        |joint: &str, x: f32, y: f32, z: f32| JointPose::rotation(joint, Vec3::new(x, y, z));
     let both = |f: &dyn Fn(&str, f32) -> Vec<JointPose>| -> Vec<JointPose> {
         [("l", -1.0), ("r", 1.0)]
             .into_iter()
@@ -104,7 +145,12 @@ pub fn base_poses() -> BasePoseSet {
                 euler(&format!("fingers_0_{s}"), curl[0], 0.0, 0.0),
                 euler(&format!("fingers_1_{s}"), curl[1], 0.0, 0.0),
                 euler(&format!("fingers_2_{s}"), curl[2], 0.0, 0.0),
-                euler(&format!("thumb_0_{s}"), thumb[0], 0.0, -side * 0.7 * thumb[0]),
+                euler(
+                    &format!("thumb_0_{s}"),
+                    thumb[0],
+                    0.0,
+                    -side * 0.7 * thumb[0],
+                ),
                 euler(&format!("thumb_1_{s}"), thumb[1], 0.0, 0.0),
             ]
         })
@@ -149,7 +195,8 @@ pub fn base_poses() -> BasePoseSet {
             euler(&format!("forearm_{s}"), 55.0, 0.0, 0.0),
         ]
     }));
-    set.poses.insert("seated".into(), BasePose { joints: seated });
+    set.poses
+        .insert("seated".into(), BasePose { joints: seated });
 
     set.poses.insert(
         "aim".into(),

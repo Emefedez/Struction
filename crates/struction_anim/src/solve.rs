@@ -28,10 +28,19 @@ pub struct PoseSpring {
 impl PoseSpring {
     pub fn step(&mut self, target: &Pose, params: SpringParams, dt: f32) -> Pose {
         if self.states.len() != target.len() {
-            self.states = target.locals.iter().map(|t| SpringQuat::at(t.rotation)).collect();
+            self.states = target
+                .locals
+                .iter()
+                .map(|t| SpringQuat::at(t.rotation))
+                .collect();
         }
         let mut out = target.clone();
-        for ((state, local), goal) in self.states.iter_mut().zip(&mut out.locals).zip(&target.locals) {
+        for ((state, local), goal) in self
+            .states
+            .iter_mut()
+            .zip(&mut out.locals)
+            .zip(&target.locals)
+        {
             state.step(goal.rotation, params, dt);
             local.rotation = state.value;
         }
@@ -55,6 +64,9 @@ pub struct SolverSettings {
     pub gaze: GazeLimits,
     /// Head forward axis in the head joint's frame.
     pub head_forward: Vec3,
+    /// Forward pitch speed (rad/s) given to the spine per m/s of landing speed; the follow
+    /// spring brings it back to the base pose.
+    pub landing_kick: f32,
 }
 
 impl Default for SolverSettings {
@@ -64,6 +76,7 @@ impl Default for SolverSettings {
             follow: SpringParams::new(6.0, 0.8),
             gaze: GazeLimits::default(),
             head_forward: Vec3::NEG_Z,
+            landing_kick: 1.5,
         }
     }
 }
@@ -100,7 +113,12 @@ pub struct SolveFrame<'a> {
 }
 
 /// Foot-contact goals from locomotion, weighted by `weight` (fades feet to the base pose).
-pub fn foot_goals(output: &LocomotionOutput, up: Vec3, root_rotation: Quat, weight: f32) -> Vec<ResolvedConstraint> {
+pub fn foot_goals(
+    output: &LocomotionOutput,
+    up: Vec3,
+    root_rotation: Quat,
+    weight: f32,
+) -> Vec<ResolvedConstraint> {
     output
         .feet
         .iter()
@@ -138,9 +156,17 @@ impl PoseSolver {
         }
     }
 
-    fn layer(&mut self, name: &str, set: &BasePoseSet, pose: &mut Pose, weight: f32, limb: Option<Limb>) -> Result<(), AnimError> {
+    fn layer(
+        &mut self,
+        name: &str,
+        set: &BasePoseSet,
+        pose: &mut Pose,
+        weight: f32,
+        limb: Option<Limb>,
+    ) -> Result<(), AnimError> {
         if !self.resolved.contains_key(name) {
-            self.resolved.insert(name.to_owned(), set.resolve(name, &self.rig.skeleton)?);
+            self.resolved
+                .insert(name.to_owned(), set.resolve(name, &self.rig.skeleton)?);
         }
         let mask = match limb {
             Some(limb) => {
@@ -162,12 +188,28 @@ impl PoseSolver {
         let idle = self.settings.idle_pose.clone();
         self.layer(&idle, frame.base_poses, &mut pose, 1.0, None)?;
         for goal in frame.goals {
-            if let Some(name) = goal.index.and_then(|i| frame.constraints[i].pose.as_deref()) {
-                self.layer(name, frame.base_poses, &mut pose, goal.weight, Some(goal.source))?;
+            if let Some(name) = goal
+                .index
+                .and_then(|i| frame.constraints[i].pose.as_deref())
+            {
+                self.layer(
+                    name,
+                    frame.base_poses,
+                    &mut pose,
+                    goal.weight,
+                    Some(goal.source),
+                )?;
             }
         }
 
-        // 2. Springs pull joints back toward the pose above.
+        // 2. Springs pull joints back toward the pose above; impacts displace the spine first.
+        if let Some(speed) = frame.locomotion.and_then(|l| l.landed) {
+            let spine = &self.rig.binding(Limb::Head)?.chain;
+            for &joint in &spine[..spine.len().saturating_sub(1)] {
+                let kick = Vec3::NEG_X * self.settings.landing_kick * speed * frame.body_weight;
+                self.springs.kick(joint, kick);
+            }
+        }
         let mut pose = self.springs.step(&pose, self.settings.follow, frame.dt);
 
         // 3. Body: bob, crouch, lean.
@@ -191,14 +233,21 @@ impl PoseSolver {
             .goals
             .iter()
             .filter(|g| g.property == ConstraintProperty::Direction)
-            .chain(frame.goals.iter().filter(|g| g.property != ConstraintProperty::Direction));
+            .chain(
+                frame
+                    .goals
+                    .iter()
+                    .filter(|g| g.property != ConstraintProperty::Direction),
+            );
         for goal in ordered {
             if goal.weight <= 0.0 {
                 continue;
             }
             let binding = self.rig.binding(goal.source)?;
             match goal.property {
-                ConstraintProperty::Position | ConstraintProperty::Pose | ConstraintProperty::Orientation
+                ConstraintProperty::Position
+                | ConstraintProperty::Pose
+                | ConstraintProperty::Orientation
                     if binding.chain.len() == 3 =>
                 {
                     let chain = [binding.chain[0], binding.chain[1], binding.chain[2]];
@@ -209,10 +258,25 @@ impl PoseSolver {
                     };
                     if goal.property != ConstraintProperty::Orientation {
                         let target = inverse_root.transform_point3(goal.position);
-                        result = ik::apply_two_bone(skeleton, &mut pose, &mut model, chain, target, binding.pole, goal.weight);
+                        result = ik::apply_two_bone(
+                            skeleton,
+                            &mut pose,
+                            &mut model,
+                            chain,
+                            target,
+                            binding.pole,
+                            goal.weight,
+                        );
                     }
                     if goal.property != ConstraintProperty::Position {
-                        ik::align_rotation(skeleton, &mut pose, &mut model, end, root_rotation_inv * goal.rotation, goal.weight);
+                        ik::align_rotation(
+                            skeleton,
+                            &mut pose,
+                            &mut model,
+                            end,
+                            root_rotation_inv * goal.rotation,
+                            goal.weight,
+                        );
                     }
                     report.goals.push(GoalReport {
                         limb: goal.source,
@@ -220,24 +284,40 @@ impl PoseSolver {
                         reached: result.reached,
                     });
                 }
-                ConstraintProperty::Position | ConstraintProperty::Pose | ConstraintProperty::Orientation
+                ConstraintProperty::Position
+                | ConstraintProperty::Pose
+                | ConstraintProperty::Orientation
                     if binding.chain.len() == 1 =>
                 {
                     // Single-joint limb (pelvis): move and turn the joint itself.
                     let joint = binding.chain[0];
-                    let parent_model = skeleton.joints()[joint].parent.map_or(Transform::IDENTITY, |p| model[p]);
+                    let parent_model = skeleton.joints()[joint]
+                        .parent
+                        .map_or(Transform::IDENTITY, |p| model[p]);
                     let mut error = 0.0;
                     if goal.property != ConstraintProperty::Orientation {
                         let start = model[joint].translation;
                         let goal_model = inverse_root.transform_point3(goal.position);
-                        let target = parent_model.compute_affine().inverse().transform_point3(goal_model);
+                        let target = parent_model
+                            .compute_affine()
+                            .inverse()
+                            .transform_point3(goal_model);
                         let local = &mut pose.locals[joint];
                         local.translation = local.translation.lerp(target, goal.weight);
                         skeleton.update_subtree(&pose, &mut model, joint);
-                        error = model[joint].translation.distance(start.lerp(goal_model, goal.weight));
+                        error = model[joint]
+                            .translation
+                            .distance(start.lerp(goal_model, goal.weight));
                     }
                     if goal.property != ConstraintProperty::Position {
-                        ik::align_rotation(skeleton, &mut pose, &mut model, joint, root_rotation_inv * goal.rotation, goal.weight);
+                        ik::align_rotation(
+                            skeleton,
+                            &mut pose,
+                            &mut model,
+                            joint,
+                            root_rotation_inv * goal.rotation,
+                            goal.weight,
+                        );
                     }
                     report.goals.push(GoalReport {
                         limb: goal.source,
@@ -275,7 +355,15 @@ impl PoseSolver {
             .rig
             .limbs
             .iter()
-            .map(|b| (b.limb, frame.root.transform_point(final_model[*b.chain.last().expect("limb chains are not empty")].translation)))
+            .map(|b| {
+                (
+                    b.limb,
+                    frame.root.transform_point(
+                        final_model[*b.chain.last().expect("limb chains are not empty")]
+                            .translation,
+                    ),
+                )
+            })
             .collect();
         self.report = report;
         Ok(pose)

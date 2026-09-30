@@ -10,7 +10,9 @@ use crate::pose::BoneMask;
 use crate::skeleton::Skeleton;
 
 /// Body part a constraint or intent addresses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Reflect, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Reflect, Serialize, Deserialize,
+)]
 pub enum Limb {
     Head,
     Pelvis,
@@ -67,7 +69,11 @@ impl Rig {
 
     /// Weight 1 on the end joint of the limb and everything below it (fingers, toes).
     pub fn limb_end_mask(&self, limb: Limb) -> Result<BoneMask, AnimError> {
-        let end = *self.binding(limb)?.chain.last().expect("limb chains are not empty");
+        let end = *self
+            .binding(limb)?
+            .chain
+            .last()
+            .expect("limb chains are not empty");
         Ok(self.skeleton.subtree_mask(end))
     }
 }

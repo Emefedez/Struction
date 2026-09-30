@@ -40,14 +40,18 @@ pub enum MaskSpec {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum NodeKind {
-    Const { value: f32 },
+    Const {
+        value: f32,
+    },
     /// Scalar from the runtime inputs.
     Param {
         name: String,
         #[serde(default)]
         default: f32,
     },
-    Vec3Const { value: Vec3 },
+    Vec3Const {
+        value: Vec3,
+    },
     Vec3Param {
         name: String,
         #[serde(default)]
@@ -60,11 +64,20 @@ pub enum NodeKind {
         #[serde(default)]
         interpolation: Interpolation,
     },
-    Spring { input: String, params: SpringParams },
+    Spring {
+        input: String,
+        params: SpringParams,
+    },
     /// Rest pose with the named base pose applied.
-    BasePose { name: String },
+    BasePose {
+        name: String,
+    },
     /// `a` to `b` by a scalar weight.
-    Blend { a: String, b: String, weight: String },
+    Blend {
+        a: String,
+        b: String,
+        weight: String,
+    },
     /// `layer` over `base` on the masked joints, scaled by a scalar weight.
     Mask {
         base: String,
@@ -122,9 +135,10 @@ impl ValueType {
 impl NodeKind {
     fn output_type(&self) -> ValueType {
         match self {
-            NodeKind::Const { .. } | NodeKind::Param { .. } | NodeKind::Curve { .. } | NodeKind::Spring { .. } => {
-                ValueType::Scalar
-            }
+            NodeKind::Const { .. }
+            | NodeKind::Param { .. }
+            | NodeKind::Curve { .. }
+            | NodeKind::Spring { .. } => ValueType::Scalar,
             NodeKind::Vec3Const { .. } | NodeKind::Vec3Param { .. } => ValueType::Vec3,
             _ => ValueType::Pose,
         }
@@ -141,8 +155,18 @@ impl NodeKind {
             | NodeKind::BasePose { .. } => vec![],
             NodeKind::Curve { input, .. } | NodeKind::Spring { input, .. } => vec![(input, S)],
             NodeKind::Blend { a, b, weight } => vec![(a, P), (b, P), (weight, S)],
-            NodeKind::Mask { base, layer, weight, .. } => vec![(base, P), (layer, P), (weight, S)],
-            NodeKind::Ik { input, target, weight, .. } => vec![(input, P), (target, V), (weight, S)],
+            NodeKind::Mask {
+                base,
+                layer,
+                weight,
+                ..
+            } => vec![(base, P), (layer, P), (weight, S)],
+            NodeKind::Ik {
+                input,
+                target,
+                weight,
+                ..
+            } => vec![(input, P), (target, V), (weight, S)],
             NodeKind::Deformation { input, stretch, .. } => vec![(input, P), (stretch, S)],
         }
     }
@@ -218,10 +242,13 @@ impl GraphDef {
             }
         }
         let lookup = |node: &str, input: &str| {
-            index.get(input).copied().ok_or_else(|| AnimError::UnknownNode {
-                node: node.to_owned(),
-                input: input.to_owned(),
-            })
+            index
+                .get(input)
+                .copied()
+                .ok_or_else(|| AnimError::UnknownNode {
+                    node: node.to_owned(),
+                    input: input.to_owned(),
+                })
         };
 
         let mut nodes = Vec::with_capacity(self.nodes.len());
@@ -242,7 +269,9 @@ impl GraphDef {
             }
             let skeleton = &rig.skeleton;
             let resolved = match &def.node {
-                NodeKind::BasePose { name } => Resolved::BasePose(base_poses.resolve(name, skeleton)?),
+                NodeKind::BasePose { name } => {
+                    Resolved::BasePose(base_poses.resolve(name, skeleton)?)
+                }
                 NodeKind::Mask { mask, .. } => Resolved::Mask(match mask {
                     MaskSpec::Subtree(name) => skeleton.subtree_mask(skeleton.joint_id(name)?),
                     MaskSpec::Joints(names) => {
@@ -258,7 +287,9 @@ impl GraphDef {
                     let binding = rig.binding(*limb)?;
                     Resolved::Ik(binding.chain.clone(), binding.pole)
                 }
-                NodeKind::Deformation { joint, .. } => Resolved::Deformation(skeleton.joint_id(joint)?),
+                NodeKind::Deformation { joint, .. } => {
+                    Resolved::Deformation(skeleton.joint_id(joint)?)
+                }
                 _ => Resolved::Plain,
             };
             nodes.push(CompiledNode {
@@ -285,7 +316,13 @@ impl GraphDef {
             Visiting,
             Done,
         }
-        fn visit(i: usize, nodes: &[CompiledNode], marks: &mut [Mark], order: &mut Vec<usize>, names: &[NodeDef]) -> Result<(), AnimError> {
+        fn visit(
+            i: usize,
+            nodes: &[CompiledNode],
+            marks: &mut [Mark],
+            order: &mut Vec<usize>,
+            names: &[NodeDef],
+        ) -> Result<(), AnimError> {
             match marks[i] {
                 Mark::Done => return Ok(()),
                 Mark::Visiting => return Err(AnimError::Cycle(names[i].name.clone())),
@@ -348,7 +385,11 @@ impl CompiledGraph {
         let mut values: Vec<Option<Value>> = vec![None; self.nodes.len()];
         for &i in &self.order {
             let node = &self.nodes[i];
-            let arg = |k: usize| values[node.inputs[k]].as_ref().expect("dependencies evaluate first");
+            let arg = |k: usize| {
+                values[node.inputs[k]]
+                    .as_ref()
+                    .expect("dependencies evaluate first")
+            };
             let value = match (&node.kind, &node.resolved) {
                 (NodeKind::Const { value }, _) => Value::Scalar(*value),
                 (NodeKind::Param { name, default }, _) => {
@@ -358,9 +399,14 @@ impl CompiledGraph {
                 (NodeKind::Vec3Param { name, default }, _) => {
                     Value::Vec3(inputs.vec3s.get(name).copied().unwrap_or(*default))
                 }
-                (NodeKind::Curve { keys, interpolation, .. }, _) => {
-                    Value::Scalar(curve(keys, arg(0).scalar(), *interpolation))
-                }
+                (
+                    NodeKind::Curve {
+                        keys,
+                        interpolation,
+                        ..
+                    },
+                    _,
+                ) => Value::Scalar(curve(keys, arg(0).scalar(), *interpolation)),
                 (NodeKind::Spring { params, .. }, _) => {
                     let target = arg(0).scalar();
                     if !self.spring_ready[i] {
@@ -375,16 +421,28 @@ impl CompiledGraph {
                     pose.apply(&mut out, 1.0, None);
                     Value::Pose(out)
                 }
-                (NodeKind::Blend { .. }, _) => Value::Pose(arg(0).pose().blended(arg(1).pose(), arg(2).scalar(), None)),
-                (NodeKind::Mask { .. }, Resolved::Mask(mask)) => {
-                    Value::Pose(arg(0).pose().blended(arg(1).pose(), arg(2).scalar(), Some(mask)))
+                (NodeKind::Blend { .. }, _) => {
+                    Value::Pose(arg(0).pose().blended(arg(1).pose(), arg(2).scalar(), None))
                 }
+                (NodeKind::Mask { .. }, Resolved::Mask(mask)) => Value::Pose(
+                    arg(0)
+                        .pose()
+                        .blended(arg(1).pose(), arg(2).scalar(), Some(mask)),
+                ),
                 (NodeKind::Ik { .. }, Resolved::Ik(chain, pole)) => {
                     let mut pose = arg(0).pose().clone();
                     let mut model = skeleton.model_transforms(&pose);
                     let (target, weight) = (arg(1).vec3(), arg(2).scalar());
                     if chain.len() == 3 {
-                        ik::apply_two_bone(skeleton, &mut pose, &mut model, [chain[0], chain[1], chain[2]], target, *pole, weight);
+                        ik::apply_two_bone(
+                            skeleton,
+                            &mut pose,
+                            &mut model,
+                            [chain[0], chain[1], chain[2]],
+                            target,
+                            *pole,
+                            weight,
+                        );
                     } else {
                         ik::apply_chain(skeleton, &mut pose, &mut model, chain, target, weight);
                     }
@@ -450,12 +508,27 @@ mod tests {
         }
         let finger = rig.skeleton.joint_id("fingers_1_r").unwrap();
         let other_hand = rig.skeleton.joint_id("fingers_1_l").unwrap();
-        assert!(closed.locals[finger].rotation.angle_between(open.locals[finger].rotation) > 1.0);
-        assert!(closed.locals[other_hand].rotation.angle_between(open.locals[other_hand].rotation) < 1e-2);
+        assert!(
+            closed.locals[finger]
+                .rotation
+                .angle_between(open.locals[finger].rotation)
+                > 1.0
+        );
+        assert!(
+            closed.locals[other_hand]
+                .rotation
+                .angle_between(open.locals[other_hand].rotation)
+                < 1e-2
+        );
 
         let arm = rig.binding(Limb::RightHand).unwrap();
         let model = rig.skeleton.model_transforms(&closed);
-        assert!(model[arm.chain[2]].translation.distance(Vec3::new(0.3, 1.2, -0.3)) < 1e-3);
+        assert!(
+            model[arm.chain[2]]
+                .translation
+                .distance(Vec3::new(0.3, 1.2, -0.3))
+                < 1e-3
+        );
     }
 
     #[test]
@@ -478,7 +551,11 @@ mod tests {
 
     #[test]
     fn curve_node_interpolates() {
-        let keys = [CurveKey { t: 0.0, v: 0.0 }, CurveKey { t: 1.0, v: 2.0 }, CurveKey { t: 2.0, v: 2.0 }];
+        let keys = [
+            CurveKey { t: 0.0, v: 0.0 },
+            CurveKey { t: 1.0, v: 2.0 },
+            CurveKey { t: 2.0, v: 2.0 },
+        ];
         assert!((curve(&keys, 0.5, Interpolation::Linear) - 1.0).abs() < 1e-6);
         assert!((curve(&keys, 0.25, Interpolation::Smooth) - 2.0 * smoothstep(0.25)).abs() < 1e-6);
         assert_eq!(curve(&keys, -3.0, Interpolation::Linear), 0.0);
@@ -495,27 +572,57 @@ mod tests {
         let cyc = GraphDef {
             output: "a".into(),
             nodes: vec![
-                node("a", NodeKind::Blend { a: "b".into(), b: "b".into(), weight: "w".into() }),
-                node("b", NodeKind::Blend { a: "a".into(), b: "a".into(), weight: "w".into() }),
+                node(
+                    "a",
+                    NodeKind::Blend {
+                        a: "b".into(),
+                        b: "b".into(),
+                        weight: "w".into(),
+                    },
+                ),
+                node(
+                    "b",
+                    NodeKind::Blend {
+                        a: "a".into(),
+                        b: "a".into(),
+                        weight: "w".into(),
+                    },
+                ),
                 node("w", NodeKind::Const { value: 0.5 }),
             ],
         };
-        assert!(matches!(cyc.compile(&rig, &poses), Err(AnimError::Cycle(_))));
+        assert!(matches!(
+            cyc.compile(&rig, &poses),
+            Err(AnimError::Cycle(_))
+        ));
 
         let bad_type = GraphDef {
             output: "a".into(),
             nodes: vec![
-                node("a", NodeKind::Blend { a: "w".into(), b: "w".into(), weight: "w".into() }),
+                node(
+                    "a",
+                    NodeKind::Blend {
+                        a: "w".into(),
+                        b: "w".into(),
+                        weight: "w".into(),
+                    },
+                ),
                 node("w", NodeKind::Const { value: 0.5 }),
             ],
         };
-        assert!(matches!(bad_type.compile(&rig, &poses), Err(AnimError::TypeMismatch { .. })));
+        assert!(matches!(
+            bad_type.compile(&rig, &poses),
+            Err(AnimError::TypeMismatch { .. })
+        ));
 
         let missing = GraphDef {
             output: "nope".into(),
             nodes: vec![],
         };
-        assert!(matches!(missing.compile(&rig, &poses), Err(AnimError::UnknownNode { .. })));
+        assert!(matches!(
+            missing.compile(&rig, &poses),
+            Err(AnimError::UnknownNode { .. })
+        ));
     }
 
     #[test]
@@ -524,12 +631,30 @@ mod tests {
         let def = GraphDef {
             output: "d".into(),
             nodes: vec![
-                NodeDef { name: "p".into(), node: NodeKind::BasePose { name: "idle".into() } },
-                NodeDef { name: "s".into(), node: NodeKind::Const { value: 0.2 } },
-                NodeDef { name: "d".into(), node: NodeKind::Deformation { input: "p".into(), joint: "spine".into(), stretch: "s".into() } },
+                NodeDef {
+                    name: "p".into(),
+                    node: NodeKind::BasePose {
+                        name: "idle".into(),
+                    },
+                },
+                NodeDef {
+                    name: "s".into(),
+                    node: NodeKind::Const { value: 0.2 },
+                },
+                NodeDef {
+                    name: "d".into(),
+                    node: NodeKind::Deformation {
+                        input: "p".into(),
+                        joint: "spine".into(),
+                        stretch: "s".into(),
+                    },
+                },
             ],
         };
-        let pose = def.compile(&rig, &poses).unwrap().evaluate(&GraphInputs::default(), 0.016);
+        let pose = def
+            .compile(&rig, &poses)
+            .unwrap()
+            .evaluate(&GraphInputs::default(), 0.016);
         let s = pose.locals[rig.skeleton.joint_id("spine").unwrap()].scale;
         assert!((s.x * s.y * s.z - 1.0).abs() < 1e-5 && s.y > 1.19);
     }

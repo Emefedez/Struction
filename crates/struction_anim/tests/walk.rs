@@ -1,19 +1,26 @@
-//! Headless locomotion simulations: a body moving at constant velocity over flat, tilted and
-//! rolling ground. Feet must stay planted while stance and swing alternate, and the IK must
-//! reach the foot targets.
+//! Headless locomotion simulations: a body moving at constant velocity over flat, tilted,
+//! rolling and spherical ground. Planted feet must not slide, stance and swing must alternate,
+//! and the IK must reach the foot targets.
 
 use bevy::math::{Mat3, Quat, Vec3};
 use bevy::transform::components::Transform;
+use struction_anim::base_pose::BasePoseSet;
 use struction_anim::humanoid;
 use struction_anim::locomotion::{
     Ground, GroundHit, LocomotionInput, LocomotionParams, LocomotionState, PlaneGround,
 };
-use struction_anim::rig::Limb;
+use struction_anim::rig::{Limb, LimbBinding, Rig};
+use struction_anim::skeleton::{JointDef, Skeleton};
 use struction_anim::solve::{PoseSolver, SolveFrame, SolverSettings, foot_goals};
 
 const DT: f32 = 1.0 / 60.0;
+const WARMUP: usize = 60;
+/// Largest per-frame movement of a planted foot, meters.
+const SLIDE_TOLERANCE: f32 = 1e-3;
+/// Largest distance between a foot and its target after IK, meters.
+const IK_TOLERANCE: f32 = 1e-3;
 
-/// Root transform whose local up is `up` and whose forward (-Z) is the tangent `forward`.
+/// Root transform whose local up is `up` and whose forward (-Z) is along `forward`.
 fn frame(position: Vec3, up: Vec3, forward: Vec3) -> Transform {
     let up = up.normalize();
     let forward = (forward - up * forward.dot(up)).normalize();
@@ -27,61 +34,58 @@ fn frame(position: Vec3, up: Vec3, forward: Vec3) -> Transform {
 
 struct Sim<'g> {
     ground: &'g dyn Ground,
-    up: Vec3,
     state: LocomotionState,
     solver: PoseSolver,
-    poses: struction_anim::base_pose::BasePoseSet,
+    poses: BasePoseSet,
     root: Transform,
     feet: Vec<usize>,
 }
 
-#[derive(Clone, Default)]
 struct Record {
-    /// World position of each foot joint from forward kinematics of the solved pose.
+    /// World position of each foot joint, from forward kinematics of the solved pose.
     fk_feet: Vec<Vec3>,
     planted: Vec<bool>,
-    /// IK residual per foot goal, meters.
-    ik_error: Vec<f32>,
-    /// Height of each foot above the ground plane along up (for flat-ish ground).
+    groups: Vec<u8>,
+    /// Distance of each foot joint above the ground along up.
     height: Vec<f32>,
+    ik_error: f32,
+    body_offset: f32,
 }
 
 impl<'g> Sim<'g> {
-    fn new(ground: &'g dyn Ground, up: Vec3, start: Vec3, forward: Vec3) -> Self {
-        let rig = humanoid::rig();
+    fn new(rig: Rig, ground: &'g dyn Ground, root: Transform) -> Self {
         let feet = rig.feet().map(|b| *b.chain.last().unwrap()).collect();
         Self {
             ground,
-            up,
             state: LocomotionState::from_rig(&rig, LocomotionParams::default()).unwrap(),
             solver: PoseSolver::new(rig, SolverSettings::default()),
             poses: humanoid::base_poses(),
-            root: frame(start, up, forward),
+            root,
             feet,
         }
     }
 
-    fn step(&mut self, velocity: Vec3, follow_ground: bool) -> Record {
-        self.root.translation += velocity * DT;
-        if follow_ground
-            && let Some(hit) = self.ground.cast(self.root.translation + self.up * 2.0, -self.up, 4.0)
-        {
-            self.root.translation = hit.point;
-        }
+    fn humanoid(ground: &'g dyn Ground, root: Transform) -> Self {
+        Self::new(humanoid::rig(), ground, root)
+    }
+
+    /// Advances one frame with the root already placed by the caller.
+    fn step(&mut self, velocity: Vec3) -> Record {
+        let up = self.root.rotation * Vec3::Y;
         let input = LocomotionInput {
             root: self.root,
             velocity,
-            up: self.up,
+            up,
             grounded: true,
-            gravity: -self.up * 9.81,
+            gravity: -up * 9.81,
         };
         let output = self.state.update(&input, self.ground, DT).clone();
-        let goals = foot_goals(&output, self.up, self.root.rotation, 1.0);
+        let goals = foot_goals(&output, up, self.root.rotation, 1.0);
         let pose = self
             .solver
             .solve(&SolveFrame {
                 root: self.root,
-                up: self.up,
+                up,
                 base_poses: &self.poses,
                 constraints: &[],
                 goals: &goals,
@@ -101,181 +105,253 @@ impl<'g> Sim<'g> {
                 .iter()
                 .map(|p| {
                     self.ground
-                        .cast(*p + self.up, -self.up, 3.0)
-                        .map_or(f32::NAN, |h| (*p - h.point).dot(self.up))
+                        .cast(*p + up, -up, 3.0)
+                        .map_or(f32::NAN, |h| (*p - h.point).dot(up))
                 })
                 .collect(),
             fk_feet,
             planted: output.feet.iter().map(|f| f.planted).collect(),
-            ik_error: self.solver.report.goals.iter().map(|g| g.error).collect(),
+            groups: self.state.legs.iter().map(|l| l.spec.group).collect(),
+            ik_error: self
+                .solver
+                .report
+                .goals
+                .iter()
+                .map(|g| g.error)
+                .fold(0.0, f32::max),
+            body_offset: output.body_offset,
         }
+    }
+
+    /// Moves the root in a straight line, optionally snapping it to the ground below.
+    fn walk(&mut self, velocity: Vec3, follow_ground: bool) -> Record {
+        let up = self.root.rotation * Vec3::Y;
+        self.root.translation += velocity * DT;
+        if follow_ground
+            && let Some(hit) = self.ground.cast(self.root.translation + up * 2.0, -up, 4.0)
+        {
+            self.root.translation = hit.point;
+        }
+        self.step(velocity)
     }
 }
 
-struct Summary {
-    steps: Vec<Vec<f32>>,
+/// Invariant checker fed one record per frame.
+#[derive(Default)]
+struct Checker {
+    frame: usize,
+    previous: Option<Record>,
+    /// (time, leg) of every lift-off.
+    lifts: Vec<(f32, usize)>,
+    max_slide: f32,
+    max_ik: f32,
+    max_swing_height: f32,
+    lowest_body: f32,
+    /// Planted feet must be at ankle height within this tolerance (NaN skips the check).
+    height_tolerance: f32,
 }
 
-/// Runs the walk and checks every invariant; returns per-leg step times.
-fn check_walk(sim: &mut Sim, velocity: Vec3, seconds: f32, follow_ground: bool, height_tolerance: f32) -> Summary {
-    let frames = (seconds / DT) as usize;
-    let warmup = 60;
-    let legs = sim.feet.len();
-    let mut prev: Option<Record> = None;
-    let mut steps = vec![Vec::new(); legs];
-    let mut order: Vec<usize> = Vec::new();
-    let mut max_slide = 0.0_f32;
-    let mut max_ik = 0.0_f32;
-    let mut max_swing_lift = 0.0_f32;
-    for n in 0..frames {
-        let rec = sim.step(velocity, follow_ground);
-        if n >= warmup {
-            assert!(rec.planted.iter().any(|p| *p), "frame {n}: no foot on the ground");
-            max_ik = max_ik.max(rec.ik_error.iter().copied().fold(0.0, f32::max));
+impl Checker {
+    fn new(height_tolerance: f32) -> Self {
+        Self {
+            height_tolerance,
+            ..Default::default()
         }
-        if let Some(prev) = &prev {
-            for leg in 0..legs {
+    }
+
+    fn push(&mut self, rec: Record) {
+        let n = self.frame;
+        self.frame += 1;
+        if n >= WARMUP {
+            assert!(
+                rec.planted.iter().any(|p| *p),
+                "frame {n}: no foot on the ground"
+            );
+            // Legs of different groups never swing together once the gait has settled.
+            let swinging: Vec<u8> = (0..rec.planted.len())
+                .filter(|&l| !rec.planted[l])
+                .map(|l| rec.groups[l])
+                .collect();
+            assert!(
+                swinging.windows(2).all(|w| w[0] == w[1]),
+                "frame {n}: legs of different groups swing together"
+            );
+            self.max_ik = self.max_ik.max(rec.ik_error);
+            self.lowest_body = self.lowest_body.min(rec.body_offset);
+        }
+        if let Some(prev) = &self.previous {
+            for leg in 0..rec.planted.len() {
                 if prev.planted[leg] && rec.planted[leg] {
                     let slide = prev.fk_feet[leg].distance(rec.fk_feet[leg]);
-                    max_slide = max_slide.max(slide);
+                    self.max_slide = self.max_slide.max(slide);
                 }
                 if prev.planted[leg] && !rec.planted[leg] {
-                    steps[leg].push(n as f32 * DT);
-                    order.push(leg);
+                    self.lifts.push((n as f32 * DT, leg));
                 }
                 if !rec.planted[leg] {
-                    max_swing_lift = max_swing_lift.max(rec.height[leg]);
+                    self.max_swing_height = self.max_swing_height.max(rec.height[leg]);
                 }
-                if rec.planted[leg] && n >= warmup {
+                if rec.planted[leg] && n >= WARMUP && !self.height_tolerance.is_nan() {
                     assert!(
-                        (rec.height[leg] - humanoid::ANKLE_HEIGHT).abs() < height_tolerance,
-                        "frame {n}: planted foot {leg} floats/sinks: {}",
+                        (rec.height[leg] - humanoid::ANKLE_HEIGHT).abs() < self.height_tolerance,
+                        "frame {n}: planted foot {leg} floats or sinks: {}",
                         rec.height[leg]
                     );
                 }
             }
         }
-        prev = Some(rec);
+        self.previous = Some(rec);
     }
-    assert!(max_slide < 2e-3, "planted feet slid {max_slide} m in one frame");
-    assert!(max_ik < 2e-3, "IK missed a foot target by {max_ik} m");
-    assert!(max_swing_lift > humanoid::ANKLE_HEIGHT + 0.05, "swing arc lifts the foot (max {max_swing_lift})");
-    for (leg, s) in steps.iter().enumerate() {
-        assert!(s.len() >= 4, "leg {leg} stepped only {} times", s.len());
-    }
-    // After warm-up the legs strictly alternate.
-    let settled: Vec<usize> = order
-        .iter()
-        .zip(steps.iter().flatten().map(|_| ()))
-        .map(|(l, _)| *l)
-        .collect();
-    let _ = settled;
-    Summary { steps }
-}
 
-fn alternation(steps: &[Vec<f32>], after: f32) {
-    let mut events: Vec<(f32, usize)> = steps
-        .iter()
-        .enumerate()
-        .flat_map(|(leg, times)| times.iter().map(move |t| (*t, leg)))
-        .filter(|(t, _)| *t > after)
-        .collect();
-    events.sort_by(|a, b| a.0.total_cmp(&b.0));
-    assert!(events.len() >= 6);
-    for w in events.windows(2) {
-        assert_ne!(w[0].1, w[1].1, "same leg stepped twice in a row: {events:?}");
-    }
-}
-
-fn no_double_swing(sim: &mut Sim, velocity: Vec3, seconds: f32) {
-    // Stance and swing alternate: with the settled gait no two legs are airborne together.
-    for n in 0..(seconds / DT) as usize {
-        let rec = sim.step(velocity, false);
-        if n > 90 {
-            assert!(rec.planted.iter().filter(|p| !**p).count() <= 1, "frame {n}: both legs swinging");
+    fn finish(&self, name: &str) {
+        eprintln!(
+            "{name}: {} steps, max slide {:.1e} m/frame, max IK error {:.1e} m, swing height {:.3} m, lowest pelvis offset {:.3} m",
+            self.lifts.len(),
+            self.max_slide,
+            self.max_ik,
+            self.max_swing_height,
+            self.lowest_body
+        );
+        assert!(
+            self.max_slide < SLIDE_TOLERANCE,
+            "planted feet slid {} m in one frame",
+            self.max_slide
+        );
+        assert!(
+            self.max_ik < IK_TOLERANCE,
+            "IK missed a foot target by {} m",
+            self.max_ik
+        );
+        assert!(
+            self.max_swing_height > humanoid::ANKLE_HEIGHT + 0.05,
+            "swing arcs lift the feet (max {})",
+            self.max_swing_height
+        );
+        let legs = self.previous.as_ref().map_or(0, |r| r.planted.len());
+        for leg in 0..legs {
+            let count = self.lifts.iter().filter(|(_, l)| *l == leg).count();
+            assert!(count >= 4, "leg {leg} stepped only {count} times");
         }
+    }
+
+    /// Biped check: after `after` seconds lifts strictly alternate and are evenly spaced.
+    fn assert_even_alternation(&self, after: f32) {
+        let events: Vec<_> = self.lifts.iter().filter(|(t, _)| *t > after).collect();
+        assert!(events.len() >= 6);
+        for w in events.windows(2) {
+            assert_ne!(
+                w[0].1, w[1].1,
+                "same leg stepped twice in a row: {events:?}"
+            );
+        }
+        let gaps: Vec<f32> = events.windows(2).map(|w| w[1].0 - w[0].0).collect();
+        let mean = gaps.iter().sum::<f32>() / gaps.len() as f32;
+        for gap in &gaps {
+            // Two frames of quantization on either side.
+            assert!(
+                (gap - mean).abs() <= 2.0 * DT + 1e-4,
+                "uneven gait (limp): {gaps:?}"
+            );
+        }
+    }
+}
+
+fn flat() -> PlaneGround {
+    PlaneGround {
+        point: Vec3::ZERO,
+        normal: Vec3::Y,
     }
 }
 
 #[test]
 fn constant_velocity_on_flat_ground_plants_feet_and_alternates() {
-    let ground = PlaneGround {
-        point: Vec3::ZERO,
-        normal: Vec3::Y,
-    };
-    let velocity = Vec3::new(0.0, 0.0, -1.4);
-    let mut sim = Sim::new(&ground, Vec3::Y, Vec3::ZERO, Vec3::NEG_Z);
-    let summary = check_walk(&mut sim, velocity, 8.0, false, 2e-3);
-    alternation(&summary.steps, 1.0);
-
-    let mut sim = Sim::new(&ground, Vec3::Y, Vec3::ZERO, Vec3::NEG_Z);
-    no_double_swing(&mut sim, velocity, 6.0);
+    let ground = flat();
+    let mut sim = Sim::humanoid(&ground, Transform::IDENTITY);
+    let mut check = Checker::new(1e-3);
+    for _ in 0..(8.0 / DT) as usize {
+        check.push(sim.walk(Vec3::new(0.0, 0.0, -1.4), false));
+    }
+    check.finish("flat");
+    check.assert_even_alternation(1.0);
 }
 
 #[test]
 fn gait_scales_with_speed_and_stops_when_the_body_stops() {
-    let ground = PlaneGround {
-        point: Vec3::ZERO,
-        normal: Vec3::Y,
-    };
-    let count = |speed: f32| {
-        let mut sim = Sim::new(&ground, Vec3::Y, Vec3::ZERO, Vec3::NEG_Z);
-        let s = check_walk(&mut sim, Vec3::new(0.0, 0.0, -speed), 8.0, false, 2e-3);
-        s.steps.iter().map(Vec::len).sum::<usize>()
-    };
-    let slow = count(0.8);
-    let fast = count(2.0);
-    assert!(fast > slow, "faster walking steps more often ({slow} vs {fast})");
-
-    let mut sim = Sim::new(&ground, Vec3::Y, Vec3::ZERO, Vec3::NEG_Z);
-    for _ in 0..180 {
-        sim.step(Vec3::new(0.0, 0.0, -1.4), false);
-    }
-    let mut last = None;
-    let mut steps_after_stop = 0;
-    for n in 0..180 {
-        let rec = sim.step(Vec3::ZERO, false);
-        if let Some(prev) = &last {
-            let prev: &Record = prev;
-            steps_after_stop += (0..2).filter(|&l| prev.planted[l] && !rec.planted[l]).count();
-            if n > 60 {
-                assert!(rec.planted.iter().all(|p| *p), "still stepping while standing");
-            }
+    let ground = flat();
+    let steps = |speed: f32| {
+        let mut sim = Sim::humanoid(&ground, Transform::IDENTITY);
+        let mut check = Checker::new(1e-3);
+        for _ in 0..(8.0 / DT) as usize {
+            check.push(sim.walk(Vec3::new(0.0, 0.0, -speed), false));
         }
-        last = Some(rec);
+        check.finish(&format!("speed {speed}"));
+        check.lifts.len()
+    };
+    let slow = steps(0.6);
+    let fast = steps(2.2);
+    assert!(
+        fast > slow,
+        "faster walking steps more often ({slow} vs {fast})"
+    );
+
+    let mut sim = Sim::humanoid(&ground, Transform::IDENTITY);
+    for _ in 0..180 {
+        sim.walk(Vec3::new(0.0, 0.0, -1.4), false);
     }
-    assert!(steps_after_stop <= 2, "at most a settling step after stopping");
+    let mut previous: Option<Vec<bool>> = None;
+    let mut steps_after_stop = 0;
+    for n in 0..120 {
+        let rec = sim.walk(Vec3::ZERO, false);
+        if let Some(prev) = &previous {
+            steps_after_stop += (0..2).filter(|&l| prev[l] && !rec.planted[l]).count();
+        }
+        if n > 60 {
+            assert!(
+                rec.planted.iter().all(|p| *p),
+                "still stepping while standing"
+            );
+        }
+        previous = Some(rec.planted);
+    }
+    assert!(
+        steps_after_stop <= 2,
+        "at most a settling step after stopping ({steps_after_stop})"
+    );
 }
 
 #[test]
-fn walking_with_a_tilted_up_vector_on_a_planet_surface() {
+fn walking_with_a_tilted_up_vector() {
+    // A planet surface far from the origin: up is nowhere near world Y.
     let up = Vec3::new(0.4, 1.0, 0.3).normalize();
     let ground = PlaneGround {
-        point: Vec3::ZERO,
+        point: Vec3::new(3.0, -2.0, 1.0),
         normal: up,
     };
     let forward = Vec3::new(1.0, -0.2, -1.0);
-    let forward_t = (forward - up * forward.dot(up)).normalize();
-    let mut sim = Sim::new(&ground, up, Vec3::ZERO, forward_t);
-    let summary = check_walk(&mut sim, forward_t * 1.4, 8.0, false, 2e-3);
-    alternation(&summary.steps, 1.0);
+    let root = frame(ground.point, up, forward);
+    let velocity = (root.rotation * Vec3::NEG_Z) * 1.4;
+    let mut sim = Sim::humanoid(&ground, root);
+    let mut check = Checker::new(1e-3);
+    for _ in 0..(8.0 / DT) as usize {
+        check.push(sim.walk(velocity, false));
+    }
+    check.finish("tilted");
+    check.assert_even_alternation(1.0);
 }
 
 #[test]
-fn walking_on_a_sphere_follows_the_curvature() {
-    // Small planet: the local up rotates as the body walks around it.
+fn walking_around_a_small_planet() {
+    // The local up rotates continuously as the body walks along a great circle.
     let radius = 6.0_f32;
     let ground = move |origin: Vec3, dir: Vec3, max: f32| -> Option<GroundHit> {
-        // Ray-sphere intersection from outside/inside toward the surface.
-        let oc = origin;
-        let b = oc.dot(dir);
-        let c = oc.dot(oc) - radius * radius;
+        let b = origin.dot(dir);
+        let c = origin.length_squared() - radius * radius;
         let disc = b * b - c;
         if disc < 0.0 {
             return None;
         }
-        let t = -b - disc.sqrt();
-        let t = if t < 0.0 { -b + disc.sqrt() } else { t };
+        let near = -b - disc.sqrt();
+        let t = if near >= 0.0 { near } else { -b + disc.sqrt() };
         (0.0..=max).contains(&t).then(|| {
             let point = origin + dir * t;
             GroundHit {
@@ -284,84 +360,33 @@ fn walking_on_a_sphere_follows_the_curvature() {
             }
         })
     };
-    let start_dir = Vec3::Y;
-    let mut position = start_dir * radius;
-    let mut forward = Vec3::NEG_Z;
+    let start = Vec3::Y * radius;
+    let mut sim = Sim::humanoid(&ground, frame(start, Vec3::Y, Vec3::NEG_Z));
+    let mut check = Checker::new(1e-3);
     let speed = 1.4;
-    let rig = humanoid::rig();
-    let feet: Vec<usize> = rig.feet().map(|b| *b.chain.last().unwrap()).collect();
-    let mut state = LocomotionState::from_rig(&rig, LocomotionParams::default()).unwrap();
-    let mut solver = PoseSolver::new(rig, SolverSettings::default());
-    let poses = humanoid::base_poses();
-    let mut prev: Option<(Vec<Vec3>, Vec<bool>)> = None;
-    let mut steps = 0;
-    let mut max_slide = 0.0_f32;
-    let mut max_ik = 0.0_f32;
-    for n in 0..(10.0 / DT) as usize {
+    for _ in 0..(10.0 / DT) as usize {
+        let forward = sim.root.rotation * Vec3::NEG_Z;
+        let position = (sim.root.translation + forward * speed * DT).normalize() * radius;
         let up = position.normalize();
-        forward = (forward - up * forward.dot(up)).normalize();
-        // Walk along the great circle.
-        let velocity = forward * speed;
-        let new_position = (position + velocity * DT).normalize() * radius;
-        let travelled = new_position - position;
-        position = new_position;
-        let up_new = position.normalize();
-        forward = (travelled - up_new * travelled.dot(up_new)).normalize();
-        let root = frame(position, up_new, forward);
-        let input = LocomotionInput {
-            root,
-            velocity: forward * speed,
-            up: up_new,
-            grounded: true,
-            gravity: -up_new * 9.81,
-        };
-        let output = state.update(&input, &ground, DT).clone();
-        let goals = foot_goals(&output, up_new, root.rotation, 1.0);
-        let pose = solver
-            .solve(&SolveFrame {
-                root,
-                up: up_new,
-                base_poses: &poses,
-                constraints: &[],
-                goals: &goals,
-                locomotion: Some(&output),
-                body_weight: 1.0,
-                dt: DT,
-            })
-            .unwrap();
-        let model = solver.rig.skeleton.model_transforms(&pose);
-        let fk: Vec<Vec3> = feet.iter().map(|&j| root.transform_point(model[j].translation)).collect();
-        let planted: Vec<bool> = output.feet.iter().map(|f| f.planted).collect();
-        if n >= 60 {
-            max_ik = max_ik.max(solver.report.goals.iter().map(|g| g.error).fold(0.0, f32::max));
-        }
-        if let Some((pf, pp)) = &prev {
-            for i in 0..fk.len() {
-                if pp[i] && planted[i] {
-                    max_slide = max_slide.max(pf[i].distance(fk[i]));
-                }
-                if pp[i] && !planted[i] {
-                    steps += 1;
-                }
-            }
-        }
-        prev = Some((fk, planted));
+        let travelled = position - sim.root.translation;
+        sim.root = frame(position, up, travelled);
+        check.push(sim.step(forward * speed));
     }
-    assert!(steps >= 8, "only {steps} steps");
-    assert!(max_slide < 2e-3, "slid {max_slide}");
-    assert!(max_ik < 2e-3, "IK error {max_ik}");
-    // The body really went around the planet.
-    assert!(position.angle_between(start_dir) > 1.0);
+    check.finish("planet");
+    check.assert_even_alternation(1.0);
+    assert!(
+        sim.root.translation.angle_between(start) > 1.0,
+        "went around the planet"
+    );
 }
 
 #[test]
 fn rolling_hills_keep_feet_on_the_terrain() {
     let height = |x: f32, z: f32| 0.15 * (x * 1.3).sin() + 0.1 * (z * 0.9).cos();
     let ground = move |origin: Vec3, dir: Vec3, max: f32| -> Option<GroundHit> {
-        // Downward vertical rays only: that is all locomotion casts here.
+        // Only vertical rays are cast here (up is world Y).
         assert!((dir + Vec3::Y).length() < 1e-4);
         let h = height(origin.x, origin.z);
-        let t = origin.y - h;
         let e = 1e-3;
         let normal = Vec3::new(
             -(height(origin.x + e, origin.z) - height(origin.x - e, origin.z)) / (2.0 * e),
@@ -369,43 +394,120 @@ fn rolling_hills_keep_feet_on_the_terrain() {
             -(height(origin.x, origin.z + e) - height(origin.x, origin.z - e)) / (2.0 * e),
         )
         .normalize();
-        (0.0..=max).contains(&t).then(|| GroundHit {
+        (0.0..=max).contains(&(origin.y - h)).then(|| GroundHit {
             point: Vec3::new(origin.x, h, origin.z),
             normal,
         })
     };
-    let mut sim = Sim::new(&ground, Vec3::Y, Vec3::new(0.0, height(0.0, 0.0), 0.0), Vec3::NEG_Z);
-    // Feet plant on the surface; hills are gentle enough that IK still reaches.
-    check_walk(&mut sim, Vec3::new(0.3, 0.0, -1.2), 8.0, true, 6e-3);
+    let start = Vec3::new(0.0, height(0.0, 0.0), 0.0);
+    let mut sim = Sim::humanoid(&ground, Transform::from_translation(start));
+    // Planted feet sit on the sloped surface along its normal, so their vertical distance to
+    // the terrain differs slightly from the ankle height: the height check is skipped.
+    let mut check = Checker::new(f32::NAN);
+    for _ in 0..(8.0 / DT) as usize {
+        check.push(sim.walk(Vec3::new(0.3, 0.0, -1.2), true));
+    }
+    check.finish("hills");
 }
 
 #[test]
-fn foot_orientation_follows_the_ground_normal() {
-    let up = Vec3::new(0.4, 1.0, 0.3).normalize();
+fn feet_lie_flat_on_a_slope_under_an_upright_body() {
+    let normal = Vec3::new(0.3, 1.0, 0.2).normalize();
     let ground = PlaneGround {
         point: Vec3::ZERO,
-        normal: up,
+        normal,
     };
-    // Body upright in world Y although the ground is tilted: feet must tilt to lie flat.
-    let mut sim = Sim::new(&ground, Vec3::Y, Vec3::ZERO, Vec3::NEG_Z);
-    sim.up = Vec3::Y;
-    let mut model_foot_up = Vec3::Y;
+    let mut sim = Sim::humanoid(&ground, Transform::IDENTITY);
     for _ in 0..30 {
-        let output_up = sim.step(Vec3::ZERO, false);
-        let _ = output_up;
-        let pose = sim.solver.solve(&SolveFrame {
-            root: sim.root,
-            up: Vec3::Y,
-            base_poses: &sim.poses,
-            constraints: &[],
-            goals: &foot_goals(sim.state.output(), Vec3::Y, sim.root.rotation, 1.0),
-            locomotion: Some(sim.state.output()),
-            body_weight: 1.0,
-            dt: DT,
-        }).unwrap();
-        let model = sim.solver.rig.skeleton.model_transforms(&pose);
-        let foot = sim.solver.rig.binding(Limb::LeftFoot).unwrap().chain[2];
-        model_foot_up = sim.root.rotation * model[foot].rotation * Vec3::Y;
+        sim.step(Vec3::ZERO);
     }
-    assert!(model_foot_up.angle_between(up) < 0.05, "foot up {model_foot_up} vs ground {up}");
+    let pose = sim.solver.solve(&SolveFrame {
+        root: sim.root,
+        up: Vec3::Y,
+        base_poses: &sim.poses,
+        constraints: &[],
+        goals: &foot_goals(sim.state.output(), Vec3::Y, sim.root.rotation, 1.0),
+        locomotion: Some(sim.state.output()),
+        body_weight: 1.0,
+        dt: DT,
+    });
+    let model = sim.solver.rig.skeleton.model_transforms(&pose.unwrap());
+    for limb in [Limb::LeftFoot, Limb::RightFoot] {
+        let foot = *sim.solver.rig.binding(limb).unwrap().chain.last().unwrap();
+        let foot_up = model[foot].rotation * Vec3::Y;
+        assert!(
+            foot_up.angle_between(normal) < 1e-3,
+            "{limb:?} up {foot_up} vs ground {normal}"
+        );
+    }
+}
+
+/// Four legs, two per side, trotting in diagonal pairs.
+fn quadruped() -> Rig {
+    let mut joints = vec![
+        JointDef {
+            name: "root".into(),
+            parent: None,
+            rest: Transform::IDENTITY,
+        },
+        JointDef {
+            name: "body".into(),
+            parent: Some(0),
+            rest: Transform::from_xyz(0.0, 0.6, 0.0),
+        },
+    ];
+    let mut limbs = vec![LimbBinding {
+        limb: Limb::Pelvis,
+        chain: vec![1],
+        pole: Vec3::ZERO,
+    }];
+    // Front-left and back-right share a group, as do front-right and back-left.
+    let legs = [
+        (Limb::LeftFoot, -0.15, -0.35, Vec3::NEG_Z),
+        (Limb::RightFoot, 0.15, -0.35, Vec3::NEG_Z),
+        (Limb::ExtraFoot(1), -0.15, 0.35, Vec3::Z),
+        (Limb::ExtraFoot(0), 0.15, 0.35, Vec3::Z),
+    ];
+    for (limb, x, z, pole) in legs {
+        let hip = joints.len();
+        joints.push(JointDef {
+            name: format!("{limb:?}_hip"),
+            parent: Some(1),
+            rest: Transform::from_xyz(x, 0.0, z),
+        });
+        joints.push(JointDef {
+            name: format!("{limb:?}_knee"),
+            parent: Some(hip),
+            rest: Transform::from_xyz(0.0, -0.27, 0.0),
+        });
+        joints.push(JointDef {
+            name: format!("{limb:?}_foot"),
+            parent: Some(hip + 1),
+            rest: Transform::from_xyz(0.0, -(0.6 - 0.27 - humanoid::ANKLE_HEIGHT), 0.0),
+        });
+        limbs.push(LimbBinding {
+            limb,
+            chain: vec![hip, hip + 1, hip + 2],
+            pole,
+        });
+    }
+    Rig {
+        skeleton: Skeleton::new(joints).unwrap(),
+        pelvis: 1,
+        root: 0,
+        limbs,
+    }
+}
+
+#[test]
+fn quadruped_trots_with_diagonal_pairs() {
+    let ground = flat();
+    let mut sim = Sim::new(quadruped(), &ground, Transform::IDENTITY);
+    sim.solver.settings.idle_pose = "none".into();
+    sim.poses.poses.insert("none".into(), Default::default());
+    let mut check = Checker::new(1e-3);
+    for _ in 0..(8.0 / DT) as usize {
+        check.push(sim.walk(Vec3::new(0.0, 0.0, -1.0), false));
+    }
+    check.finish("quadruped");
 }

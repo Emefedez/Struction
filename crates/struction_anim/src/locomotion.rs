@@ -103,12 +103,12 @@ impl Default for LocomotionParams {
             half_stride_per_speed: 0.05,
             max_half_stride: 0.22,
             idle_trigger: 0.15,
-            reach_limit: 0.95,
+            reach_limit: 0.97,
             step_height: 0.10,
             min_swing: 0.10,
             max_swing: 0.32,
             idle_swing: 0.22,
-            crouch: 0.06,
+            crouch: 0.08,
             bob: SpringParams::new(4.0, 0.4),
             footfall_impulse: 0.3,
             lean: SpringParams::new(3.0, 0.7),
@@ -139,7 +139,11 @@ pub struct LegSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Reflect)]
 pub enum LegPhase {
     Planted,
-    Swing { from: Vec3, elapsed: f32, duration: f32 },
+    Swing {
+        from: Vec3,
+        elapsed: f32,
+        duration: f32,
+    },
     Air,
 }
 
@@ -150,6 +154,8 @@ pub struct LegState {
     /// World-space ankle position and ground normal the foot currently occupies.
     pub foot: Vec3,
     pub normal: Vec3,
+    /// Seconds since the foot was last planted.
+    pub stance_time: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -206,12 +212,29 @@ pub struct LocomotionState {
     output: LocomotionOutput,
 }
 
-fn project(params: &LocomotionParams, ground: &dyn Ground, point: Vec3, up: Vec3, ankle: f32) -> (Vec3, Vec3) {
+fn project(
+    params: &LocomotionParams,
+    ground: &dyn Ground,
+    point: Vec3,
+    up: Vec3,
+    ankle: f32,
+) -> (Vec3, Vec3) {
     let origin = point + up * params.probe_up;
     match ground.cast(origin, -up, params.probe_up + params.probe_down) {
         Some(hit) => (hit.point + hit.normal * ankle, hit.normal),
         None => (point, up),
     }
+}
+
+/// Per-update movement summary shared by the stepping helpers.
+#[derive(Clone, Copy)]
+struct Gait {
+    up: Vec3,
+    /// Velocity along the ground (tangent to `up`).
+    velocity: Vec3,
+    speed: f32,
+    dir: Option<Vec3>,
+    stride: f32,
 }
 
 fn tangent(v: Vec3, up: Vec3) -> Vec3 {
@@ -227,6 +250,7 @@ impl LocomotionState {
                 phase: LegPhase::Planted,
                 foot: Vec3::ZERO,
                 normal: Vec3::Y,
+                stance_time: f32::INFINITY,
             })
             .collect();
         Self {
@@ -272,7 +296,12 @@ impl LocomotionState {
     }
 
     /// Advances the legs and secondary motion by `dt` seconds.
-    pub fn update(&mut self, input: &LocomotionInput, ground: &dyn Ground, dt: f32) -> &LocomotionOutput {
+    pub fn update(
+        &mut self,
+        input: &LocomotionInput,
+        ground: &dyn Ground,
+        dt: f32,
+    ) -> &LocomotionOutput {
         let dt = dt.max(1e-4);
         let up = input.up.normalize_or(Vec3::Y);
         let velocity_t = tangent(input.velocity, up);
@@ -309,13 +338,22 @@ impl LocomotionState {
                 self.squash.impact(impact);
                 for leg in &mut self.legs {
                     let flat = input.root.transform_point(leg.spec.rest_foot);
-                    let (foot, normal) = project(&self.params, ground, flat, up, leg.spec.rest_foot.y);
+                    let (foot, normal) =
+                        project(&self.params, ground, flat, up, leg.spec.rest_foot.y);
                     leg.phase = LegPhase::Planted;
+                    leg.stance_time = 0.0;
                     leg.foot = foot;
                     leg.normal = normal;
                 }
             }
-            footfalls = self.step_legs(input, ground, up, velocity_t, speed, dir, dt);
+            let gait = Gait {
+                up,
+                velocity: velocity_t,
+                speed,
+                dir,
+                stride: self.half_stride(speed),
+            };
+            footfalls = self.step_legs(input, ground, &gait, dt);
         } else {
             landing = predict_landing(
                 input.root.translation - up * self.params.root_height,
@@ -335,6 +373,16 @@ impl LocomotionState {
         let ground_follow = self.ground_follow(input, up);
         let bob_target = -self.params.crouch + ground_follow;
         self.bob.step(bob_target, self.params.bob, dt);
+        if input.grounded {
+            // Hard limit on top of the spring: drop the pelvis until every foot is in reach, so
+            // IK never has to leave a planted foot behind. Writing into the spring keeps the
+            // motion continuous afterwards.
+            let limit = self.pelvis_limit(input, up);
+            if self.bob.value > limit {
+                self.bob.value = limit;
+                self.bob.velocity = self.bob.velocity.min(0.0);
+            }
+        }
 
         let forward = input.root.rotation * Vec3::NEG_Z;
         let right = input.root.rotation * Vec3::X;
@@ -369,6 +417,24 @@ impl LocomotionState {
         &self.output
     }
 
+    /// Highest pelvis offset along `up` that keeps every foot within `reach_limit` of its hip.
+    fn pelvis_limit(&self, input: &LocomotionInput, up: Vec3) -> f32 {
+        self.legs.iter().fold(f32::INFINITY, |limit, leg| {
+            let reach = leg.spec.reach * self.params.reach_limit;
+            let v = input.root.transform_point(leg.spec.hip) - leg.foot;
+            let along = v.dot(up);
+            let across = (v.length_squared() - along * along).max(0.0);
+            // Solve |v + d * up| = reach for the largest d; out of reach sideways, go as low as
+            // the foot allows.
+            let d = if across < reach * reach {
+                -along + (reach * reach - across).sqrt()
+            } else {
+                -along
+            };
+            limit.min(d)
+        })
+    }
+
     /// Average height of the planted feet above where they would be on flat ground.
     fn ground_follow(&self, input: &LocomotionInput, up: Vec3) -> f32 {
         let (sum, n) = self
@@ -392,62 +458,72 @@ impl LocomotionState {
         &self,
         input: &LocomotionInput,
         ground: &dyn Ground,
-        up: Vec3,
         spec: &LegSpec,
-        velocity_t: Vec3,
-        dir: Option<Vec3>,
-        stride: f32,
+        gait: &Gait,
         remaining: f32,
     ) -> (Vec3, Vec3) {
         let flat = input.root.transform_point(spec.rest_foot);
-        let mut at = flat + velocity_t * remaining;
-        if let Some(d) = dir {
-            at += d * stride;
+        let mut at = flat + gait.velocity * remaining;
+        if let Some(d) = gait.dir {
+            at += d * gait.stride;
         }
-        project(&self.params, ground, at, up, spec.rest_foot.y)
+        project(&self.params, ground, at, gait.up, spec.rest_foot.y)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn step_legs(
         &mut self,
         input: &LocomotionInput,
         ground: &dyn Ground,
-        up: Vec3,
-        velocity_t: Vec3,
-        speed: f32,
-        dir: Option<Vec3>,
+        gait: &Gait,
         dt: f32,
     ) -> u32 {
-        let stride = self.half_stride(speed);
+        let Gait {
+            up,
+            speed,
+            dir,
+            stride,
+            ..
+        } = *gait;
         let mut footfalls = 0;
 
         for i in 0..self.legs.len() {
             let leg = self.legs[i];
             match leg.phase {
-                LegPhase::Swing { from, elapsed, duration } => {
+                LegPhase::Swing {
+                    from,
+                    elapsed,
+                    duration,
+                } => {
                     let elapsed = elapsed + dt;
                     let remaining = (duration - elapsed).max(0.0);
                     let (target, normal) =
-                        self.landing_spot(input, ground, up, &leg.spec, velocity_t, dir, stride, remaining);
+                        self.landing_spot(input, ground, &leg.spec, gait, remaining);
                     let leg = &mut self.legs[i];
                     if elapsed >= duration {
                         leg.phase = LegPhase::Planted;
+                        leg.stance_time = 0.0;
                         leg.foot = target;
                         leg.normal = normal;
                         footfalls += 1;
                     } else {
                         let t = elapsed / duration;
                         let length = from.distance(target);
-                        let height = self.params.step_height * (0.5 + 0.5 * (length / 0.4).min(1.0));
-                        leg.foot = from.lerp(target, smoothstep(t)) + up * (height * (core::f32::consts::PI * t).sin());
+                        let height =
+                            self.params.step_height * (0.5 + 0.5 * (length / 0.4).min(1.0));
+                        leg.foot = from.lerp(target, smoothstep(t))
+                            + up * (height * (core::f32::consts::PI * t).sin());
                         leg.normal = leg.normal.lerp(normal, 0.3).normalize_or(up);
-                        leg.phase = LegPhase::Swing { from, elapsed, duration };
+                        leg.phase = LegPhase::Swing {
+                            from,
+                            elapsed,
+                            duration,
+                        };
                     }
                 }
                 LegPhase::Air => {
                     // Landing while the legs were still airborne is handled by the caller.
                 }
-                LegPhase::Planted => {}
+                LegPhase::Planted => self.legs[i].stance_time += dt,
             }
         }
 
@@ -478,20 +554,30 @@ impl LocomotionState {
             }
         }
         candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let duration = if dir.is_some() {
+            (0.6 * 2.0 * stride / speed).clamp(self.params.min_swing, self.params.max_swing)
+        } else {
+            self.params.idle_swing
+        };
+        // Waiting this long after another group lands spreads the lifts evenly over the cycle;
+        // without it the legs settle into a limp (one step right after the other, then a pause).
+        let settle = dir.map_or(0.0, |_| (0.5 * (2.0 * stride / speed - duration)).max(0.0));
         for (i, _, urgent) in candidates {
             let group = self.legs[i].spec.group;
-            let blocked = self
+            let blocked = self.legs.iter().any(|l| {
+                l.spec.group != group
+                    && (matches!(l.phase, LegPhase::Swing { .. })
+                        || (l.phase == LegPhase::Planted && l.stance_time < settle))
+            });
+            // Overstretching legs may break the alternation, but never lift the last support.
+            let planted = self
                 .legs
                 .iter()
-                .any(|l| l.spec.group != group && matches!(l.phase, LegPhase::Swing { .. }));
-            if blocked && !urgent {
+                .filter(|l| l.phase == LegPhase::Planted)
+                .count();
+            if (blocked && !urgent) || planted <= 1 {
                 continue;
             }
-            let duration = if dir.is_some() {
-                (0.6 * 2.0 * stride / speed).clamp(self.params.min_swing, self.params.max_swing)
-            } else {
-                self.params.idle_swing
-            };
             let leg = &mut self.legs[i];
             leg.phase = LegPhase::Swing {
                 from: leg.foot,
@@ -502,7 +588,13 @@ impl LocomotionState {
         footfalls
     }
 
-    fn air_legs(&mut self, input: &LocomotionInput, ground: &dyn Ground, up: Vec3, landing: Option<Landing>) {
+    fn air_legs(
+        &mut self,
+        input: &LocomotionInput,
+        ground: &dyn Ground,
+        up: Vec3,
+        landing: Option<Landing>,
+    ) {
         let approach = landing.map_or(0.0, |l| {
             smoothstep(1.0 - l.time / self.params.landing_anticipation.max(1e-3))
         });
@@ -515,8 +607,11 @@ impl LocomotionState {
                     // Keep the foot's body-relative offset, dropped onto the landing surface.
                     let offset = tangent(flat - input.root.translation, up);
                     let base = l.point + tangent(input.root.translation - l.point, up) + offset;
-                    let hit = ground
-                        .cast(base + up * self.params.probe_up, -up, self.params.probe_up + self.params.probe_down);
+                    let hit = ground.cast(
+                        base + up * self.params.probe_up,
+                        -up,
+                        self.params.probe_up + self.params.probe_down,
+                    );
                     match hit {
                         Some(h) => (h.point + h.normal * leg.spec.rest_foot.y, h.normal),
                         None => (l.point + l.normal * leg.spec.rest_foot.y, l.normal),
@@ -583,7 +678,11 @@ mod tests {
             point: Vec3::ZERO,
             normal: Vec3::Y,
         };
-        let (p, v, g) = (Vec3::new(1.0, 4.0, -2.0), Vec3::new(2.0, 3.0, 1.0), Vec3::new(0.0, -9.81, 0.0));
+        let (p, v, g) = (
+            Vec3::new(1.0, 4.0, -2.0),
+            Vec3::new(2.0, 3.0, 1.0),
+            Vec3::new(0.0, -9.81, 0.0),
+        );
         let landing = predict_landing(p, v, g, &ground, 5.0).unwrap();
         // 4 + 3t - 4.905 t^2 = 0
         let t = (3.0 + (9.0_f32 + 4.0 * 4.905 * 4.0).sqrt()) / (2.0 * 4.905);

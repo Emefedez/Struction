@@ -103,7 +103,11 @@ impl AnimatedWeight {
     }
 
     pub fn advance(&mut self, dt: f32) {
-        let step = if self.duration > 0.0 { dt / self.duration } else { 1.0 };
+        let step = if self.duration > 0.0 {
+            dt / self.duration
+        } else {
+            1.0
+        };
         let delta = self.goal - self.progress;
         self.progress += delta.clamp(-step, step);
     }
@@ -170,8 +174,8 @@ pub fn resolve(
                 return None;
             }
             let target = target_world(&c.target)?;
-            let distance = source_position(c.source)
-                .map_or(0.0, |p| p.distance(target.translation));
+            let distance =
+                source_position(c.source).map_or(0.0, |p| p.distance(target.translation));
             Some(ResolvedConstraint {
                 index: Some(index),
                 source: c.source,
@@ -222,7 +226,12 @@ pub fn arbitrate(resolved: &mut [ResolvedConstraint]) {
 mod tests {
     use super::*;
 
-    fn resolved(source: Limb, property: ConstraintProperty, weight: f32, priority: i32) -> ResolvedConstraint {
+    fn resolved(
+        source: Limb,
+        property: ConstraintProperty,
+        weight: f32,
+        priority: i32,
+    ) -> ResolvedConstraint {
         ResolvedConstraint {
             index: None,
             source,
@@ -259,11 +268,17 @@ mod tests {
     #[test]
     fn falloff_shapes() {
         assert_eq!(Falloff::None.factor(100.0), 1.0);
-        let lin = Falloff::Linear { start: 1.0, end: 3.0 };
+        let lin = Falloff::Linear {
+            start: 1.0,
+            end: 3.0,
+        };
         assert_eq!(lin.factor(0.5), 1.0);
         assert!((lin.factor(2.0) - 0.5).abs() < 1e-6);
         assert_eq!(lin.factor(3.5), 0.0);
-        let smooth = Falloff::Smooth { start: 1.0, end: 3.0 };
+        let smooth = Falloff::Smooth {
+            start: 1.0,
+            end: 3.0,
+        };
         assert!((smooth.factor(2.0) - 0.5).abs() < 1e-6);
         assert!(smooth.factor(1.5) > lin.factor(1.5));
     }
@@ -292,7 +307,10 @@ mod tests {
             property: ConstraintProperty::Position,
             weight: AnimatedWeight::new(1.0, 0.0),
             priority: 0,
-            falloff: Falloff::Linear { start: 1.0, end: 3.0 },
+            falloff: Falloff::Linear {
+                start: 1.0,
+                end: 3.0,
+            },
             pose: None,
         };
         c.weight.advance(1.0);

@@ -26,8 +26,8 @@ use bevy::transform::components::{GlobalTransform, Transform};
 use crate::affordance::{Grabbable, Sittable, assign_grips};
 use crate::base_pose::BasePoseSet;
 use crate::constraint::{
-    AnimConstraint, AnimatedWeight, ConstraintOrigin, ConstraintProperty, ConstraintTarget, Falloff,
-    ResolvedConstraint, arbitrate, resolve,
+    AnimConstraint, AnimatedWeight, ConstraintOrigin, ConstraintProperty, ConstraintTarget,
+    Falloff, ResolvedConstraint, arbitrate, resolve,
 };
 use crate::error::AnimError;
 use crate::humanoid;
@@ -297,7 +297,15 @@ pub fn spawn_character(
 /// `GlobalTransform`.
 #[derive(SystemParam)]
 struct WorldTransforms<'w, 's> {
-    query: Query<'w, 's, (&'static Transform, &'static GlobalTransform, Option<&'static ChildOf>)>,
+    query: Query<
+        'w,
+        's,
+        (
+            &'static Transform,
+            &'static GlobalTransform,
+            Option<&'static ChildOf>,
+        ),
+    >,
 }
 
 impl WorldTransforms<'_, '_> {
@@ -350,7 +358,9 @@ fn process_intents(
             match request {
                 IntentRequest::Hold(object) => {
                     release_all(&mut constraints, ConstraintOrigin::Hold);
-                    let (Ok(grabbable), Some(object_world)) = (grabbables.get(object), transforms.get(object)) else {
+                    let (Ok(grabbable), Some(object_world)) =
+                        (grabbables.get(object), transforms.get(object))
+                    else {
                         continue;
                     };
                     let grips: Vec<_> = grabbable
@@ -384,7 +394,10 @@ fn process_intents(
                             property: ConstraintProperty::Pose,
                             weight: AnimatedWeight::new(1.0, 0.35),
                             priority: 10,
-                            falloff: Falloff::Smooth { start: 1.5, end: 2.5 },
+                            falloff: Falloff::Smooth {
+                                start: 1.5,
+                                end: 2.5,
+                            },
                             pose: Some(g.pose.clone()),
                         });
                     }
@@ -433,7 +446,10 @@ fn process_intents(
                         property: ConstraintProperty::Direction,
                         weight: AnimatedWeight::new(1.0, 0.4),
                         priority: 0,
-                        falloff: Falloff::Smooth { start: 8.0, end: 15.0 },
+                        falloff: Falloff::Smooth {
+                            start: 8.0,
+                            end: 15.0,
+                        },
                         pose: None,
                     });
                 }
@@ -445,7 +461,11 @@ fn process_intents(
 
 fn update_constraints(
     time: Res<Time>,
-    mut characters: Query<(&mut AnimConstraints, &mut AnimSolver, Option<&mut Locomotor>)>,
+    mut characters: Query<(
+        &mut AnimConstraints,
+        &mut AnimSolver,
+        Option<&mut Locomotor>,
+    )>,
     transforms: WorldTransforms,
 ) {
     let dt = time.delta_secs();
@@ -501,17 +521,19 @@ fn update_locomotion(
     }
 }
 
+type SolveData = (
+    Entity,
+    &'static mut AnimSolver,
+    &'static mut SolvedPose,
+    &'static AnimConstraints,
+    Option<&'static Locomotor>,
+    Option<&'static LocalUp>,
+);
+
 fn solve_poses(
     time: Res<Time>,
     poses: Res<BasePoseSet>,
-    mut characters: Query<(
-        Entity,
-        &mut AnimSolver,
-        &mut SolvedPose,
-        &AnimConstraints,
-        Option<&Locomotor>,
-        Option<&LocalUp>,
-    )>,
+    mut characters: Query<SolveData>,
     transforms: WorldTransforms,
 ) {
     let dt = time.delta_secs();

@@ -202,7 +202,7 @@ pub struct SquashStretch {
     pub params: SpringParams,
     /// Stretch per m/s^2 of acceleration along the axis (inertia: pushing up compresses).
     pub acceleration_gain: f32,
-    /// Stretch removed per m/s of impact speed.
+    /// Compression speed (stretch per second) added per m/s of impact speed.
     pub impact_gain: f32,
     /// Hard limit on the stretch amount, in either direction.
     pub max_stretch: f32,
@@ -214,7 +214,7 @@ impl Default for SquashStretch {
         Self {
             params: SpringParams::new(4.0, 0.35),
             acceleration_gain: 0.004,
-            impact_gain: 0.6,
+            impact_gain: 0.5,
             max_stretch: 0.25,
             state: SpringF32::default(),
         }
@@ -232,8 +232,7 @@ impl SquashStretch {
 
     /// A landing at `speed` m/s compresses the body; the spring rebounds into a stretch.
     pub fn impact(&mut self, speed: f32) {
-        self.state.velocity -= self.impact_gain * speed.max(0.0) * core::f32::consts::TAU * self.params.frequency
-            * 0.25;
+        self.state.velocity -= self.impact_gain * speed.max(0.0);
     }
 
     pub fn stretch(&self) -> f32 {
@@ -269,7 +268,8 @@ mod tests {
         let (mut x, mut v) = (x0 as f64, v0 as f64);
         let dt = 1e-5_f64;
         for _ in 0..(time as f64 / dt) as usize {
-            let a = -(omega as f64).powi(2) * x - 2.0 * params.damping_ratio as f64 * omega as f64 * v;
+            let a =
+                -(omega as f64).powi(2) * x - 2.0 * params.damping_ratio as f64 * omega as f64 * v;
             v += a * dt;
             x += v * dt;
         }
@@ -282,8 +282,16 @@ mod tests {
             let params = SpringParams::new(2.0, zeta);
             let s = simulate(params, 1.0, 0.5, 1.0 / 60.0, 0.5);
             let (x, v) = reference(params, 1.0, 0.5, 0.5);
-            assert!((s.value - x).abs() < 2e-3, "zeta {zeta}: {} vs {x}", s.value);
-            assert!((s.velocity - v).abs() < 2e-2, "zeta {zeta}: {} vs {v}", s.velocity);
+            assert!(
+                (s.value - x).abs() < 2e-3,
+                "zeta {zeta}: {} vs {x}",
+                s.value
+            );
+            assert!(
+                (s.velocity - v).abs() < 2e-2,
+                "zeta {zeta}: {} vs {v}",
+                s.velocity
+            );
         }
     }
 
@@ -337,7 +345,11 @@ mod tests {
     fn vec3_converges_to_target() {
         let mut s = SpringVec3::at(Vec3::ZERO);
         for _ in 0..300 {
-            s.step(Vec3::new(1.0, -2.0, 3.0), SpringParams::critical(4.0), 1.0 / 60.0);
+            s.step(
+                Vec3::new(1.0, -2.0, 3.0),
+                SpringParams::critical(4.0),
+                1.0 / 60.0,
+            );
         }
         assert!((s.value - Vec3::new(1.0, -2.0, 3.0)).length() < 1e-3);
     }
@@ -348,7 +360,10 @@ mod tests {
         // Same rotation as the target rotated by almost a full turn, expressed with w < 0.
         let mut s = SpringQuat::at(-Quat::from_rotation_y(0.2 + 0.1));
         s.step(target, SpringParams::critical(3.0), 1.0 / 60.0);
-        assert!(s.angular_velocity.length() < 1.0, "spun the long way around");
+        assert!(
+            s.angular_velocity.length() < 1.0,
+            "spun the long way around"
+        );
         for _ in 0..300 {
             s.step(target, SpringParams::critical(3.0), 1.0 / 60.0);
         }

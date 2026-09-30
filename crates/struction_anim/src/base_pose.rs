@@ -173,7 +173,10 @@ mod tests {
         let bad = BasePose {
             joints: vec![JointPose::rotation("tail", Vec3::ZERO)],
         };
-        assert_eq!(bad.resolve(&sk), Err(AnimError::UnknownJoint("tail".into())));
+        assert_eq!(
+            bad.resolve(&sk),
+            Err(AnimError::UnknownJoint("tail".into()))
+        );
         assert!(BasePoseSet::default().resolve("idle", &sk).is_err());
     }
 }
