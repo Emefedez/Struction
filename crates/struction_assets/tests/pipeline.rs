@@ -201,11 +201,16 @@ fn bevy_rejects_corrupt_files() {
 
 /// Updates until the watcher reports a recompile of the source.
 fn wait_recompiled(app: &mut App) -> SourceRecompiled {
+    // Messages outlive an update until a fixed tick swaps them, so skip older reports.
+    let mut cursor = app
+        .world()
+        .resource::<Messages<SourceRecompiled>>()
+        .get_cursor_current();
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         app.update();
         let messages = app.world().resource::<Messages<SourceRecompiled>>();
-        if let Some(message) = messages.iter_current_update_messages().last() {
+        if let Some(message) = cursor.read(messages).last() {
             return message.clone();
         }
         assert!(Instant::now() < deadline, "no recompile reported");
