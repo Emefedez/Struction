@@ -169,13 +169,74 @@ impl ActionArgs {
     }
 }
 
-/// Declared parameter of an action.
+/// Declared parameter of an action (or of a condition, which shares the rules).
 #[derive(Clone, PartialEq, Debug)]
 pub struct ParamSpec {
     pub name: String,
     pub ty: ParamType,
     /// `None` makes the parameter required.
     pub default: Option<ArgValue>,
+}
+
+impl ParamSpec {
+    pub fn required(name: impl Into<String>, ty: ParamType) -> Self {
+        Self {
+            name: name.into(),
+            ty,
+            default: None,
+        }
+    }
+
+    pub fn optional(name: impl Into<String>, ty: ParamType, default: impl Into<ArgValue>) -> Self {
+        let default = default.into();
+        debug_assert!(
+            ty.accepts(&default),
+            "default does not match parameter type"
+        );
+        Self {
+            name: name.into(),
+            ty,
+            default: Some(default),
+        }
+    }
+
+    /// Checks `args` against `params` and fills in defaults.
+    pub fn resolve(params: &[Self], args: &ActionArgs) -> Result<ActionArgs, ArgError> {
+        if let Some((param, _)) = args
+            .iter()
+            .find(|(param, _)| !params.iter().any(|spec| spec.name == *param))
+        {
+            return Err(ArgError::Unknown(param.into()));
+        }
+        let mut resolved = ActionArgs::new();
+        for spec in params {
+            let value = args
+                .get(&spec.name)
+                .or(spec.default.as_ref())
+                .ok_or_else(|| ArgError::Missing(spec.name.clone()))?;
+            if !spec.ty.accepts(value) {
+                return Err(ArgError::Type {
+                    param: spec.name.clone(),
+                    expected: spec.ty,
+                    found: value.ty(),
+                });
+            }
+            resolved.0.insert(spec.name.clone(), value.clone());
+        }
+        Ok(resolved)
+    }
+}
+
+/// Why arguments do not match the declared parameters.
+#[derive(Clone, PartialEq, Debug)]
+pub enum ArgError {
+    Missing(String),
+    Unknown(String),
+    Type {
+        param: String,
+        expected: ParamType,
+        found: ParamType,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -210,11 +271,7 @@ impl ActionMeta {
     }
 
     pub fn param(mut self, name: impl Into<String>, ty: ParamType) -> Self {
-        self.params.push(ParamSpec {
-            name: name.into(),
-            ty,
-            default: None,
-        });
+        self.params.push(ParamSpec::required(name, ty));
         self
     }
 
@@ -224,16 +281,7 @@ impl ActionMeta {
         ty: ParamType,
         default: impl Into<ArgValue>,
     ) -> Self {
-        let default = default.into();
-        debug_assert!(
-            ty.accepts(&default),
-            "default does not match parameter type"
-        );
-        self.params.push(ParamSpec {
-            name: name.into(),
-            ty,
-            default: Some(default),
-        });
+        self.params.push(ParamSpec::optional(name, ty, default));
         self
     }
 
@@ -247,39 +295,21 @@ impl ActionMeta {
 
     /// Checks `args` against the declared parameters and fills in defaults.
     pub fn resolve_args(&self, args: &ActionArgs) -> Result<ActionArgs, ActionError> {
-        let name = &self.name;
-        if let Some((param, _)) = args
-            .iter()
-            .find(|(param, _)| !self.params.iter().any(|spec| spec.name == *param))
-        {
-            return Err(ActionError::UnknownArg {
-                action: name.clone(),
-                param: param.into(),
-            });
-        }
-        let mut resolved = ActionArgs::new();
-        for spec in &self.params {
-            let value = match (args.get(&spec.name), &spec.default) {
-                (Some(value), _) => value,
-                (None, Some(default)) => default,
-                (None, None) => {
-                    return Err(ActionError::MissingArg {
-                        action: name.clone(),
-                        param: spec.name.clone(),
-                    });
-                }
-            };
-            if !spec.ty.accepts(value) {
-                return Err(ActionError::ArgType {
-                    action: name.clone(),
-                    param: spec.name.clone(),
-                    expected: spec.ty,
-                    found: value.ty(),
-                });
-            }
-            resolved.0.insert(spec.name.clone(), value.clone());
-        }
-        Ok(resolved)
+        let action = self.name.clone();
+        ParamSpec::resolve(&self.params, args).map_err(|error| match error {
+            ArgError::Missing(param) => ActionError::MissingArg { action, param },
+            ArgError::Unknown(param) => ActionError::UnknownArg { action, param },
+            ArgError::Type {
+                param,
+                expected,
+                found,
+            } => ActionError::ArgType {
+                action,
+                param,
+                expected,
+                found,
+            },
+        })
     }
 
     pub fn descriptor(&self) -> ActionDescriptor {
