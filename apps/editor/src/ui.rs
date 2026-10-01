@@ -12,9 +12,9 @@ use bevy_egui::{
     },
 };
 use serde_json::Value;
-use struction_editor::{Diagnostic, EditRequest, EntityEntry, Field, HierarchyNode};
+use struction_editor::{Diagnostic, EditRequest, EntityEntry, ExtensorWhy, Field, HierarchyNode};
 
-use crate::state::{Command, Editor, Inspection, Selected, definition_file, lookup};
+use crate::state::{Command, Editor, Extensors, Inspection, Selected, definition_file, lookup};
 use crate::theme;
 use crate::tools::{self, Mode, Request, Toolbox};
 use crate::viewport::SceneCamera;
@@ -1026,6 +1026,7 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
             lineage,
             components,
             local,
+            extensors,
         } => {
             ui.heading(RichText::new(path.as_str()).color(theme::DEFINITION));
             let file = definition_file(path);
@@ -1046,7 +1047,9 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
                     }
                 }
             });
-            ui.add_space(10.0);
+            ui.add_space(6.0);
+            extensor_section(ui, path, extensors, playing, commands);
+            ui.add_space(6.0);
             if components.is_empty() {
                 hint(ui, "No components.");
             }
@@ -1074,6 +1077,101 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
             }
         }
     }
+}
+
+/// Which packages extend the definition and why, with the same add/remove operations the
+/// protocol offers. Inferred ones are explained, not edited: they follow from components.
+fn extensor_section(
+    ui: &mut Ui,
+    path: &str,
+    extensors: &Extensors,
+    playing: bool,
+    commands: &mut Vec<Command>,
+) {
+    let add = |extensor: &str| Command::AddExtensor {
+        definition: path.into(),
+        extensor: extensor.into(),
+    };
+    let remove = |extensor: &str| Command::RemoveExtensor {
+        definition: path.into(),
+        extensor: extensor.into(),
+    };
+    section(ui, "Extensors", |ui| {
+        if extensors.used.is_empty() && extensors.dropped.is_empty() {
+            hint(ui, "None in use.");
+        }
+        for used in &extensors.used {
+            ui.horizontal_wrapped(|ui| {
+                let (why, editable) = match &used.reason {
+                    ExtensorWhy::NamedBy(by) if by == path => ("named here".to_owned(), true),
+                    ExtensorWhy::NamedBy(by) => (format!("named by {by}"), true),
+                    ExtensorWhy::Owns(component) => (format!("from {component}"), false),
+                    ExtensorWhy::RequiredBy(user) => (format!("needed by {user}"), false),
+                };
+                ui.label(RichText::new(&used.name).strong());
+                ui.label(RichText::new(why).small().color(theme::MUTED));
+                if !used.supplied.is_empty() {
+                    hint(ui, &format!("supplies {}", used.supplied.join(", ")));
+                }
+                if editable
+                    && !playing
+                    && ui
+                        .small_button("Remove")
+                        .on_hover_text("Remove it and its own components; drops it if inherited")
+                        .clicked()
+                {
+                    commands.push(remove(&used.name));
+                }
+            });
+        }
+        for dropped in &extensors.dropped {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(&dropped.name)
+                        .strikethrough()
+                        .color(theme::MUTED),
+                );
+                hint(ui, &format!("dropped by {}", dropped.by));
+                if dropped.by == path && !playing && ui.small_button("Restore").clicked() {
+                    commands.push(add(&dropped.name));
+                }
+            });
+        }
+        if playing {
+            return;
+        }
+        for suggested in &extensors.suggested {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .small_button(format!("+ {}", suggested.name))
+                    .on_hover_text(&suggested.doc)
+                    .clicked()
+                {
+                    commands.push(add(&suggested.name));
+                }
+                let mut why = format!("suggested: builds on {}", suggested.because.join(", "));
+                if !suggested.supplies.is_empty() {
+                    why += &format!("; supplies {}", suggested.supplies.join(", "));
+                }
+                hint(ui, &why);
+            });
+        }
+        let others: Vec<_> = extensors
+            .available
+            .iter()
+            .filter(|name| !extensors.suggested.iter().any(|s| &s.name == *name))
+            .collect();
+        if !others.is_empty() {
+            ui.menu_button(RichText::new("Add extensor…").small(), |ui| {
+                for name in others {
+                    if ui.button(name).clicked() {
+                        commands.push(add(name));
+                        ui.close();
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// Where a component's fields are written, and what that source already sets.

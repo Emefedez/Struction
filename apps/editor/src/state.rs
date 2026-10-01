@@ -8,7 +8,8 @@ use bevy::prelude::*;
 use serde_json::Value;
 use struction_data::parse_jsonc;
 use struction_editor::{
-    AuthoringProject, Diagnostic, EditRequest, EntityEntry, Field, HierarchyNode, SessionError,
+    AuthoringProject, Diagnostic, DroppedEntry, EditRequest, EntityEntry, ExtensorEntry, Field,
+    HierarchyNode, SessionError, SuggestedExtensor,
 };
 
 use crate::game;
@@ -42,6 +43,14 @@ pub enum Command {
     SetMaster {
         path: String,
         master: Option<String>,
+    },
+    AddExtensor {
+        definition: String,
+        extensor: String,
+    },
+    RemoveExtensor {
+        definition: String,
+        extensor: String,
     },
     CreateSpawn {
         spawner: String,
@@ -85,6 +94,7 @@ pub enum Inspection {
         components: Vec<(String, Value)>,
         /// The definition's own file, to tell fields set here from inherited ones.
         local: Value,
+        extensors: Extensors,
     },
     Missing(String),
     InvalidDefinition {
@@ -94,6 +104,14 @@ pub enum Inspection {
     },
     /// Drawn from the toolbox, not the project.
     Asset,
+}
+
+/// What a definition's inspection says about its extensors.
+pub struct Extensors {
+    pub used: Vec<ExtensorEntry>,
+    pub dropped: Vec<DroppedEntry>,
+    pub suggested: Vec<SuggestedExtensor>,
+    pub available: Vec<String>,
 }
 
 #[derive(Default)]
@@ -167,6 +185,24 @@ impl Editor {
                 "Set master",
                 project
                     .set_master(&path, master.as_deref())
+                    .map(|a| Some(a.label)),
+            ),
+            Command::AddExtensor {
+                definition,
+                extensor,
+            } => (
+                "Add extensor",
+                project
+                    .add_extensor(&definition, &extensor)
+                    .map(|a| Some(a.label)),
+            ),
+            Command::RemoveExtensor {
+                definition,
+                extensor,
+            } => (
+                "Remove extensor",
+                project
+                    .remove_extensor(&definition, &extensor)
                     .map(|a| Some(a.label)),
             ),
             Command::CreateSpawn {
@@ -418,6 +454,12 @@ impl Editor {
                     lineage: inspected.lineage,
                     components,
                     local: source(&definition_file(path)),
+                    extensors: Extensors {
+                        used: inspected.extensors,
+                        dropped: inspected.dropped_extensors,
+                        suggested: inspected.suggested_extensors,
+                        available: inspected.available_extensors,
+                    },
                 }
             }
         })
@@ -548,6 +590,52 @@ mod tests {
         editor.apply(Command::Step);
         assert_eq!(editor.play.as_ref().unwrap().ticks, 1);
         editor.apply(Command::StopPlay);
+    }
+
+    fn extensors(editor: &mut Editor, definition: &str) -> (Vec<String>, Vec<String>) {
+        editor.apply(Command::Select(Some(Selected::Definition(
+            definition.into(),
+        ))));
+        let Some(Inspection::Definition { extensors, .. }) = editor.inspection() else {
+            panic!("{definition} is inspectable");
+        };
+        (
+            extensors.used.iter().map(|e| e.name.clone()).collect(),
+            extensors.suggested.iter().map(|e| e.name.clone()).collect(),
+        )
+    }
+
+    #[test]
+    fn extensors_are_added_and_removed_from_the_inspector_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let playground = Path::new(env!("CARGO_MANIFEST_DIR")).join("../playground/project");
+        copy(&playground, dir.path());
+        let mut editor = Editor::default();
+        editor.apply(Command::Open(dir.path().to_owned()));
+        assert!(editor.rejection.is_none());
+
+        let (used, suggested) = extensors(&mut editor, "characters/sentry");
+        assert_eq!(used, ["character", "physics"]);
+        assert_eq!(suggested, ["combat", "dodge"]);
+        editor.apply(Command::AddExtensor {
+            definition: "characters/sentry".into(),
+            extensor: "dodge".into(),
+        });
+        assert!(editor.rejection.is_none());
+        let (used, suggested) = extensors(&mut editor, "characters/sentry");
+        assert_eq!(used[0], "dodge");
+        assert_eq!(suggested, ["combat"]);
+
+        editor.apply(Command::RemoveExtensor {
+            definition: "characters/player".into(),
+            extensor: "combat".into(),
+        });
+        assert!(editor.rejection.is_none());
+        let (used, _) = extensors(&mut editor, "characters/player");
+        assert!(!used.contains(&"combat".to_owned()));
+        editor.apply(Command::Undo);
+        let (used, _) = extensors(&mut editor, "characters/player");
+        assert!(used.contains(&"combat".to_owned()));
     }
 
     #[test]
