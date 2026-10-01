@@ -70,6 +70,14 @@ pub enum ErrorKind {
     #[error("extensor \"{extensor}\" needs \"{requires}\"; add it to \"extensors\"")]
     ExtensorRequires { extensor: String, requires: String },
     #[error(
+        "preset \"{name}\" is defined by the {library} library; give the project's another name"
+    )]
+    LibraryPreset { name: String, library: String },
+    #[error(
+        "\"{id}\" overrides the {library} definition and keeps its parent; remove descendsFrom or give it another path"
+    )]
+    OverrideParent { id: String, library: String },
+    #[error(
         "definition \"{0}\" has no descendsFrom and is not primordial (primordial names are capitalized)"
     )]
     NotPrimordial(String),

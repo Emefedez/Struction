@@ -4,6 +4,10 @@
 //! `minions/ogre`), `<root>/presets/**.jsonc` defines presets by their path below `presets/`.
 //! Other files (scenes, assets) are ignored here. Primordial types (capitalized names) may be
 //! files too, or be declared with [`DefinitionStore::declare_primordial`].
+//!
+//! Libraries (the engine's base definitions) are read-only roots with the same layout, loaded
+//! before the project. A project file at a library definition's path overrides it: it is merged
+//! over the library's version, keeps its parent, and every descendant sees the change.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -76,12 +80,23 @@ struct Merged {
     dropped: Vec<Named>,
 }
 
+/// A read-only root of definitions, such as the engine's.
+#[derive(Clone, Debug)]
+struct Library {
+    name: String,
+    root: PathBuf,
+    entities: BTreeMap<String, Layer>,
+    presets: BTreeMap<String, Layer>,
+}
+
 #[derive(Resource)]
 pub struct DefinitionStore {
     root: PathBuf,
     primordials: BTreeSet<String>,
     extra_sections: BTreeSet<String>,
     extensors: ExtensorRegistry,
+    libraries: Vec<Library>,
+    /// The project's own definitions, including overrides of library ones.
     entities: BTreeMap<String, Layer>,
     presets: BTreeMap<String, Layer>,
     /// Unreadable or malformed files, by project-relative path.
@@ -99,6 +114,7 @@ impl DefinitionStore {
             primordials: BTreeSet::new(),
             extra_sections: DEFAULT_EXTRA_SECTIONS.map(String::from).into(),
             extensors: ExtensorRegistry::default(),
+            libraries: Vec::new(),
             entities: BTreeMap::new(),
             presets: BTreeMap::new(),
             file_errors: BTreeMap::new(),
@@ -140,6 +156,58 @@ impl DefinitionStore {
         &self.extensors
     }
 
+    /// Adds a read-only root of definitions the project can descend from and override, such as
+    /// the engine's base definitions. Its files are labeled `<name>:<path>`. Call before loading.
+    pub fn add_library(&mut self, name: impl Into<String>, root: impl Into<PathBuf>) -> &mut Self {
+        self.libraries.push(Library {
+            name: name.into(),
+            root: root.into(),
+            entities: BTreeMap::new(),
+            presets: BTreeMap::new(),
+        });
+        self
+    }
+
+    /// The library defining `id`, if a library does; the project may still override it.
+    pub fn library_of(&self, id: &str) -> Option<&str> {
+        self.library_entity(id)
+            .map(|(library, _)| library.name.as_str())
+    }
+
+    /// Whether the project has its own file for `id`: a definition or a library override.
+    pub fn in_project(&self, id: &str) -> bool {
+        self.entities.contains_key(id)
+    }
+
+    /// The file of a library definition.
+    pub fn library_file(&self, id: &str) -> Option<PathBuf> {
+        self.library_entity(id)
+            .map(|(library, _)| library.root.join(id).join(ENTITY_FILE))
+    }
+
+    fn library_entity(&self, id: &str) -> Option<(&Library, &Layer)> {
+        self.libraries
+            .iter()
+            .find_map(|library| library.entities.get(id).map(|layer| (library, layer)))
+    }
+
+    fn library_preset(&self, name: &str) -> Option<(&Library, &Layer)> {
+        self.libraries
+            .iter()
+            .find_map(|library| library.presets.get(name).map(|layer| (library, layer)))
+    }
+
+    /// Every definition id, from libraries and the project.
+    fn ids(&self) -> BTreeSet<String> {
+        self.libraries
+            .iter()
+            .flat_map(|library| library.entities.keys())
+            .chain(self.entities.keys())
+            .chain(&self.primordials)
+            .cloned()
+            .collect()
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -154,7 +222,11 @@ impl DefinitionStore {
     }
 
     pub fn preset_names(&self) -> impl Iterator<Item = &str> {
-        self.presets.keys().map(String::as_str)
+        self.libraries
+            .iter()
+            .flat_map(|library| library.presets.keys())
+            .chain(self.presets.keys())
+            .map(String::as_str)
     }
 
     /// Definitions that have `ancestor` in their lineage.
@@ -192,19 +264,12 @@ impl DefinitionStore {
     /// The entity-file schema for this project: component types from `registry`, this project's
     /// definitions and presets as completions for `descendsFrom` and `presets`.
     pub fn schema(&self, registry: &TypeRegistry) -> serde_json::Value {
-        let definitions = self
-            .entities
-            .keys()
-            .chain(&self.primordials)
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
+        let definitions = self.ids().into_iter().collect();
         crate::schema::entity_schema(
             registry,
             &crate::schema::SchemaOptions {
                 definitions,
-                presets: self.presets.keys().cloned().collect(),
+                presets: self.preset_names().map(str::to_owned).collect(),
                 extra_sections: self.extra_sections.iter().cloned().collect(),
                 extensors: self
                     .extensors
@@ -237,6 +302,7 @@ impl DefinitionStore {
         candidate.primordials = self.primordials.clone();
         candidate.extra_sections = self.extra_sections.clone();
         candidate.extensors = self.extensors.clone();
+        candidate.libraries = self.libraries.clone();
         candidate.load_with_sources(sources, registry);
         candidate
     }
@@ -249,6 +315,20 @@ impl DefinitionStore {
         self.entities.clear();
         self.presets.clear();
         self.file_errors.clear();
+        for index in 0..self.libraries.len() {
+            let library = &mut self.libraries[index];
+            library.entities.clear();
+            library.presets.clear();
+            let root = library.root.clone();
+            let mut files = Vec::new();
+            walk(&root, &root, &mut files);
+            files.sort();
+            for rel in files {
+                if let Some(kind) = classify(&rel) {
+                    self.read_library_file(index, &rel, &kind);
+                }
+            }
+        }
         let mut files = Vec::new();
         walk(&self.root, &self.root, &mut files);
         files.extend(sources.keys().cloned());
@@ -260,15 +340,10 @@ impl DefinitionStore {
             }
         }
         let old_ids: Vec<String> = self.resolved.keys().cloned().collect();
-        let ids = self
-            .entities
-            .keys()
-            .chain(&self.primordials)
-            .cloned()
-            .collect();
-        let mut report = self.resolve(ids, registry);
+        let ids = self.ids();
+        let mut report = self.resolve(ids.iter().cloned().collect(), registry);
         for id in old_ids {
-            if !self.entities.contains_key(&id) && !self.primordials.contains(&id) {
+            if !ids.contains(&id) {
                 self.resolved.remove(&id);
                 report.removed.push(id);
             }
@@ -304,6 +379,10 @@ impl DefinitionStore {
         } else {
             self.file_errors.remove(&rel);
             match &kind {
+                // Deleting a library override falls back to the library's version.
+                FileKind::Entity(id) if self.library_entity(id).is_some() => {
+                    self.entities.remove(id);
+                }
                 FileKind::Entity(id) => {
                     self.entities.remove(id);
                     if self.resolved.remove(id).is_some() {
@@ -326,7 +405,7 @@ impl DefinitionStore {
             .map(|(id, _)| id.clone())
             .collect();
         if let FileKind::Entity(id) = &kind
-            && self.entities.contains_key(id)
+            && (self.entities.contains_key(id) || self.library_entity(id).is_some())
         {
             affected.insert(id.clone());
         }
@@ -341,29 +420,69 @@ impl DefinitionStore {
         self.read_layer_source(rel, kind, None);
     }
 
-    fn read_layer_source(&mut self, rel: &str, kind: &FileKind, source: Option<&String>) {
-        let result = source
-            .map_or_else(
-                || fs::read_to_string(self.root.join(rel)),
-                |source| Ok(source.clone()),
-            )
-            .map_err(|e| {
-                DataError::new(
-                    ErrorKind::Io(format!("cannot read {rel}: {e}")),
-                    Some(Location {
-                        file: rel.into(),
-                        line: 1,
-                        column: 1,
-                    }),
-                )
-            })
-            .and_then(|text| parse_jsonc(rel, &text))
-            .and_then(|node| {
-                let layer_kind = match kind {
-                    FileKind::Entity(_) => LayerKind::Entity,
-                    FileKind::Preset(_) => LayerKind::Preset,
+    fn read_library_file(&mut self, index: usize, rel: &str, kind: &FileKind) {
+        let library = &self.libraries[index];
+        let label = format!("{}:{rel}", library.name);
+        let text = fs::read_to_string(library.root.join(rel));
+        match self.parse_layer_text(&label, kind, text) {
+            Ok(layer) => {
+                let library = &mut self.libraries[index];
+                match kind {
+                    FileKind::Entity(id) => library.entities.insert(id.clone(), layer),
+                    FileKind::Preset(name) => library.presets.insert(name.clone(), layer),
                 };
-                parse_layer(node, layer_kind, &self.extra_sections)
+            }
+            Err(error) => {
+                self.file_errors.insert(label, error);
+            }
+        }
+    }
+
+    fn parse_layer_text(
+        &self,
+        label: &str,
+        kind: &FileKind,
+        text: std::io::Result<String>,
+    ) -> Result<Layer, DataError> {
+        text.map_err(|e| {
+            DataError::new(
+                ErrorKind::Io(format!("cannot read {label}: {e}")),
+                Some(Location {
+                    file: label.into(),
+                    line: 1,
+                    column: 1,
+                }),
+            )
+        })
+        .and_then(|text| parse_jsonc(label, &text))
+        .and_then(|node| {
+            let layer_kind = match kind {
+                FileKind::Entity(_) => LayerKind::Entity,
+                FileKind::Preset(_) => LayerKind::Preset,
+            };
+            parse_layer(node, layer_kind, &self.extra_sections)
+        })
+    }
+
+    fn read_layer_source(&mut self, rel: &str, kind: &FileKind, source: Option<&String>) {
+        let text = source.map_or_else(
+            || fs::read_to_string(self.root.join(rel)),
+            |source| Ok(source.clone()),
+        );
+        let result = self
+            .parse_layer_text(rel, kind, text)
+            .and_then(|layer| match kind {
+                FileKind::Preset(name) => match self.library_preset(name) {
+                    Some((library, _)) => Err(DataError::at(
+                        ErrorKind::LibraryPreset {
+                            name: name.clone(),
+                            library: library.name.clone(),
+                        },
+                        &layer.root_span,
+                    )),
+                    None => Ok(layer),
+                },
+                FileKind::Entity(_) => Ok(layer),
             });
         match result {
             Ok(layer) => {
@@ -389,7 +508,8 @@ impl DefinitionStore {
             if !deps.insert(Dep::Entity(current.clone())) {
                 continue;
             }
-            if let Some(layer) = self.entities.get(&current) {
+            let library = self.library_entity(&current).map(|(_, layer)| layer);
+            for layer in library.into_iter().chain(self.entities.get(&current)) {
                 entity_queue.extend(layer.descends_from.iter().map(|(p, _)| p.clone()));
                 preset_queue.extend(layer.presets.iter().map(|(p, _)| p.clone()));
             }
@@ -398,7 +518,8 @@ impl DefinitionStore {
             if !deps.insert(Dep::Preset(current.clone())) {
                 continue;
             }
-            if let Some(layer) = self.presets.get(&current) {
+            let library = self.library_preset(&current).map(|(_, layer)| layer);
+            if let Some(layer) = library.or(self.presets.get(&current)) {
                 preset_queue.extend(layer.presets.iter().map(|(p, _)| p.clone()));
             }
         }
@@ -543,7 +664,15 @@ impl<'a> Resolver<'a> {
 
     fn compute_entity(&mut self, id: &str, stack: &mut Vec<String>) -> Result<Merged, DataError> {
         let store = self.store;
-        let Some(layer) = store.entities.get(id) else {
+        let library = store.library_entity(id);
+        // A project file over a library definition is its override, merged last.
+        let (layer, by, project_override) = match (library, store.entities.get(id)) {
+            (Some((library, layer)), project) => {
+                (Some(layer), format!("{}:{id}", library.name), project)
+            }
+            (None, project) => (project, id.to_owned(), None),
+        };
+        let Some(layer) = layer else {
             if store.primordials.contains(id) {
                 let file = format!("<primordial {id}>");
                 let span = synthetic_span(&file);
@@ -567,7 +696,10 @@ impl<'a> Resolver<'a> {
                     chain.push(parent.clone());
                     return Err(DataError::at(ErrorKind::DefinitionCycle(chain), span));
                 }
-                if !store.entities.contains_key(parent) && !store.primordials.contains(parent) {
+                if !store.entities.contains_key(parent)
+                    && store.library_entity(parent).is_none()
+                    && !store.primordials.contains(parent)
+                {
                     return Err(DataError::at(
                         ErrorKind::MissingDefinition(parent.clone()),
                         span,
@@ -598,7 +730,21 @@ impl<'a> Resolver<'a> {
                 }
             }
         };
-        self.apply_layer(&mut merged, layer, id, &mut Vec::new())?;
+        self.apply_layer(&mut merged, layer, &by, &mut Vec::new())?;
+        if let Some(project) = project_override {
+            if let Some((parent, span)) = &project.descends_from
+                && Some(parent) != layer.descends_from.as_ref().map(|(p, _)| p)
+            {
+                return Err(DataError::at(
+                    ErrorKind::OverrideParent {
+                        id: id.into(),
+                        library: by.split(':').next().unwrap_or_default().into(),
+                    },
+                    span,
+                ));
+            }
+            self.apply_layer(&mut merged, project, id, &mut Vec::new())?;
+        }
         strip_removed_components(&mut merged.body);
         Ok(merged)
     }
@@ -684,7 +830,8 @@ impl<'a> Resolver<'a> {
             return done.clone();
         }
         let store = self.store;
-        let Some(layer) = store.presets.get(name) else {
+        let library = store.library_preset(name).map(|(_, layer)| layer);
+        let Some(layer) = library.or(store.presets.get(name)) else {
             return Err(DataError::at(
                 ErrorKind::MissingPreset(name.into()),
                 used_at,

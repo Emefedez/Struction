@@ -15,6 +15,7 @@ pub struct DataPlugin {
     root: PathBuf,
     primordials: Vec<String>,
     sections: Vec<String>,
+    libraries: Vec<(String, PathBuf)>,
 }
 
 impl DataPlugin {
@@ -23,7 +24,15 @@ impl DataPlugin {
             root: root.into(),
             primordials: Vec::new(),
             sections: Vec::new(),
+            libraries: Vec::new(),
         }
+    }
+
+    /// A read-only root of definitions the project descends from and may override, such as the
+    /// engine's base definitions.
+    pub fn library(mut self, name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+        self.libraries.push((name.into(), root.into()));
+        self
     }
 
     pub fn primordial(mut self, id: impl Into<String>) -> Self {
@@ -59,6 +68,9 @@ impl Plugin for DataPlugin {
         }
         for name in &self.sections {
             store.allow_section(name.clone());
+        }
+        for (name, root) in &self.libraries {
+            store.add_library(name.clone(), root.clone());
         }
         if let Some(extensors) = app.world().get_resource::<ExtensorRegistry>() {
             store.set_extensors(extensors.clone());
