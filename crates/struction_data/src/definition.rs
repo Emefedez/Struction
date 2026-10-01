@@ -215,7 +215,7 @@ pub(crate) fn is_primordial(id: &str) -> bool {
 #[derive(Debug)]
 pub struct Resolved {
     pub id: String,
-    /// Ancestors, nearest first; the last one is the primordial type.
+    /// Ancestors, the primordial type first; a definition's own path is not part of it.
     pub lineage: Vec<String>,
     /// Extensors in use: named ones first, then those inferred from components or requirements.
     pub extensors: Vec<ExtensorUse>,

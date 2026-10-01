@@ -1,0 +1,8 @@
+// The project's changes to the engine definition terrains/approach; the rest comes from it.
+{
+  "components": {
+    "Look": {
+      "color": [0.800000011920929, 0.3400000035762787, 0.3400000035762787]
+    }
+  }
+}

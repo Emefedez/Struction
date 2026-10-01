@@ -716,8 +716,8 @@ impl<'a> Resolver<'a> {
                     ));
                 }
                 let parent_merged = self.entity(parent, stack)?;
-                let mut lineage = vec![parent.clone()];
-                lineage.extend(parent_merged.lineage.iter().cloned());
+                let mut lineage = parent_merged.lineage.clone();
+                lineage.push(parent.clone());
                 Merged {
                     body: parent_merged.body.clone(),
                     lineage,

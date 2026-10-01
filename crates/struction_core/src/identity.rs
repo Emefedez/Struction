@@ -50,13 +50,13 @@ pub enum IdentityError {
         path: DefinitionPath,
         repeated: DefinitionPath,
     },
-    #[error("lineage of `{path}` ends in `{root}`, which is not a primordial (capitalized) type")]
+    #[error("lineage of `{path}` begins in `{root}`, which is not a primordial (capitalized) type")]
     NotPrimordial {
         path: DefinitionPath,
         root: DefinitionPath,
     },
     #[error(
-        "`{path}` is a primordial type inside the lineage of `{child}`, but only the last entry may be one"
+        "`{path}` is a primordial type inside the lineage of `{child}`, but only the first entry may be one"
     )]
     PrimordialInside {
         child: DefinitionPath,
@@ -71,7 +71,8 @@ pub enum IdentityError {
 #[derive(Component, Clone, PartialEq, Eq, Debug)]
 pub struct Definition {
     pub path: DefinitionPath,
-    /// Ancestors, nearest first (`small_ogre` -> `[minions/ogre, Actor]`).
+    /// Ancestors, the primordial type first (`small_ogre` -> `[Actor, minions/ogre]`), so a chain
+    /// reads from the root down to the definition itself.
     pub lineage: Vec<DefinitionPath>,
 }
 
@@ -89,7 +90,7 @@ impl Definition {
         self.path == *ancestor || self.lineage.contains(ancestor)
     }
 
-    /// Checks the lineage invariants: no repeats and a single primordial root at the end.
+    /// Checks the lineage invariants: no repeats and a single primordial root at the start.
     pub fn validate(&self) -> Result<(), IdentityError> {
         for (i, ancestor) in self.lineage.iter().enumerate() {
             if *ancestor == self.path || self.lineage[..i].contains(ancestor) {
@@ -98,15 +99,14 @@ impl Definition {
                     repeated: ancestor.clone(),
                 });
             }
-            let is_last = i + 1 == self.lineage.len();
-            if ancestor.is_primordial() && !is_last {
+            if ancestor.is_primordial() && i > 0 {
                 return Err(IdentityError::PrimordialInside {
                     child: self.path.clone(),
                     path: ancestor.clone(),
                 });
             }
         }
-        let root = self.lineage.last().unwrap_or(&self.path);
+        let root = self.lineage.first().unwrap_or(&self.path);
         if !root.is_primordial() {
             return Err(IdentityError::NotPrimordial {
                 path: self.path.clone(),

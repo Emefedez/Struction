@@ -248,7 +248,7 @@ fn removing_and_adding_files() {
     assert_eq!(report.changed, ["minions/imp"]);
     assert_eq!(
         p.store.get("minions/imp").unwrap().lineage,
-        ["minions/small_ogre", "minions/ogre", "Actor"]
+        ["Actor", "minions/ogre", "minions/small_ogre"]
     );
 }
 

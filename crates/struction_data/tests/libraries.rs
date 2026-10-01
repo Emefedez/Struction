@@ -46,7 +46,7 @@ fn projects_descend_from_library_definitions() {
     );
     assert_eq!(errors(&store), Vec::<String>::new());
     let chief = store.get("ogres/chief").unwrap();
-    assert_eq!(chief.lineage, ["creatures/ogre", "Actor"]);
+    assert_eq!(chief.lineage, ["Actor", "creatures/ogre"]);
     assert_eq!(chief.component::<Health>().unwrap().max, 10.0);
     assert!(chief.component::<Flammable>().is_some());
     assert_eq!(store.library_of("creatures/ogre"), Some("engine"));

@@ -34,7 +34,10 @@
       "position": [10.5, 0, -5],
       "spawns": {
         "water": { "definition": "regions/water_pool", "offset": [0, -1, 0] },
-        "floor": { "definition": "terrains/pool_floor", "offset": [0, -2.75, 0] },
+        "floor": {
+          "definition": "terrains/pool_floor",
+          "offset": [0, -2.75, 0]
+        },
         "floating_cube": { "definition": "props/floating_cube", "offset": [0, 1, 0] }
       }
     },

@@ -68,7 +68,7 @@ impl AuthoringProject {
                     let parent = self
                         .inspect_definition(&path)
                         .ok()
-                        .and_then(|d| d.lineage.into_iter().find(|ancestor| ancestor != &path))
+                        .and_then(|d| d.lineage.into_iter().filter(|a| a != &path).next_back().map(str::to_string))
                         .or_else(|| {
                             let file = format!("{path}/entity.jsonc");
                             let source = self.session().read(&file).ok()?;

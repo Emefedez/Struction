@@ -31,11 +31,11 @@ fn fixture_project_loads_without_errors() {
 }
 
 #[test]
-fn lineage_is_nearest_ancestor_first() {
+fn lineage_reads_from_the_primordial_type() {
     let (store, _) = open_fixture();
     assert_eq!(
         store.get("minions/small_ogre").unwrap().lineage,
-        ["minions/ogre", "Actor"]
+        ["Actor", "minions/ogre"]
     );
     assert_eq!(store.get("minions/ogre").unwrap().lineage, ["Actor"]);
     assert!(store.get("Actor").unwrap().lineage.is_empty());
@@ -195,7 +195,7 @@ fn spawn_overrides_apply_over_the_definition() {
     let transform = instance.component::<Transform>().unwrap();
     assert_eq!(transform.translation, Vec3::new(4.0, 0.0, 6.0));
     assert_eq!(transform.scale, Vec3::splat(0.75));
-    assert_eq!(instance.lineage, ["minions/ogre", "Actor"]);
+    assert_eq!(instance.lineage, ["Actor", "minions/ogre"]);
     // The definition itself is untouched.
     assert_eq!(
         store

@@ -108,7 +108,7 @@ impl AuthoringProject {
                 files: vec![],
             });
         }
-        let parent_names = resolved.lineage.first().is_some_and(|parent| {
+        let parent_names = resolved.lineage.last().is_some_and(|parent| {
             store.get(parent).is_some_and(|p| {
                 p.extensors
                     .iter()

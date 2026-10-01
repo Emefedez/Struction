@@ -1,0 +1,4 @@
+// The project's changes to the engine definition characters/sentry; the rest comes from it.
+{
+  "extensors": ["dodge"]
+}
