@@ -197,11 +197,10 @@ impl AuthoringProject {
     }
 
     pub fn schema(&self) -> Value {
-        let types = self.preview.world().resource::<AppTypeRegistry>().read();
-        self.preview
-            .world()
-            .resource::<DefinitionStore>()
-            .schema(&types)
+        let world = self.preview.world();
+        let types = world.resource::<AppTypeRegistry>().read();
+        let actions = world.resource::<ActionRegistry>();
+        world.resource::<DefinitionStore>().schema(&types, actions)
     }
     pub fn actions(&self) -> Vec<struction_core::ActionDescriptor> {
         self.preview

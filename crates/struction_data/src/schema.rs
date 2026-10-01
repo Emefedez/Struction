@@ -25,6 +25,8 @@ pub struct SchemaOptions {
     pub extensors: Vec<(String, String)>,
     /// States extensors contribute, offered as `states` keys.
     pub states: Vec<String>,
+    /// Registered actions with their descriptions, offered wherever an action is named.
+    pub actions: Vec<(String, String)>,
 }
 
 impl Default for SchemaOptions {
@@ -35,6 +37,7 @@ impl Default for SchemaOptions {
             extra_sections: DEFAULT_EXTRA_SECTIONS.map(String::from).into(),
             extensors: Vec::new(),
             states: Vec::new(),
+            actions: Vec::new(),
         }
     }
 }
@@ -144,15 +147,65 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
                 "type": "object",
                 "properties": {
                     "enable": components,
-                    "disable": { "type": "array", "items": { "type": "string" } },
+                    "disable": { "type": "array", "items": { "type": "string" },
+                        "description": "Component names to disable while the state holds." },
                 },
                 "additionalProperties": false,
             },
         }),
     );
     properties.insert("constraints".into(), json!({ "type": "array" }));
-    properties.insert("reactions".into(), json!({ "type": "array" }));
+
+    // A reaction names two actions and hooks on one of them, so every name is an enum of the
+    // registered actions rather than a free string.
+    let action = string_or_enum(&names(&options.actions));
+    let action_docs = descriptions(&options.actions);
+    let reaction = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["call"],
+        "properties": {
+            "source": { "type": "string", "enum": ["this", "master", "wards"],
+                "default": "this",
+                "description": "Who the hook watches: this definition, its master, or its wards." },
+            "after": with_docs(action.clone(), &action_docs,
+                "Call after this action has run on the source."),
+            "before": with_docs(action.clone(), &action_docs,
+                "Call before this action runs on the source."),
+            "call": with_docs(action.clone(), &action_docs, "The action to call."),
+            "args": { "type": "object",
+                "description": "Arguments for `call`, by parameter name." },
+        },
+        "oneOf": [{ "required": ["after"] }, { "required": ["before"] }],
+        "description": "Give only one of `after` and `before`; `call` says what runs.",
+    });
+    properties.insert(
+        "reactions".into(),
+        json!({ "type": "array", "items": reaction }),
+    );
+
+    let definitions = options.definitions.clone();
+    let grant = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["to"],
+        "properties": {
+            "to": { "type": "string", "enum": definitions,
+                "description": "Wards matching this definition, which receive the grant." },
+            "components": components,
+            "actions": { "type": "array",
+                "items": with_docs(action.clone(), &action_docs, "Action names the wards gain.") },
+        },
+        "description": "Capabilities this master grants to the wards named by `to`.",
+    });
+    properties.insert(
+        "grantsToWards".into(),
+        json!({ "type": "array", "items": grant }),
+    );
     for section in &options.extra_sections {
+        if properties.contains_key(section) {
+            continue;
+        }
         properties.insert(section.clone(), json!({}));
     }
 
@@ -330,6 +383,29 @@ impl Generator<'_> {
             },
         }
     }
+}
+
+/// A value schema carrying the same documentation as the values it allows, so a completion or a
+/// hover over one of them explains where it comes from.
+fn with_docs(mut schema: Value, docs: &[String], description: &str) -> Value {
+    if let Some(object) = schema.as_object_mut() {
+        object.insert(
+            "enumDescriptions".into(),
+            Value::Array(docs.iter().cloned().map(Value::String).collect()),
+        );
+        object.insert("description".into(), json!(description));
+    }
+    schema
+}
+
+/// Descriptions in the order of the names they belong to, which keeps both arrays aligned for
+/// `enumDescriptions`.
+fn descriptions(options: &[(String, String)]) -> Vec<String> {
+    options.iter().map(|(_, doc)| doc.clone()).collect()
+}
+
+fn names(options: &[(String, String)]) -> Vec<String> {
+    options.iter().map(|(name, _)| name.clone()).collect()
 }
 
 fn tuple_schema(items: Vec<Value>) -> Value {

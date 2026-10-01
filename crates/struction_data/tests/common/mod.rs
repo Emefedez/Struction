@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 use bevy::reflect::TypeRegistry;
+use struction_core::{ActionCall, ActionMeta, ActionRegistry};
 
 /// Hit points of a living thing.
 #[derive(Component, Reflect, Default, Debug, PartialEq)]
@@ -104,6 +105,21 @@ pub fn registry() -> TypeRegistry {
     registry.register::<Plain>();
     registry.register::<Transform>();
     registry
+}
+
+/// The actions the fixtures author against, with the documentation a schema completion shows.
+pub fn actions(names: &[(&str, &str)]) -> ActionRegistry {
+    let mut world = World::new();
+    for (name, doc) in names {
+        let action = *name;
+        ActionRegistry::register(
+            &mut world,
+            ActionMeta::new(action).doc(*doc),
+            move |_call: In<ActionCall>| {},
+        )
+        .unwrap();
+    }
+    world.remove_resource::<ActionRegistry>().unwrap()
 }
 
 pub fn fixture_project() -> PathBuf {

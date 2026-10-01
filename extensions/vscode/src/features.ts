@@ -41,6 +41,27 @@ function markdown(text: string): string {
   return text.replace(/[\\`*_{}\[\]()<>#!|]/g, '\\$&');
 }
 
+/** Case-insensitive edit distance, used only to suggest the nearest registered value. */
+function distance(a: string, b: string): number {
+  const left = [...a.toLowerCase()];
+  const right = [...b.toLowerCase()];
+  // Row i is a prefix of `left`, column j a prefix of `right`, so cell (i, j) compares
+  // `left[i - 1]` with `right[j - 1]`.
+  let row: number[] = Array.from({ length: right.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= left.length; i++) {
+    // Column 0 of the previous row is read before it becomes this row's.
+    let diagonal = row[0];
+    row[0] = i;
+    for (let j = 1; j <= right.length; j++) {
+      const above = row[j];
+      row[j] = Math.min(above + 1, row[j - 1] + 1,
+        diagonal + (left[i - 1] === right[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return row[right.length];
+}
+
 export function describeDefinition(definition: Definition): string {
   const extensors = definition.extensors.map(e => {
     const why = Object.entries(e.reason).map(([kind, value]) => `${kind.replaceAll('_', ' ')} ${value}`).join(', ');
@@ -117,6 +138,49 @@ export class Features {
     return owner ? `Package: ${owner.name}. ${owner.doc}` : undefined;
   }
 
+  /** The values the schema allows at `path`: a numeric step is an array index, so its items. */
+  private optionsAt(schema: JSONSchema, path: (string | number)[]): string[] {
+    let node: unknown = schema;
+    for (const step of path) {
+      node = this.step(node, step);
+      if (node === undefined) return [];
+    }
+    const options = (node as { enum?: unknown } | undefined)?.enum;
+    return Array.isArray(options) ? options.filter((option): option is string => typeof option === 'string') : [];
+  }
+
+  /** One step down the schema: a property name, or an array's items for an index. */
+  private step(section: unknown, key: string | number): unknown {
+    if (!section || typeof section !== 'object') return undefined;
+    const object = section as Record<string, unknown>;
+    if (typeof key === 'number') return object.items;
+    const property = object.properties;
+    if (property && typeof property === 'object') {
+      const named = (property as Record<string, unknown>)[key];
+      if (named !== undefined) return named;
+    }
+    // A named entry holding the array: `{"spawns": {"additionalProperties": <item>}}`.
+    if (typeof object.additionalProperties === 'object') return object.additionalProperties;
+    return undefined;
+  }
+
+  /** Whether a value is one the schema allows; an empty option set means the field is open. */
+  private accepted(schema: JSONSchema, value: string, path: (string | number)[]): boolean {
+    const options = this.optionsAt(schema, path);
+    return options.length === 0 || options.includes(value);
+  }
+
+  /** The nearest registered value, so a typo reads as the one it was meant to be. */
+  private suggestion(value: string, options: string[]): string {
+    const nearest = options
+      .map(option => ({ option, distance: distance(value, option) }))
+      .sort((a, b) => a.distance - b.distance)[0];
+    const { option, distance: cost } = nearest;
+    return cost <= Math.max(2, Math.floor(option.length / 3))
+      ? `“${option}” is not a registered value.`
+      : 'Not a registered value.';
+  }
+
   private parse(file: string, document: TextDocument): JSONDocument {
     const json = this.service(file).parseJSONDocument(document);
     // Runtime registrations take precedence over stale or remote $schema links in sources.
@@ -165,6 +229,15 @@ export class Features {
         if (action) text += `\n\n**${markdown(action.name)}**: ${markdown(action.doc)}\n\n` +
           `Parameters: ${action.params.map(p => `${markdown(p.name)}: ${p.type}${p.required ? ' (required)' : ` = ${markdown(JSON.stringify(p.default))}`}`).join(', ') || 'none'}.\n\n` +
           `Requires: ${action.requires.map(markdown).join(', ') || 'none'}.`;
+      }
+      // A value the engine rejects still names what it should have been: the schema knows the
+      // options, so say them instead of leaving the field unexplained.
+      const schema = this.schema(file);
+      if (text.trim() && !this.accepted(schema, node.value, path)) {
+        const options = this.optionsAt(schema, path);
+        if (options.length) {
+          text += `\n\n${this.suggestion(node.value, options)}\n\nOptions: ${options.map(markdown).join(', ')}.`;
+        }
       }
     }
     if (key && path.at(-2) === 'states') {

@@ -10,7 +10,8 @@ use bevy::prelude::{AppTypeRegistry, *};
 use bevy::reflect::TypePath;
 use serde_json::{Value, json};
 use struction_core::{
-    ActionAppExt, ActionCall, ActionMeta, CorePlugin, ExtensorAppExt, ExtensorMeta, ParamType,
+    ActionAppExt, ActionCall, ActionMeta, ActionRegistry, CorePlugin, ExtensorAppExt, ExtensorMeta,
+    ParamType,
 };
 use struction_data::{DataPlugin, DefinitionStore};
 use struction_editor::AuthoringProject;
@@ -497,7 +498,8 @@ fn the_scene_schema_advertises_exactly_what_the_world_reads() {
     let world = fixture.project.preview();
     let types = world.resource::<AppTypeRegistry>().read();
     let store = world.resource::<DefinitionStore>();
-    let definition_schema = store.schema(&types);
+    let actions = world.resource::<ActionRegistry>();
+    let definition_schema = store.schema(&types, actions);
     let scene = struction_language::scene_schema(store, &definition_schema);
     assert_eq!(
         scene["$defs"]["definition"], definition_schema,

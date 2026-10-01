@@ -3,7 +3,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::*;
-use struction_core::{ExtensorMeta, ExtensorRegistry};
+use struction_core::{ActionRegistry, ExtensorMeta, ExtensorRegistry};
 use struction_data::{
     DefinitionStore, DroppedExtensor, ExtensorReason, ExtensorUse, Suggestion, parse_jsonc,
 };
@@ -228,7 +228,7 @@ fn changing_extensors_counts_as_changed_data() {
 #[test]
 fn the_schema_offers_registered_extensors() {
     let store = load(&[]);
-    let schema = store.schema(&registry());
+    let schema = store.schema(&registry(), &ActionRegistry::default());
     let items = &schema["properties"]["extensors"]["items"]["oneOf"];
     assert!(
         items

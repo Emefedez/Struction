@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use bevy::prelude::Resource;
 use bevy::reflect::TypeRegistry;
-use struction_core::ExtensorRegistry;
+use struction_core::{ActionRegistry, ExtensorRegistry};
 
 use crate::build::{Builder, ComponentValue};
 use crate::definition::{
@@ -269,8 +269,9 @@ impl DefinitionStore {
     }
 
     /// The entity-file schema for this project: component types from `registry`, this project's
-    /// definitions and presets as completions for `descendsFrom` and `presets`.
-    pub fn schema(&self, registry: &TypeRegistry) -> serde_json::Value {
+    /// definitions and presets as completions for `descendsFrom` and `presets`, and the registered
+    /// actions wherever a reaction or a grant names one.
+    pub fn schema(&self, registry: &TypeRegistry, actions: &ActionRegistry) -> serde_json::Value {
         let definitions = self.ids().into_iter().collect();
         crate::schema::entity_schema(
             registry,
@@ -284,13 +285,23 @@ impl DefinitionStore {
                     .map(|e| (e.name.clone(), e.doc.clone()))
                     .collect(),
                 states: self.extensors.states().map(str::to_owned).collect(),
+                actions: actions
+                    .descriptors()
+                    .iter()
+                    .map(|action| (action.name.clone(), action.doc.clone()))
+                    .collect(),
             },
         )
     }
 
     /// Writes [`Self::schema`] to `path`; entity files point at it with `"$schema"`.
-    pub fn write_schema(&self, registry: &TypeRegistry, path: &Path) -> std::io::Result<()> {
-        let text = serde_json::to_string_pretty(&self.schema(registry))?;
+    pub fn write_schema(
+        &self,
+        registry: &TypeRegistry,
+        actions: &ActionRegistry,
+        path: &Path,
+    ) -> std::io::Result<()> {
+        let text = serde_json::to_string_pretty(&self.schema(registry, actions))?;
         fs::write(path, text + "\n")
     }
 

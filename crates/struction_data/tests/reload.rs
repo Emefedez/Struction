@@ -5,6 +5,7 @@ use std::path::Path;
 
 use bevy::prelude::*;
 use common::*;
+use struction_core::ActionRegistry;
 use struction_data::{DataPlugin, DefinitionStore, DefinitionsChanged, reload_definition_file};
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -295,7 +296,7 @@ fn unrelated_files_are_ignored() {
 #[test]
 fn schema_reflects_the_project() {
     let p = Project::open();
-    let schema = p.store.schema(&p.registry);
+    let schema = p.store.schema(&p.registry, &ActionRegistry::default());
     let defs: Vec<_> = schema["properties"]["descendsFrom"]["enum"]
         .as_array()
         .unwrap()

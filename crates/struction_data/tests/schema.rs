@@ -187,6 +187,76 @@ fn transform_is_offered_as_its_own_section() {
 }
 
 #[test]
+fn the_schema_offers_the_registered_actions_wherever_one_is_named() {
+    let registry = registry();
+    let mut store = DefinitionStore::new(fixture_project());
+    store.declare_primordial("Terrain");
+    store.load(&registry);
+    let actions = actions(&[("guards/ogre/die", "Die"), ("minions/ogre/hurt", "Hurt")]);
+    let schema = store.schema(&registry, &actions);
+    let reaction = &schema["properties"]["reactions"]["items"];
+    let grant = &schema["properties"]["grantsToWards"]["items"];
+
+    assert_eq!(
+        reaction["properties"]["call"]["enum"],
+        json!(["guards/ogre/die", "minions/ogre/hurt"])
+    );
+    assert_eq!(
+        reaction["properties"]["after"]["enum"],
+        json!(["guards/ogre/die", "minions/ogre/hurt"])
+    );
+    assert_eq!(
+        reaction["properties"]["before"]["enum"],
+        json!(["guards/ogre/die", "minions/ogre/hurt"])
+    );
+    // A completion or hover over a name says which action it is.
+    assert_eq!(
+        reaction["properties"]["call"]["enumDescriptions"],
+        json!(["Die", "Hurt"])
+    );
+    assert_eq!(
+        reaction["properties"]["source"]["enum"],
+        json!(["this", "master", "wards"])
+    );
+    assert_eq!(reaction["required"], json!(["call"]));
+    // Exactly one hook, as `reactions_from_node` requires.
+    assert_eq!(
+        reaction["oneOf"],
+        json!([{ "required": ["after"] }, { "required": ["before"] }])
+    );
+    // A grant names the wards by lineage, so it offers every definition.
+    assert_eq!(
+        grant["properties"]["to"]["enum"],
+        json!([
+            "Actor",
+            "Terrain",
+            "minions/ogre",
+            "minions/ogre_lord",
+            "minions/small_ogre",
+            "world/lava_pool"
+        ])
+    );
+    assert_eq!(
+        grant["properties"]["actions"]["items"]["enum"],
+        json!(["guards/ogre/die", "minions/ogre/hurt"])
+    );
+    assert_eq!(grant["required"], json!(["to"]));
+    // A grant hands over components, so it offers the same component names as `components`.
+    assert_eq!(
+        grant["properties"]["components"]["properties"]
+            .as_object()
+            .map(|components| components.len()),
+        schema["properties"]["components"]["properties"]
+            .as_object()
+            .map(|c| c.len())
+    );
+    assert!(schema["properties"]["states"]["additionalProperties"]["properties"]["disable"]
+        ["description"]
+        .as_str()
+        .is_some_and(|text| text.contains("Component names")));
+}
+
+#[test]
 fn project_schema_lists_definitions_and_is_written_as_json() {
     let registry = registry();
     let mut store = DefinitionStore::new(fixture_project());
@@ -194,10 +264,11 @@ fn project_schema_lists_definitions_and_is_written_as_json() {
     store.load(&registry);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("schema.json");
-    store.write_schema(&registry, &path).unwrap();
+    let actions = actions(&[("guards/ogre/die", "Die")]);
+    store.write_schema(&registry, &actions, &path).unwrap();
 
     let written: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(written, store.schema(&registry));
+    assert_eq!(written, store.schema(&registry, &actions));
     assert_eq!(
         written["properties"]["descendsFrom"]["enum"],
         json!([

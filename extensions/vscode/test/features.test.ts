@@ -20,14 +20,37 @@ const schema: JSONSchema = {
       Health: { anyOf: [{ $ref: '#/$defs/Health' }, { type: 'null' }], description: 'Object of fields, or null to remove the inherited component.' },
       Armor: { anyOf: [{ $ref: '#/$defs/Armor' }, { type: 'null' }] },
     }, additionalProperties: false },
-    states: { type: 'object', propertyNames: { type: 'string', enum: ['Rolling', 'Guarded'] } },
-    reactions: { type: 'object', properties: {
-      wards: { type: 'object', properties: {
-        after: { type: 'array', items: { type: 'string' } },
-        call: { type: 'string' },
-      } },
+    states: { type: 'object', propertyNames: { type: 'string', enum: ['Rolling', 'Guarded'] },
+      additionalProperties: { type: 'object', properties: {
+        disable: { type: 'array', items: { type: 'string' },
+          description: 'Component names to disable while the state holds.' },
+      } } },
+    reactions: { type: 'array', items: {
+      type: 'object', additionalProperties: false, required: ['call'],
+      properties: {
+        source: { type: 'string', enum: ['this', 'master', 'wards'], default: 'this',
+          description: 'Who the hook watches: this definition, its master, or its wards.' },
+        after: { type: 'string', enum: ['hurt', 'heal'], enumDescriptions: ['Lose hit points', 'Regain hit points'],
+          description: 'Call after this action has run on the source.' },
+        before: { type: 'string', enum: ['hurt', 'heal'], enumDescriptions: ['Lose hit points', 'Regain hit points'],
+          description: 'Call before this action runs on the source.' },
+        call: { type: 'string', enum: ['hurt', 'heal'], enumDescriptions: ['Lose hit points', 'Regain hit points'],
+          description: 'The action to call.' },
+        args: { type: 'object', description: 'Arguments for `call`, by parameter name.' },
+      },
+      oneOf: [{ required: ['after'] }, { required: ['before'] }],
     } },
-    grantsToWards: { type: 'array', items: { type: 'object', properties: { to: { type: 'string' } } } },
+    grantsToWards: { type: 'array', items: {
+      type: 'object', additionalProperties: false, required: ['to'],
+      properties: {
+        to: { type: 'string', enum: ['Actor', 'characters/humanoid', 'guards/ogre'],
+          description: 'Wards matching this definition, which receive the grant.' },
+        components: { type: 'object' },
+        actions: { type: 'array', items: { type: 'string', enum: ['hurt', 'heal'],
+          enumDescriptions: ['Lose hit points', 'Regain hit points'] },
+          description: 'Action names the wards gain.' },
+      },
+    } },
   },
   additionalProperties: false,
   $defs: {
@@ -119,12 +142,15 @@ const snapshot: Snapshot = {
 const features = new Features(snapshot);
 const ENTITY = 'guards/ogre/entity.jsonc';
 
-/** Positions are found by their surrounding text so a fixture edit cannot shift a cursor silently. */
+/**
+ * Positions are found by their surrounding text so a fixture edit cannot shift a cursor silently.
+ * A quoted marker puts the cursor inside the token, which is where the editor's hover lands.
+ */
 function at(file: string, text: string, marker: string) {
   const document = features.document(`file:///project/${file}`, text);
-  const offset = text.indexOf(marker);
-  assert.notEqual(offset, -1, `no ${marker} in the fixture`);
-  return { document, position: document.positionAt(offset) };
+  const start = text.indexOf(marker);
+  assert.notEqual(start, -1, `no ${marker} in the fixture`);
+  return { document, position: document.positionAt(start + (marker.startsWith('"') ? 1 : 0)) };
 }
 
 async function hover(file: string, text: string, marker: string): Promise<string> {
@@ -198,7 +224,7 @@ test('hovers the state an extensor contributes', async () => {
 });
 
 test('hovers an action call with its parameters', async () => {
-  const text = '{\n  "reactions": {\n    "wards": { "after": ["hurt"], "call": "hurt" }\n  }\n}\n';
+  const text = '{\n  "reactions": [\n    { "source": "wards", "after": "hurt", "call": "hurt" }\n  ]\n}\n';
   const shown = await hoverValue(ENTITY, text, '"call":');
   assert.match(shown, /Lose hit points/);
   assert.match(shown, /by: entity \(required\)/);
@@ -257,6 +283,72 @@ test('explains scene fields on hover', async () => {
   assert.match(await hover(scene, definition, '"guards/ogre"'), /Definition this spawn instantiates/);
   const overrides = '{\n  "spawnerList": { "guards": { "spawns": { "ogre": { "overrides": { "descendsFrom": "Actor" } } } } }\n}\n';
   assert.match(await hover(scene, overrides, '"descendsFrom"'), /Inherits this definition/);
+});
+
+test('completes every field a reaction accepts', async () => {
+  const keys = '{\n  "reactions": [{ "": {} }]\n}\n';
+  assert.deepEqual((await labels(ENTITY, keys, '""')).sort(),
+    ['after', 'args', 'before', 'call', 'source']);
+  const source = '{\n  "reactions": [{ "source": "" }]\n}\n';
+  assert.deepEqual(await labels(ENTITY, source, '""'), ['"this"', '"master"', '"wards"']);
+  const call = '{\n  "reactions": [{ "call": "" }]\n}\n';
+  assert.deepEqual(await labels(ENTITY, call, '""'), ['"hurt"', '"heal"']);
+});
+
+test('completes every field a grant accepts', async () => {
+  const keys = '{\n  "grantsToWards": [{ "": {} }]\n}\n';
+  assert.deepEqual((await labels(ENTITY, keys, '""')).sort(), ['actions', 'components', 'to']);
+  const to = '{\n  "grantsToWards": [{ "to": "" }]\n}\n';
+  assert.deepEqual(await labels(ENTITY, to, '""'), ['"Actor"', '"characters/humanoid"', '"guards/ogre"']);
+  const actions = '{\n  "grantsToWards": [{ "actions": [""] }]\n}\n';
+  assert.deepEqual(await labels(ENTITY, actions, '""'), ['"hurt"', '"heal"']);
+});
+
+test('reports what a reaction and a grant left out', async () => {
+  assert.deepEqual(await problems(ENTITY, '{"reactions":[{"call":"hurt","after":"hurt"}]}'), []);
+  assert.match((await problems(ENTITY, '{"reactions":[{"after":"hurt"}]}')).join('\n'), /call/);
+  // Exactly one hook: naming both is refused, as `reactions_from_node` refuses it too.
+  assert.notDeepEqual(
+    await problems(ENTITY, '{"reactions":[{"after":"hurt","before":"hurt","call":"hurt"}]}'), []);
+  assert.match((await problems(ENTITY, '{"reactions":[{"nope":1,"call":"hurt","after":"hurt"}]}')).join('\n'), /nope/);
+  assert.deepEqual(await problems(ENTITY, '{"grantsToWards":[{"to":"guards/ogre"}]}'), []);
+  assert.match((await problems(ENTITY, '{"grantsToWards":[{"components":{}}]}')).join('\n'), /to/);
+  assert.match((await problems(ENTITY, '{"grantsToWards":[{"to":"nope","nope":1}]}')).join('\n'), /nope/);
+});
+
+test('explains a reaction field and the action it names', async () => {
+  const source = '{\n  "reactions": [{ "source": "wards" }]\n}\n';
+  assert.match(await hover(ENTITY, source, '"source"'), /this definition, its master, or its wards/);
+  const call = '{\n  "reactions": [{ "call": "hurt" }]\n}\n';
+  const shown = await hoverValue(ENTITY, call, '"call":');
+  assert.match(shown, /The action to call/);
+  assert.match(shown, /Lose hit points/);
+  // The schema's own enum documentation names the value under the cursor.
+  const other = '{\n  "reactions": [{ "call": "heal" }]\n}\n';
+  assert.match(await hoverValue(ENTITY, other, '"call":'), /Regain hit points/);
+  const grant = '{\n  "grantsToWards": [{ "to": "guards/ogre" }]\n}\n';
+  assert.match(await hoverValue(ENTITY, grant, '"to":'), /Wards matching this definition/);
+  const disable = '{\n  "states": { "Guarded": { "disable": ["Armor"] } }\n}\n';
+  assert.match(await hover(ENTITY, disable, '"disable"'), /Component names to disable/);
+});
+
+test('lists the options of a field whose value the engine rejects', async () => {
+  const call = '{\n  "reactions": [{ "call": "hur" }]\n}\n';
+  assert.match(await hoverValue(ENTITY, call, '"call":'), /“hurt” is not a registered value/);
+  assert.match(await hoverValue(ENTITY, call, '"call":'), /Options: hurt, heal\./);
+  // A source the engine does not accept, likewise.
+  const source = '{\n  "reactions": [{ "source": "everyone" }]\n}\n';
+  const shown = await hoverValue(ENTITY, source, '"source":');
+  assert.match(shown, /Options: this, master, wards/);
+  // Nothing to suggest when the value is not near any option.
+  const far = '{\n  "reactions": [{ "call": "zzzzzzzz" }]\n}\n';
+  assert.match(await hoverValue(ENTITY, far, '"call":'), /Not a registered value\./);
+  // A field without a closed set is left alone.
+  const open = '{\n  "reactions": [{ "args": { "amount": 1 } }]\n}\n';
+  assert.equal(await hover(ENTITY, open, '"amount"'), '');
+  // An accepted value is not questioned.
+  assert.doesNotMatch(await hoverValue(ENTITY, '{\n  "reactions": [{ "call": "hurt" }]\n}\n', '"call":'),
+    /not a registered value/);
 });
 
 test('keeps scene files free of entity schema errors', async () => {

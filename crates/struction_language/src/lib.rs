@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use bevy::prelude::AppTypeRegistry;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use struction_core::Participation;
+use struction_core::{ActionRegistry, Participation};
 use struction_data::DefinitionStore;
 use struction_editor::{AuthoringProject, Diagnostic, ExtensorEntry, SessionError, protocol};
 
@@ -149,7 +149,8 @@ pub fn analyze(
             })
         })
         .collect();
-    let schema = store.schema(&types);
+    let actions = world.resource::<ActionRegistry>();
+    let schema = store.schema(&types, actions);
     let scene_schema = scene_schema(&store, &schema);
     drop(types);
     let actions = protocol::execute(
