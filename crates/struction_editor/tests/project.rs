@@ -739,3 +739,89 @@ fn protocol_adds_and_removes_extensors() {
     let refused = run(json!({"op":"remove_extensor", "path":"Actor", "extensor":"living"}));
     assert!(!refused.ok);
 }
+
+/// A project over a library whose `Creature` names the opt-in `armor` with tuning.
+fn library_project() -> (tempfile::TempDir, tempfile::TempDir, AuthoringProject) {
+    let library = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(library.path().join("Creature")).unwrap();
+    std::fs::write(
+        library.path().join("Creature/entity.jsonc"),
+        r#"{ "extensors": ["armor"], "components": { "Health": { "current": 5, "max": 5 }, "Armor": { "rating": 2 } } }"#,
+    )
+    .unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join("scenes")).unwrap();
+    let root = library.path().to_owned();
+    let opened = AuthoringProject::open(project.path(), move |dir: &Path| {
+        let mut app = App::new();
+        app.add_plugins((
+            CorePlugin { seed: 7 },
+            DataPlugin::new(dir).library("engine", &root),
+            WorldPlugin::default(),
+        ))
+        .register_type::<Health>()
+        .register_type::<Armor>()
+        .register_extensor(ExtensorMeta::inferred("living").owns::<Health>())
+        .register_extensor(
+            ExtensorMeta::opt_in("armor")
+                .supplies::<Armor>()
+                .requires("living"),
+        );
+        app
+    })
+    .unwrap();
+    (library, project, opened)
+}
+
+#[test]
+fn editing_a_library_definition_creates_a_project_override() {
+    let (library, dir, mut project) = library_project();
+    let engine_source =
+        std::fs::read_to_string(library.path().join("Creature/entity.jsonc")).unwrap();
+    let inspected = project.inspect_definition("Creature").unwrap();
+    assert_eq!(inspected.library.as_deref(), Some("engine"));
+    assert!(!inspected.overridden);
+
+    project
+        .edit(set(
+            "Creature/entity.jsonc",
+            &["components", "Health", "max"],
+            json!(9),
+        ))
+        .unwrap();
+    let inspected = project.inspect_definition("Creature").unwrap();
+    assert!(inspected.overridden);
+    assert_eq!(inspected.components[Health::type_path()]["max"], 9.0);
+    assert_eq!(inspected.components[Health::type_path()]["current"], 5.0);
+    let override_source =
+        std::fs::read_to_string(dir.path().join("Creature/entity.jsonc")).unwrap();
+    assert!(
+        override_source.contains("engine definition Creature"),
+        "{override_source}"
+    );
+
+    // Removing an extensor the library names drops it in the override.
+    project.remove_extensor("Creature", "armor").unwrap();
+    let override_source =
+        std::fs::read_to_string(dir.path().join("Creature/entity.jsonc")).unwrap();
+    assert!(override_source.contains(r#""-armor""#), "{override_source}");
+    assert!(armor_of(&project, "Creature").is_none());
+
+    // A failed edit of a library definition leaves no override behind, and the library is untouched.
+    std::fs::remove_file(dir.path().join("Creature/entity.jsonc")).unwrap();
+    project.refresh().unwrap();
+    assert!(
+        project
+            .edit(set(
+                "Creature/entity.jsonc",
+                &["components", "Health", "max"],
+                json!("lots")
+            ))
+            .is_err()
+    );
+    assert!(!dir.path().join("Creature/entity.jsonc").exists());
+    assert_eq!(
+        std::fs::read_to_string(library.path().join("Creature/entity.jsonc")).unwrap(),
+        engine_source
+    );
+}

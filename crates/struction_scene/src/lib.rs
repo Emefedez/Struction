@@ -3,17 +3,23 @@
 //!
 //! A project's definitions and scenes are loaded by `struction_data` and spawned by
 //! `struction_world`; saved edits reach the running world through live reload. [`Shape`] is an
-//! entity's geometry (a box or sphere that is also its collider, or an animated humanoid) and
-//! [`Look`] how it is drawn. Everything here is headless; the `render` feature adds
-//! [`render::SceneRenderPlugin`], which draws shapes and looks, dresses humanoids with their
-//! models and fades surfaces that hide the player.
+//! entity's geometry (a box or sphere that is also its collider, or an animated rig) and [`Look`]
+//! how it is drawn. Everything here is headless; the `render` feature adds
+//! [`render::SceneRenderPlugin`], which draws shapes and looks, dresses rigs with their models and
+//! fades surfaces that hide the player.
+//!
+//! The engine's base definitions (actors, terrain, gravity, props, regions, characters) ship in
+//! `content/definitions` and load as the read-only `engine` library every project descends from
+//! and may override; their models are under `content/assets`, the `engine://` asset source.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use bevy::{
     ecs::{lifecycle::HookContext, world::DeferredWorld},
     prelude::*,
 };
+use struction_anim::{humanoid, rig::Rig};
 use struction_core::CorePlugin;
 use struction_data::DataPlugin;
 use struction_physics::avian3d::prelude::*;
@@ -21,6 +27,16 @@ use struction_world::{LiveReloadPlugin, LiveReloaded, WorldPlugin, WorldSet};
 
 #[cfg(feature = "render")]
 pub mod render;
+
+/// The engine's base definitions, loaded as the `engine` library.
+pub fn engine_definitions() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("content/definitions")
+}
+
+/// The engine's models and other assets, the `engine://` asset source.
+pub fn engine_assets() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("content/assets")
+}
 
 /// What an authored entity looks like, in meters. Boxes and spheres are also its collider when
 /// it has a `RigidBody`; the rendered host draws them with its [`Look`].
@@ -34,11 +50,12 @@ pub enum Shape {
     Sphere {
         radius: f32,
     },
-    /// A procedurally animated humanoid rig following the entity's character body (which brings
-    /// its own collider). `model` is a source under `assets/` (such as a `.blend`) whose pieces,
-    /// named `<joint>.<piece>`, ride on the rig's joints; without one, the rig is drawn with
-    /// simple shapes.
-    Humanoid {
+    /// A procedurally animated skeleton following the entity's character body (which brings its
+    /// own collider). `rig` names a skeleton in [`Rigs`] (`humanoid`). `model` is an asset source
+    /// (such as `engine://models/blood_knight.blend`) whose pieces, named `<joint>.<piece>`, ride
+    /// on the rig's joints; without one, the rig is drawn with simple shapes.
+    Rigged {
+        rig: String,
         model: Option<String>,
     },
 }
@@ -48,8 +65,36 @@ impl Shape {
         match *self {
             Self::Box { size } => Some(Collider::cuboid(size.x, size.y, size.z)),
             Self::Sphere { radius } => Some(Collider::sphere(radius)),
-            Self::Humanoid { .. } => None,
+            Self::Rigged { .. } => None,
         }
+    }
+}
+
+/// Skeletons rigged shapes can name, each with the rest pose its models are built around.
+#[derive(Resource)]
+pub struct Rigs(BTreeMap<String, fn() -> Rig>);
+
+impl Default for Rigs {
+    fn default() -> Self {
+        Self(BTreeMap::from([(
+            "humanoid".to_owned(),
+            humanoid::rig as fn() -> Rig,
+        )]))
+    }
+}
+
+impl Rigs {
+    pub fn register(&mut self, name: impl Into<String>, rig: fn() -> Rig) -> &mut Self {
+        self.0.insert(name.into(), rig);
+        self
+    }
+
+    pub fn build(&self, name: &str) -> Option<Rig> {
+        self.0.get(name).map(|rig| rig())
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
     }
 }
 
@@ -128,9 +173,9 @@ pub enum Finish {
     Water,
 }
 
-/// Loads the project at `root` and spawns its scenes, with every engine package its definitions
-/// can name (the `dodge` and `combat` moves included). Needs the physics and character
-/// controller plugins.
+/// Loads the project at `root`, over the engine's base definitions, and spawns its scenes, with
+/// every engine package its definitions can name (the `dodge` and `combat` moves included).
+/// Needs the physics and character controller plugins.
 pub struct ScenePlugin {
     pub root: PathBuf,
 }
@@ -141,10 +186,11 @@ impl Plugin for ScenePlugin {
             CorePlugin::default(),
             struction_character::DodgePlugin,
             struction_character::CombatPlugin,
-            DataPlugin::new(&self.root),
+            DataPlugin::new(&self.root).library("engine", engine_definitions()),
             WorldPlugin::default(),
             LiveReloadPlugin::default(),
         ))
+        .init_resource::<Rigs>()
         .add_systems(Update, refresh_shape_colliders)
         .add_systems(First, place_reloaded_bodies.after(WorldSet::Reload))
         // Avian does not register these for reflection.

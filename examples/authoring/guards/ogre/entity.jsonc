@@ -1,6 +1,6 @@
 // Inherits current health; overrides the maximum and visual scale.
 {
-  "descendsFrom": "Actor",
+  "descendsFrom": "Creature",
   "transform": { "scale": [1.5, 1.5, 1.5] },
   "components": {
     "Health": { "max": 60 }

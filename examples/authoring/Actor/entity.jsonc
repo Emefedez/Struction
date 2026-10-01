@@ -1,6 +1,0 @@
-// The example host registers Health and declares Actor as primordial.
-{
-  "components": {
-    "Health": { "current": 50, "max": 100 }
-  }
-}

@@ -12,7 +12,6 @@ workspace = true
 # Draw shapes and looks, dress humanoids with their models, fade surfaces hiding the player.
 # Rendering apps enable it; tools and tests stay headless without it.
 render = [
-    "dep:struction_anim",
     "dep:struction_assets",
     "dep:struction_camera",
     "dep:struction_gravity",
@@ -34,7 +33,7 @@ struction_data = { workspace = true }
 struction_world = { workspace = true }
 struction_physics = { workspace = true }
 struction_character = { workspace = true }
-struction_anim = { workspace = true, optional = true }
+struction_anim = { workspace = true }
 struction_assets = { workspace = true, optional = true }
 struction_camera = { workspace = true, optional = true }
 struction_gravity = { workspace = true, optional = true }

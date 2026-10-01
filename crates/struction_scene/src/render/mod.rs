@@ -1,7 +1,7 @@
 //! Drawing the scene vocabulary: shapes and looks become meshes and materials, humanoids become
 //! rigs dressed with their models, and surfaces that hide the player fade along the camera's
-//! sight line. Needs a rendering app (`DefaultPlugins`), the physics, character animation and
-//! player camera plugins.
+//! sight line. Needs a rendering app (`DefaultPlugins`, preceded by [`EngineAssetsPlugin`]), the
+//! physics, character animation and player camera plugins.
 
 mod figures;
 mod looks;
@@ -11,8 +11,22 @@ pub use figures::{Dressed, Figure, Models, Piece};
 pub use looks::{WaterSurface, shape_mesh};
 pub use sight_fade::{FadeMaterial, FadesWith, SightFade, SightUniform, fade_material};
 
+use bevy::asset::io::AssetSourceBuilder;
 use bevy::prelude::*;
 use struction_camera::CameraSystems;
+
+use crate::engine_assets;
+
+/// Registers the engine's assets as the `engine://` asset source. Add it before `DefaultPlugins`:
+/// Bevy only accepts sources registered before its `AssetPlugin`.
+pub struct EngineAssetsPlugin;
+
+impl Plugin for EngineAssetsPlugin {
+    fn build(&self, app: &mut App) {
+        let path = engine_assets().to_string_lossy().into_owned();
+        app.register_asset_source("engine", AssetSourceBuilder::platform_default(&path, None));
+    }
+}
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SceneRenderSystems {

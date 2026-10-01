@@ -1,4 +1,4 @@
 /target/
 /dist/
-/apps/playground/assets/**/*.smesh
-/apps/playground/assets/**/struction-assets.manifest.json
+/crates/struction_scene/content/assets/**/*.smesh
+/crates/struction_scene/content/assets/**/struction-assets.manifest.json

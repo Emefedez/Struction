@@ -95,6 +95,9 @@ pub enum Inspection {
         /// The definition's own file, to tell fields set here from inherited ones.
         local: Value,
         extensors: Extensors,
+        /// The read-only library defining it, and whether the project overrides it.
+        library: Option<String>,
+        overridden: bool,
     },
     Missing(String),
     InvalidDefinition {
@@ -460,6 +463,8 @@ impl Editor {
                         suggested: inspected.suggested_extensors,
                         available: inspected.available_extensors,
                     },
+                    library: inspected.library,
+                    overridden: inspected.overridden,
                 }
             }
         })
@@ -642,7 +647,12 @@ mod tests {
     fn opens_a_project_into_a_valid_snapshot() {
         let (_dir, mut editor) = open();
         assert!(editor.diagnostics.is_empty());
-        assert_eq!(editor.definitions, ["Actor", "guards/ogre"]);
+        for definition in ["Creature", "guards/ogre", "Actor"] {
+            assert!(
+                editor.definitions.iter().any(|d| d == definition),
+                "{definition}"
+            );
+        }
         assert!(editor.entity(OGRE).is_some());
 
         editor.apply(Command::Select(Some(Selected::Entity(OGRE.into()))));

@@ -1,7 +1,0 @@
-// A knight standing guard: the player's model on an actor with no moves of its own.
-{
-  "descendsFrom": "Actor",
-  "components": {
-    "Shape": { "Humanoid": { "model": "models/blood_knight.blend" } }
-  }
-}

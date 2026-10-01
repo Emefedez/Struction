@@ -6,12 +6,12 @@ use struction_physics::{Volume, VolumeShape};
 use super::sight_fade::{FadeMaterial, FadesWith, fade_material};
 use crate::{Finish, Look, Shape};
 
-/// The mesh of a box or sphere; humanoids are drawn by their rig.
+/// The mesh of a box or sphere; rigged shapes are drawn by their rig.
 pub fn shape_mesh(shape: &Shape) -> Option<Mesh> {
     match *shape {
         Shape::Box { size } => Some(Cuboid::from_size(size).into()),
         Shape::Sphere { radius } => Some(Sphere::new(radius).mesh().ico(5).expect("valid sphere")),
-        Shape::Humanoid { .. } => None,
+        Shape::Rigged { .. } => None,
     }
 }
 
@@ -95,7 +95,7 @@ pub(crate) fn dress_looks(
                 .insert((Visibility::default(), WaterSurface(surface)));
             continue;
         }
-        // Humanoids are drawn by their rig (see `figures`).
+        // Rigged shapes are drawn by their rig (see `figures`).
         let Some(mesh) = shape.and_then(shape_mesh) else {
             if shape.is_none() {
                 warn!("{entity} has a look but no shape to draw");

@@ -105,7 +105,11 @@ impl AuthoringProject {
                     .any(|e| e.name == extensor && e.is_named())
             })
         });
-        let own = self.own(path)?;
+        let created = self.ensure_override(path)?;
+        let own = match self.own(path) {
+            Ok(own) => own,
+            Err(error) => return self.finish_override(created, Err(error)),
+        };
         let mut list: Vec<String> = own
             .extensors
             .iter()
@@ -116,7 +120,12 @@ impl AuthoringProject {
             list.push(extensor.to_owned());
         }
         let edits = vec![list_edit(&own, list)].into_iter().flatten().collect();
-        self.edit_fields(&own.file, &format!("Add extensor {extensor}"), edits)
+        self.edit_fields(
+            &own.file,
+            &format!("Add extensor {extensor}"),
+            edits,
+            created,
+        )
     }
 
     /// Removes `extensor` from the definition at `path`, with its own components of that
@@ -125,14 +134,8 @@ impl AuthoringProject {
     pub fn remove_extensor(&mut self, path: &str, extensor: &str) -> Result<Applied, SessionError> {
         self.refresh()?;
         let store = self.preview().resource::<DefinitionStore>();
-        let meta = known(store, extensor)?;
+        let meta = known(store, extensor)?.clone();
         let resolved = definition(store, path)?;
-        let own = self.own(path)?;
-        let owned = |key: &str| {
-            meta.components
-                .iter()
-                .any(|c| key == c.name || key == c.type_path)
-        };
         if let Some(user) = resolved.extensors.iter().find(|used| {
             store
                 .extensors()
@@ -144,18 +147,33 @@ impl AuthoringProject {
                 user.name, user.name
             )));
         }
-        let inherited = match resolved.extensors.iter().find(|e| e.name == extensor) {
+        let used = resolved
+            .extensors
+            .iter()
+            .find(|e| e.name == extensor)
+            .map(|e| e.reason.clone());
+        let created = self.ensure_override(path)?;
+        let own = match self.own(path) {
+            Ok(own) => own,
+            Err(error) => return self.finish_override(created, Err(error)),
+        };
+        let owned = |key: &str| {
+            meta.components
+                .iter()
+                .any(|c| key == c.name || key == c.type_path)
+        };
+        // Named by a library layer (`engine:...`), an ancestor or a preset: drop it here.
+        let inherited = match used {
             None if own.extensors.iter().any(|e| e == extensor) => false,
             None => {
-                return Err(SessionError::InvalidOperation(format!(
+                let error = SessionError::InvalidOperation(format!(
                     "{path} does not use the {extensor} extensor"
-                )));
+                ));
+                return self.finish_override(created, Err(error));
             }
-            Some(used) => match &used.reason {
-                ExtensorReason::Named { by } => by != path,
-                ExtensorReason::Owns(component) => !own.components.iter().any(|c| c == component),
-                ExtensorReason::RequiredBy(_) => unreachable!("refused above"),
-            },
+            Some(ExtensorReason::Named { by }) => by != path,
+            Some(ExtensorReason::Owns(component)) => !own.components.contains(&component),
+            Some(ExtensorReason::RequiredBy(_)) => unreachable!("refused above"),
         };
         let mut list: Vec<String> = own
             .extensors
@@ -177,7 +195,12 @@ impl AuthoringProject {
                 None,
             )
         }));
-        self.edit_fields(&own.file, &format!("Remove extensor {extensor}"), edits)
+        self.edit_fields(
+            &own.file,
+            &format!("Remove extensor {extensor}"),
+            edits,
+            created,
+        )
     }
 
     fn own(&self, path: &str) -> Result<Own, SessionError> {

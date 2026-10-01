@@ -263,8 +263,11 @@ impl AuthoringProject {
             .collect::<Result<_, _>>()?;
         let registry = world.resource::<DefinitionStore>().extensors();
         let in_use = |name: &str| resolved.extensors.iter().any(|used| used.name == name);
+        let store = world.resource::<DefinitionStore>();
         Ok(DefinitionInspection {
             definition: path.into(),
+            library: store.library_of(path).map(str::to_owned),
+            overridden: store.library_of(path).is_some() && store.in_project(path),
             lineage: resolved.lineage.clone(),
             extensors: resolved.extensors.iter().map(ExtensorEntry::from).collect(),
             dropped_extensors: resolved.dropped.iter().map(DroppedEntry::from).collect(),
@@ -303,14 +306,57 @@ impl AuthoringProject {
                 "edits require an entity, preset or scene JSONC source".into(),
             ));
         }
+        let created = match file.strip_suffix("/entity.jsonc") {
+            Some(id) => self.ensure_override(id)?,
+            None => None,
+        };
         let world = self.preview.world();
         let applied = self
             .session
-            .apply_checked(request, |sources| validate(world, sources))?;
-        if !applied.files.is_empty() {
-            self.refresh()?;
+            .apply_checked(request, |sources| validate(world, sources));
+        self.finish_override(created, applied)
+    }
+
+    /// Creates the project's override file of a library (engine) definition, so editing it changes
+    /// the project instead of the engine. Returns the file when it had to be created.
+    pub(crate) fn ensure_override(&mut self, id: &str) -> Result<Option<String>, SessionError> {
+        let file = format!("{id}/entity.jsonc");
+        let store = self.preview.world().resource::<DefinitionStore>();
+        let Some(library) = store.library_of(id) else {
+            return Ok(None);
+        };
+        if store.in_project(id) || self.session.read(&file).is_ok() {
+            return Ok(None);
         }
-        Ok(applied)
+        let text = format!(
+            "// The project's changes to the {library} definition {id}; the rest comes from it.\n{{}}\n"
+        );
+        self.session.create_file(&file, &text)?;
+        Ok(Some(file))
+    }
+
+    /// Refreshes after an applied edit; removes an override file created for an edit that failed.
+    pub(crate) fn finish_override(
+        &mut self,
+        created: Option<String>,
+        applied: Result<Applied, SessionError>,
+    ) -> Result<Applied, SessionError> {
+        match applied {
+            Ok(applied) => {
+                if !applied.files.is_empty() || created.is_some() {
+                    self.refresh()?;
+                }
+                Ok(applied)
+            }
+            Err(error) => {
+                if let Some(file) = created
+                    && let Ok(path) = self.session.path_of(&file)
+                {
+                    let _ = std::fs::remove_file(path);
+                }
+                Err(error)
+            }
+        }
     }
     pub fn undo(&mut self) -> Result<Option<Applied>, SessionError> {
         let world = self.preview.world();
@@ -336,21 +382,20 @@ impl AuthoringProject {
         self.session.end_group();
     }
 
-    /// Several field edits of one entity source as one validated, undoable step.
+    /// Several field edits of one entity source as one validated, undoable step. `created` is the
+    /// override file made for it, removed again if the edit fails.
     pub(crate) fn edit_fields(
         &mut self,
         file: &str,
         label: &str,
         edits: Vec<(Vec<struction_data::edit::PathSegment>, Option<Value>)>,
+        created: Option<String>,
     ) -> Result<Applied, SessionError> {
         let world = self.preview.world();
         let applied = self
             .session
-            .apply_fields_checked(file, label, edits, |sources| validate(world, sources))?;
-        if !applied.files.is_empty() {
-            self.refresh()?;
-        }
-        Ok(applied)
+            .apply_fields_checked(file, label, edits, |sources| validate(world, sources));
+        self.finish_override(created, applied)
     }
 
     /// Templates become user-owned files; existing files are never overwritten.
@@ -674,6 +719,11 @@ pub struct Unavailable {
 #[derive(Clone, Debug, Serialize)]
 pub struct DefinitionInspection {
     pub definition: String,
+    /// The read-only library (`engine`) defining it, if one does. Edits then go to a project
+    /// override file, created on the first edit.
+    pub library: Option<String>,
+    /// The project has its own override of the library definition.
+    pub overridden: bool,
     /// Ancestors, nearest first.
     pub lineage: Vec<String>,
     /// Extensors in use: named ones first, then inferred ones.

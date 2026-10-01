@@ -1,0 +1,6 @@
+// The example host registers Health; Creature is primordial: a capitalized root with no parent.
+{
+  "components": {
+    "Health": { "current": 50, "max": 100 }
+  }
+}

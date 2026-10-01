@@ -1,10 +1,10 @@
-//! Humanoid shapes: every entity whose `Shape` is `Humanoid` gets a procedurally animated rig
-//! that follows its character body, dressed with the shape's model or, without one, with simple
-//! shapes. The player, NPCs and anything else that walks share this path.
+//! Rigged shapes: every entity whose `Shape` is `Rigged` gets the named skeleton as a
+//! procedurally animated rig that follows its character body, dressed with the shape's model or,
+//! without one, with simple shapes. The player, NPCs and anything else that walks share this path.
 //!
-//! A model is a source under the app's `assets/` (such as a `.blend`). It compiles to a `.smesh`
-//! beside it on a background thread the first time an entity uses it, and again whenever it is
-//! saved while the app runs. Pieces are named `<joint>.<piece>` and modeled around the joint's rest
+//! A model is a source in the app's `assets/` or, with an `engine://` prefix, the engine's (such
+//! as a `.blend`). It compiles to a `.smesh` beside it on a background thread the first time an
+//! entity uses it, and again whenever it is saved while the app runs. Pieces are named `<joint>.<piece>` and modeled around the joint's rest
 //! position, so each mesh is parented to its joint as is. A model that cannot be compiled or
 //! loaded falls back to simple shapes.
 
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
-use crate::Shape;
+use crate::{Rigs, Shape, engine_assets};
 use bevy::asset::io::file::FileAssetReader;
 use bevy::prelude::*;
 use struction_anim::{humanoid, locomotion::LocomotionParams, plugin::RigJoints, rig::Rig};
@@ -23,9 +23,12 @@ use struction_assets::{
 use struction_camera::{PlayerCamera, ViewMode};
 use struction_character::{RigOf, spawn_rig};
 
-/// On a humanoid body: the rig drawn for it.
+/// On a rigged body: the rig drawn for it, and the skeleton it was built from.
 #[derive(Component)]
-pub struct Figure(Entity);
+pub struct Figure {
+    rig: Entity,
+    skeleton: String,
+}
 
 /// On a rig: the model it is dressed with, or `None` for simple shapes.
 #[derive(Component, PartialEq)]
@@ -49,12 +52,27 @@ enum Model {
     Missing,
 }
 
-/// Models by the source path shapes name, relative to `root`.
+/// Models by the source path shapes name: relative to the app's `assets/`, or to the engine's
+/// with `engine://`.
 #[derive(Resource)]
 pub struct Models {
     root: PathBuf,
+    engine: PathBuf,
     models: HashMap<String, Model>,
 }
+
+impl Models {
+    /// The source file of a model path and the file it compiles to.
+    fn files(&self, model: &str) -> (PathBuf, PathBuf) {
+        let (root, path) = match model.strip_prefix(ENGINE_SOURCE) {
+            Some(path) => (&self.engine, path),
+            None => (&self.root, model),
+        };
+        (root.join(path), root.join(compiled_path(path)))
+    }
+}
+
+const ENGINE_SOURCE: &str = "engine://";
 
 pub(crate) struct FiguresPlugin;
 
@@ -63,6 +81,7 @@ impl Plugin for FiguresPlugin {
         app.add_plugins((StructionAssetsPlugin, SourceWatcherPlugin))
             .insert_resource(Models {
                 root: FileAssetReader::get_base_path().join("assets"),
+                engine: engine_assets(),
                 models: HashMap::new(),
             });
     }
@@ -85,7 +104,7 @@ pub(crate) fn hide_in_first_person(
     }
 }
 
-/// The asset path of the `.smesh` a model source compiles to.
+/// The asset path of the `.smesh` a model source compiles to, in the same asset source.
 fn compiled_path(model: &str) -> String {
     Path::new(model)
         .with_extension(COMPILED_EXTENSION)
@@ -95,37 +114,56 @@ fn compiled_path(model: &str) -> String {
 
 fn model(shape: &Shape) -> Option<Option<&str>> {
     match shape {
-        Shape::Humanoid { model } => Some(model.as_deref()),
+        Shape::Rigged { model, .. } => Some(model.as_deref()),
         _ => None,
     }
 }
 
-/// Gives humanoid bodies a rig, and takes it away when live reload changes their shape.
+/// Gives rigged bodies their skeleton, rebuilt when live reload changes it and removed when the
+/// shape stops being rigged.
 pub(crate) fn attach_rigs(
     mut commands: Commands,
+    rigs: Res<Rigs>,
     bodies: Query<(Entity, &Shape, Option<&Figure>), Changed<Shape>>,
 ) {
     for (body, shape, figure) in &bodies {
-        match (model(shape), figure) {
-            (Some(_), None) => {
-                let rig = spawn_rig(
-                    &mut commands,
-                    body,
-                    humanoid::rig(),
-                    LocomotionParams::default(),
-                )
-                .expect("the built-in humanoid is a valid rig");
-                commands
-                    .entity(rig)
-                    .insert((Name::new("Humanoid rig"), Visibility::default()));
-                commands.entity(body).insert(Figure(rig));
-            }
-            (None, Some(figure)) => {
-                commands.entity(figure.0).despawn();
-                commands.entity(body).remove::<Figure>();
-            }
-            _ => {}
+        let skeleton = match shape {
+            Shape::Rigged { rig, .. } => Some(rig),
+            _ => None,
+        };
+        if let Some(figure) = figure
+            && skeleton != Some(&figure.skeleton)
+        {
+            commands.entity(figure.rig).despawn();
+            commands.entity(body).remove::<Figure>();
+        } else if figure.is_some() {
+            continue;
         }
+        let Some(skeleton) = skeleton else {
+            continue;
+        };
+        let Some(built) = rigs.build(skeleton) else {
+            let known: Vec<_> = rigs.names().collect();
+            warn!(
+                "{body}: unknown rig {skeleton:?}, registered: {}",
+                known.join(", ")
+            );
+            continue;
+        };
+        let rig = match spawn_rig(&mut commands, body, built, LocomotionParams::default()) {
+            Ok(rig) => rig,
+            Err(error) => {
+                warn!("{body}: rig {skeleton:?} cannot animate: {error}");
+                continue;
+            }
+        };
+        commands
+            .entity(rig)
+            .insert((Name::new(format!("{skeleton} rig")), Visibility::default()));
+        commands.entity(body).insert(Figure {
+            rig,
+            skeleton: skeleton.clone(),
+        });
     }
 }
 
@@ -136,8 +174,7 @@ pub(crate) fn request_models(mut models: ResMut<Models>, shapes: Query<&Shape, C
         if models.models.contains_key(path) {
             continue;
         }
-        let source = models.root.join(path);
-        let compiled = models.root.join(compiled_path(path));
+        let (source, compiled) = models.files(path);
         let job = {
             let (source, compiled) = (source.clone(), compiled.clone());
             std::thread::spawn(move || compile_asset(&source, &compiled))
@@ -198,7 +235,7 @@ pub(crate) fn finish_compiles(
     }
 }
 
-type Rigs<'a> = (
+type RigsToDress<'a> = (
     Entity,
     &'a RigOf,
     &'a Rig,
@@ -218,7 +255,7 @@ pub(crate) fn dress_figures(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     bodies: Query<&Shape>,
-    rigs: Query<Rigs>,
+    rigs: Query<RigsToDress>,
     pieces: Query<(Entity, &Piece)>,
 ) {
     let reloaded: Vec<_> = reloads

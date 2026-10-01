@@ -1,0 +1,7 @@
+// A foe standing guard: the player's model on an actor with no moves of its own.
+{
+  "descendsFrom": "Actor",
+  "components": {
+    "Shape": { "Rigged": { "rig": "humanoid", "model": "engine://models/blood_knight.blend" } }
+  }
+}

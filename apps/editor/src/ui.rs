@@ -1027,10 +1027,26 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
             components,
             local,
             extensors,
+            library,
+            overridden,
         } => {
             ui.heading(RichText::new(path.as_str()).color(theme::DEFINITION));
             let file = definition_file(path);
-            ui.label(RichText::new(&file).monospace().small().color(theme::MUTED));
+            match library {
+                Some(library) if *overridden => hint(
+                    ui,
+                    &format!("{library} definition, overridden by the project in {file}"),
+                ),
+                Some(library) => hint(
+                    ui,
+                    &format!(
+                        "{library} definition (read-only); edits create a project override in {file}"
+                    ),
+                ),
+                None => {
+                    ui.label(RichText::new(&file).monospace().small().color(theme::MUTED));
+                }
+            }
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 fact(ui, "Lineage");

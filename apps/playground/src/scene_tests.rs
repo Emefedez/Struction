@@ -146,8 +146,9 @@ fn actors_share_the_humanoid_shape_and_opt_into_moves() {
     use struction_data::{DefinitionStore, ExtensorReason};
 
     let mut app = scene_app();
-    let model = Shape::Humanoid {
-        model: Some("models/blood_knight.blend".into()),
+    let model = Shape::Rigged {
+        rig: "humanoid".into(),
+        model: Some("engine://models/blood_knight.blend".into()),
     };
     let player = entity(&mut app, "Playground/start/player");
     let sentry = entity(&mut app, "Playground/guard/sentry");
@@ -171,7 +172,7 @@ fn actors_share_the_humanoid_shape_and_opt_into_moves() {
             .collect()
     };
     let named = ExtensorReason::Named {
-        by: "characters/player".into(),
+        by: "engine:characters/player".into(),
     };
     assert_eq!(
         explain("characters/player"),
@@ -234,11 +235,14 @@ fn saved_edits_reach_the_running_scene() {
         r#""offset": [0, 0, 5]"#,
         r#""offset": [0, 0, 6]"#,
     );
-    edit(
-        &root.join("terrain/planet/entity.jsonc"),
-        r#""radius": 4 }"#,
-        r#""radius": 3 }"#,
-    );
+    // The planet is an engine definition: a project file at its path overrides it.
+    let planet_override = root.join("terrain/planet/entity.jsonc");
+    std::fs::create_dir_all(planet_override.parent().unwrap()).unwrap();
+    std::fs::write(
+        &planet_override,
+        r#"{ "components": { "Shape": { "Sphere": { "radius": 3 } } } }"#,
+    )
+    .unwrap();
     // Past the default scan interval.
     std::thread::sleep(std::time::Duration::from_millis(300));
     step(&mut app, 2);
@@ -278,7 +282,7 @@ fn blood_knight_pieces_sit_on_humanoid_joints() {
         eprintln!("skipping: Blender not found (install it or set STRUCTION_BLENDER)");
         return;
     }
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/models/blood_knight.blend");
+    let source = struction_scene::engine_assets().join("models/blood_knight.blend");
     let scene = import_source(&source, &blender, false).unwrap();
     let rig = humanoid::rig();
     let defs = rig.skeleton.joints();

@@ -1,5 +1,5 @@
-//! Native physics playground: the README scene, authored as data in `project/` and drawn with
-//! the engine's scene vocabulary (`struction_scene`). This host adds the window, lights, HUD,
+//! Native physics playground: the README scene, authored in `project/` with the engine's base
+//! definitions and drawn with its scene vocabulary (`struction_scene`). This host adds the window, lights, HUD,
 //! cursor handling and the smoke-test script.
 
 #[cfg(test)]
@@ -27,7 +27,7 @@ use struction_physics::{
 };
 use struction_scene::{
     ScenePlugin,
-    render::{SceneRenderPlugin, SceneRenderSystems},
+    render::{EngineAssetsPlugin, SceneRenderPlugin, SceneRenderSystems},
 };
 
 /// The playground's own project, next to its sources.
@@ -118,6 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         escape_released_cursor: false,
         footfalls: 0,
     })
+    .add_plugins(EngineAssetsPlugin)
     .add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Struction | Playground".into(),
