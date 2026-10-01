@@ -46,6 +46,20 @@ fn factory(root: &Path) -> App {
     app
 }
 
+#[derive(Component, Reflect, Default)]
+#[reflect(Component, Default)]
+struct Armor {
+    rating: f32,
+}
+
+fn armored_factory(root: &Path) -> App {
+    let mut app = factory(root);
+    app.register_type::<Armor>()
+        .register_extensor(ExtensorMeta::inferred("living").owns::<Health>())
+        .register_extensor(ExtensorMeta::opt_in("armor").supplies::<Armor>());
+    app
+}
+
 const GUARD: &str = "guards/ogre/entity.jsonc";
 const SCENE: &str = "scenes/courtyard.jsonc";
 fn fixture() -> tempfile::TempDir {
@@ -545,4 +559,61 @@ fn protocol_exposes_relationship_authoring() {
         let response = execute(&mut project, request);
         assert!(response.ok, "{response:?}");
     }
+}
+
+#[test]
+fn definitions_explain_their_extensors() {
+    let dir = fixture();
+    let mut project = AuthoringProject::open(dir.path(), armored_factory).unwrap();
+    assert!(
+        project
+            .inspect_definition("guards/ogre")
+            .unwrap()
+            .extensors
+            .iter()
+            .all(|e| e.name != "armor")
+    );
+    // Opting in is an ordinary, undoable edit of the `extensors` section.
+    project
+        .edit(set(GUARD, &["extensors"], json!(["armor"])))
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(dir.path().join(GUARD))
+            .unwrap()
+            .contains("// Ogre guard.")
+    );
+    let inspected = project.inspect_definition("guards/ogre").unwrap();
+    assert_eq!(
+        inspected.extensors,
+        [
+            ExtensorEntry {
+                name: "armor".into(),
+                reason: ExtensorWhy::NamedBy("guards/ogre".into()),
+                components: vec!["Armor".into()],
+                supplied: vec!["Armor".into()],
+            },
+            ExtensorEntry {
+                name: "living".into(),
+                reason: ExtensorWhy::Owns("Health".into()),
+                components: vec!["Health".into()],
+                supplied: vec![],
+            },
+        ]
+    );
+    assert!(inspected.components.contains_key(Armor::type_path()));
+    let actor = project.inspect_definition("Actor").unwrap();
+    assert_eq!(actor.available_extensors, ["armor"]);
+    assert_eq!(
+        serde_json::to_value(&inspected.extensors[0].reason).unwrap(),
+        json!({ "named_by": "guards/ogre" })
+    );
+    project.undo().unwrap();
+    assert!(
+        project
+            .inspect_definition("guards/ogre")
+            .unwrap()
+            .extensors
+            .iter()
+            .all(|e| e.name != "armor")
+    );
 }

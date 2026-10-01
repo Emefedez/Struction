@@ -8,7 +8,7 @@ pub mod protocol;
 pub mod session;
 
 pub use project::{
-    AuthoringProject, DefinitionInspection, Diagnostic, EntityEntry, EntityInspection, SpawnSource,
-    Unavailable,
+    AuthoringProject, DefinitionInspection, Diagnostic, EntityEntry, EntityInspection,
+    ExtensorEntry, ExtensorWhy, SpawnSource, Unavailable,
 };
 pub use session::{Applied, EditRequest, EditSession, Field, SessionError};

@@ -87,7 +87,7 @@ Suggested:  dodge, because this actor has locomotion but no dodge capability
 
 Inferred participation may explain an entity or enable package-owned metadata, but it should not silently add gameplay behavior. A package must declare whether an inference is informational, required for an existing component, or an opt-in generator action. The editor and AI should show that distinction and provide a preview before applying generated data.
 
-There is an intended relations resolver that does not use LLM AI but rather and inferred set of rules and connections. Inherited extensors should normally be inherited just like inherited components. If an Actor itself adds combat, every descendant may receive it, which could be undesirable
+There is an intended relations resolver that does not use LLM AI but rather and inferred set of rules and connections. Inherited extensors should normally be inherited just like inherited components. If an Actor itself adds combat, every descendant may receive it, which could be undesirable.
 
 The resolved view should expose provenance rather than flattening it away:
 
@@ -248,3 +248,14 @@ human intent
   -> human reviews or edits the diff
   -> validate, preview, run and undo through shared APIs
 ```
+## Current implementation
+
+Implemented by **SUN**; the rest of this document remains direction.
+
+- `extensors` is a definition section, between `presets` and `transform` in canonical order. Names accumulate through `descendsFrom`, presets and scene overrides; there is no way to drop an inherited extensor yet, so name capabilities on the definitions that need them rather than on `Actor`.
+- Packages register extensors in `struction_core`'s `ExtensorRegistry` with `register_extensor`: the components they own, the ones they supply with defaults when named, whether they are opt-in, and the extensors they build on.
+- `struction_data` refuses a component of an opt-in extensor that is not named (`Roll belongs to the opt-in extensor "dodge"; add it to "extensors"`), adds supplied components a definition leaves out, infers the other extensors from owned components and requirements, and reports unknown names. `Resolved::extensors` keeps the provenance: named by which definition, preset or override, owning which component, or required by which extensor. The generated schema offers registered names with their descriptions.
+- Registered now: `physics`, `volumes` and `gravity` (inferred, `struction_physics`), `character` (inferred), and the opt-in `dodge` and `combat` (`struction_character`, see [moves](moves.md)). Inferences only explain; nothing inferred adds behavior.
+- Moves carry their own refusal conditions (`blocked_while: ["Airborne", "Swimming"]`), drawn from a closed list of character states. A shared vocabulary of states that any package could contribute does not exist yet.
+- `AuthoringProject::inspect_definition` (and the JSONL `inspect_definition` command) lists the extensors in use with their reason and the components they own or supplied, plus the registered extensors still available.
+- Not yet: dedicated headless operations to add or remove an extensor (a generic edit of the `extensors` array works), an editor panel, suggested extensors and generator previews.
