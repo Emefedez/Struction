@@ -449,7 +449,8 @@ fn report(mesh: &BundleMesh, settings: &PrepareSettings) -> MeshReport {
         ));
     }
     if collision.hull.is_none() {
-        collision_notes.push("Flat or degenerate: no convex hull, so only a static trimesh fits.".into());
+        collision_notes
+            .push("Flat or degenerate: no convex hull, so only a static trimesh fits.".into());
     }
     let (ratio, collision_settings) = (settings.collision.trimesh_ratio, &settings.collision);
     if base > 0 && ratio < 1.0 && trimesh.triangles >= base {
