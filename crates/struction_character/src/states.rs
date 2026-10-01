@@ -26,7 +26,7 @@ impl CharacterCondition {
 }
 
 /// A component a rule changed: the rule, the component and its value before (`None`: absent).
-type Saved = (usize, TypeId, Option<Box<dyn Reflect>>);
+type Saved = (usize, TypeId, Option<Box<dyn PartialReflect>>);
 
 /// Which of an entity's state rules are applied, and what they replaced.
 #[derive(Component, Default)]
@@ -117,9 +117,14 @@ fn enter(
         let Some(reflect) = types.get_type_data::<ReflectComponent>(type_id) else {
             continue;
         };
-        let before = reflect
-            .reflect(world.entity(entity))
-            .and_then(|value| value.reflect_clone().ok());
+        // A value that can't be cloned exactly is kept as a dynamic copy, so leaving restores
+        // it instead of removing the component.
+        let before = reflect.reflect(world.entity(entity)).map(|value| {
+            value
+                .reflect_clone()
+                .map(|value| value.into_partial_reflect())
+                .unwrap_or_else(|_| value.to_dynamic())
+        });
         held.saved.push((index, type_id, before));
     }
     let mut target = world.entity_mut(entity);
@@ -166,7 +171,7 @@ fn leave(
             continue;
         };
         match before {
-            Some(value) => reflect.insert(&mut target, value.as_partial_reflect(), types),
+            Some(value) => reflect.insert(&mut target, value.as_ref(), types),
             None => reflect.remove(&mut target),
         }
     }
