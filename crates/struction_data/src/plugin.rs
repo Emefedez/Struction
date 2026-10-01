@@ -2,13 +2,14 @@ use std::path::{Path, PathBuf};
 
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
+use struction_core::ExtensorRegistry;
 
 use crate::store::{DefinitionStore, ReloadReport};
 
 /// Loads the project at `root` into a [`DefinitionStore`] resource.
 ///
 /// The load happens in `Plugin::finish`, after every plugin registered its component types, so
-/// definitions can use components from any package. Declare primordials and extra sections with
+/// definitions can use components and extensors from any package. Declare primordials and extra sections with
 /// [`DataPlugin::primordial`] and [`DataPlugin::section`].
 pub struct DataPlugin {
     root: PathBuf,
@@ -58,6 +59,9 @@ impl Plugin for DataPlugin {
         }
         for name in &self.sections {
             store.allow_section(name.clone());
+        }
+        if let Some(extensors) = app.world().get_resource::<ExtensorRegistry>() {
+            store.set_extensors(extensors.clone());
         }
         let registry = app.world().resource::<AppTypeRegistry>().clone();
         let report = store.load(&registry.read());

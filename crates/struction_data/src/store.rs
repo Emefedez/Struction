@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use bevy::prelude::Resource;
 use bevy::reflect::TypeRegistry;
+use struction_core::ExtensorRegistry;
 
 use crate::build::{Builder, ComponentValue};
 use crate::definition::{
@@ -19,6 +20,7 @@ use crate::definition::{
     strip_removed_components,
 };
 use crate::error::{DataError, ErrorKind, Location};
+use crate::extensors::{self, Named};
 use crate::source::{Node, Span, parse_jsonc};
 
 const ENTITY_FILE: &str = "entity.jsonc";
@@ -69,6 +71,7 @@ pub struct ReloadReport {
 struct Merged {
     body: Node,
     lineage: Vec<String>,
+    extensors: Vec<Named>,
 }
 
 #[derive(Resource)]
@@ -76,6 +79,7 @@ pub struct DefinitionStore {
     root: PathBuf,
     primordials: BTreeSet<String>,
     extra_sections: BTreeSet<String>,
+    extensors: ExtensorRegistry,
     entities: BTreeMap<String, Layer>,
     presets: BTreeMap<String, Layer>,
     /// Unreadable or malformed files, by project-relative path.
@@ -92,6 +96,7 @@ impl DefinitionStore {
             root: root.into(),
             primordials: BTreeSet::new(),
             extra_sections: DEFAULT_EXTRA_SECTIONS.map(String::from).into(),
+            extensors: ExtensorRegistry::default(),
             entities: BTreeMap::new(),
             presets: BTreeMap::new(),
             file_errors: BTreeMap::new(),
@@ -121,6 +126,16 @@ impl DefinitionStore {
     pub fn allow_section(&mut self, name: impl Into<String>) -> &mut Self {
         self.extra_sections.insert(name.into());
         self
+    }
+
+    /// The extensors definitions may name. Call before loading.
+    pub fn set_extensors(&mut self, extensors: ExtensorRegistry) -> &mut Self {
+        self.extensors = extensors;
+        self
+    }
+
+    pub fn extensors(&self) -> &ExtensorRegistry {
+        &self.extensors
     }
 
     pub fn root(&self) -> &Path {
@@ -189,6 +204,11 @@ impl DefinitionStore {
                 definitions,
                 presets: self.presets.keys().cloned().collect(),
                 extra_sections: self.extra_sections.iter().cloned().collect(),
+                extensors: self
+                    .extensors
+                    .iter()
+                    .map(|e| (e.name.clone(), e.doc.clone()))
+                    .collect(),
             },
         )
     }
@@ -214,6 +234,7 @@ impl DefinitionStore {
         let mut candidate = Self::new(self.root.clone());
         candidate.primordials = self.primordials.clone();
         candidate.extra_sections = self.extra_sections.clone();
+        candidate.extensors = self.extensors.clone();
         candidate.load_with_sources(sources, registry);
         candidate
     }
@@ -434,21 +455,43 @@ impl DefinitionStore {
                 None,
             )]
         })?;
-        let mut body = base.body.clone();
+        let mut merged = Merged {
+            body: base.body.clone(),
+            lineage: base.lineage.clone(),
+            extensors: base.named.clone(),
+        };
         if let Some(overrides) = overrides {
             let layer = parse_layer(overrides.clone(), LayerKind::Override, &self.extra_sections)
                 .map_err(|e| vec![e])?;
             Resolver::new(self)
-                .apply_layer(&mut body, &layer, &mut Vec::new())
+                .apply_layer(&mut merged, &layer, "a scene override", &mut Vec::new())
                 .map_err(|e| vec![e])?;
-            strip_removed_components(&mut body);
+            strip_removed_components(&mut merged.body);
         }
-        let components = build_components(&body, registry)?;
+        self.finish(id, merged, registry)
+    }
+
+    /// Builds the components of a merged definition and resolves its extensors.
+    fn finish(
+        &self,
+        id: &str,
+        merged: Merged,
+        registry: &TypeRegistry,
+    ) -> Result<Resolved, Vec<DataError>> {
+        let mut components = build_components(&merged.body, registry)?;
+        let uses = extensors::resolve(
+            &merged.extensors,
+            &merged.body,
+            &mut components,
+            &self.extensors,
+            registry,
+        )?;
         Ok(Resolved::new(
             id.into(),
-            base.lineage.clone(),
+            merged.lineage,
+            (merged.extensors, uses),
             components,
-            body,
+            merged.body,
         ))
     }
 }
@@ -475,13 +518,12 @@ impl<'a> Resolver<'a> {
         registry: &TypeRegistry,
     ) -> Result<Resolved, Vec<DataError>> {
         let merged = self.entity(id, &mut Vec::new()).map_err(|e| vec![e])?;
-        let components = build_components(&merged.body, registry)?;
-        Ok(Resolved::new(
-            id.into(),
-            merged.lineage.clone(),
-            components,
-            merged.body.clone(),
-        ))
+        let merged = Merged {
+            body: merged.body.clone(),
+            lineage: merged.lineage.clone(),
+            extensors: merged.extensors.clone(),
+        };
+        self.store.finish(id, merged, registry)
     }
 
     fn entity(&mut self, id: &str, stack: &mut Vec<String>) -> Result<Rc<Merged>, DataError> {
@@ -504,6 +546,7 @@ impl<'a> Resolver<'a> {
                 return Ok(Merged {
                     body: Node::empty_object(span),
                     lineage: Vec::new(),
+                    extensors: Vec::new(),
                 });
             }
             return Err(DataError::new(
@@ -512,7 +555,7 @@ impl<'a> Resolver<'a> {
             ));
         };
 
-        let (mut body, lineage) = match &layer.descends_from {
+        let mut merged = match &layer.descends_from {
             Some((parent, span)) => {
                 if let Some(start) = stack.iter().position(|s| s == parent) {
                     let mut chain = stack[start..].to_vec();
@@ -528,7 +571,11 @@ impl<'a> Resolver<'a> {
                 let parent_merged = self.entity(parent, stack)?;
                 let mut lineage = vec![parent.clone()];
                 lineage.extend(parent_merged.lineage.iter().cloned());
-                (parent_merged.body.clone(), lineage)
+                Merged {
+                    body: parent_merged.body.clone(),
+                    lineage,
+                    extensors: parent_merged.extensors.clone(),
+                }
             }
             None => {
                 if !is_primordial(id) {
@@ -537,26 +584,40 @@ impl<'a> Resolver<'a> {
                         &layer.root_span,
                     ));
                 }
-                (Node::empty_object(layer.root_span.clone()), Vec::new())
+                Merged {
+                    body: Node::empty_object(layer.root_span.clone()),
+                    lineage: Vec::new(),
+                    extensors: Vec::new(),
+                }
             }
         };
-        self.apply_layer(&mut body, layer, &mut Vec::new())?;
-        strip_removed_components(&mut body);
-        Ok(Merged { body, lineage })
+        self.apply_layer(&mut merged, layer, id, &mut Vec::new())?;
+        strip_removed_components(&mut merged.body);
+        Ok(merged)
     }
 
-    /// Merges the layer's presets, then its own data, over `body`: inherited < presets < own.
+    /// Merges the layer's presets, then its own data, over `merged`: inherited < presets < own.
+    /// Extensors accumulate; `by` is who named the layer's own.
     fn apply_layer(
         &mut self,
-        body: &mut Node,
+        merged: &mut Merged,
         layer: &Layer,
+        by: &str,
         preset_stack: &mut Vec<String>,
     ) -> Result<(), DataError> {
         for (name, span) in &layer.presets {
             let preset = self.preset(name, span, preset_stack)?;
-            body.merge(preset.body.clone());
+            merged.body.merge(preset.body.clone());
+            merged.extensors.extend(preset.extensors.iter().cloned());
         }
-        body.merge(layer.body.clone());
+        merged.body.merge(layer.body.clone());
+        merged
+            .extensors
+            .extend(layer.extensors.iter().map(|(name, span)| Named {
+                name: name.clone(),
+                span: span.clone(),
+                by: by.into(),
+            }));
         Ok(())
     }
 
@@ -582,13 +643,15 @@ impl<'a> Resolver<'a> {
             ));
         };
         stack.push(name.to_owned());
-        let mut body = Node::empty_object(layer.root_span.clone());
-        let result = self.apply_layer(&mut body, layer, stack).map(|()| {
-            Rc::new(Merged {
-                body,
-                lineage: Vec::new(),
-            })
-        });
+        let mut merged = Merged {
+            body: Node::empty_object(layer.root_span.clone()),
+            lineage: Vec::new(),
+            extensors: Vec::new(),
+        };
+        let by = format!("preset {name}");
+        let result = self
+            .apply_layer(&mut merged, layer, &by, stack)
+            .map(|()| Rc::new(merged));
         stack.pop();
         // A cycle error depends on where resolution entered it; only cache successes.
         if let Ok(ok) = &result {

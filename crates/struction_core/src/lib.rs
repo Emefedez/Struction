@@ -1,10 +1,11 @@
-//! Relations (`descendsFrom`, `masterIs`), the action registry, queued reactions, and capability
-//! grants.
+//! Relations (`descendsFrom`, `masterIs`), the action and extensor registries, queued reactions,
+//! and capability grants.
 //!
 //! [`CorePlugin`] runs the action machinery in `FixedUpdate` through the phases of [`CoreSet`].
 
 mod actions;
 mod dispatch;
+mod extensors;
 mod grants;
 mod identity;
 mod relations;
@@ -18,6 +19,9 @@ pub use actions::{
 pub use dispatch::{
     ActionCommands, ActionErrors, ActionInvocation, ActionQueue, Reaction, ReactionDepthLimit,
     ReactionHook, ReactionSource, Reactions, invoke_action, notify_wards, order_wards,
+};
+pub use extensors::{
+    ExtensorAppExt, ExtensorMeta, ExtensorRegistry, OwnedComponent, Participation,
 };
 pub use grants::{ActionSet, GrantRecord, GrantRule, GrantsToWards, RefusesGrants};
 pub use identity::{Definition, DefinitionPath, IdentityError, StableId, StableIdGenerator};
@@ -45,6 +49,7 @@ pub struct CorePlugin {
 impl Plugin for CorePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ActionRegistry>()
+            .init_resource::<ExtensorRegistry>()
             .init_resource::<ActionQueue>()
             .init_resource::<ActionErrors>()
             .init_resource::<ReactionDepthLimit>()

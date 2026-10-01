@@ -1,9 +1,11 @@
 //! JSONC sources: loading through Reflect, descendsFrom inheritance, presets, file:line errors, comment-preserving edits.
 //!
 //! A project directory holds `**/entity.jsonc` (the definition `<dir>`) and `presets/**.jsonc`.
-//! A definition file has the canonical sections `descendsFrom`, `presets`, `transform`,
-//! `components`, `constraints`, `reactions` (plus extra sections other crates own, kept raw).
-//! `transform` is shorthand for the `Transform` component.
+//! A definition file has the canonical sections `descendsFrom`, `presets`, `extensors`,
+//! `transform`, `components`, `constraints`, `reactions` (plus extra sections other crates own,
+//! kept raw). `transform` is shorthand for the `Transform` component. `extensors` names the
+//! packages extending the definition (see `struction_core::ExtensorRegistry`); they accumulate
+//! through inheritance, presets and overrides.
 //!
 //! Resolution layers, later over earlier, with objects deep-merged field by field and arrays and
 //! scalars replaced: parent definition (recursively), the definition's presets in listed order,
@@ -22,6 +24,7 @@ mod build;
 mod definition;
 pub mod edit;
 pub mod error;
+mod extensors;
 mod plugin;
 mod relations;
 pub mod schema;
@@ -32,6 +35,7 @@ mod typeinfo;
 pub use build::ComponentValue;
 pub use definition::{CANONICAL_ORDER, DEFAULT_EXTRA_SECTIONS, Resolved};
 pub use error::{DataError, ErrorKind, Location};
+pub use extensors::{ExtensorReason, ExtensorUse};
 pub use plugin::{DataPlugin, DefinitionsChanged, reload_definition_file};
 pub use relations::{grants_from_node, reactions_from_node};
 pub use source::{Node, NodeValue, parse_jsonc};

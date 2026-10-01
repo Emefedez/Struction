@@ -21,6 +21,8 @@ pub struct SchemaOptions {
     pub presets: Vec<String>,
     /// Extra top-level sections other crates interpret; their content is unconstrained.
     pub extra_sections: Vec<String>,
+    /// Registered extensors with their descriptions, offered as `extensors` completions.
+    pub extensors: Vec<(String, String)>,
 }
 
 impl Default for SchemaOptions {
@@ -29,6 +31,7 @@ impl Default for SchemaOptions {
             definitions: Vec::new(),
             presets: Vec::new(),
             extra_sections: DEFAULT_EXTRA_SECTIONS.map(String::from).into(),
+            extensors: Vec::new(),
         }
     }
 }
@@ -91,6 +94,24 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
     properties.insert(
         "presets".into(),
         json!({ "type": "array", "items": string_or_enum(&options.presets) }),
+    );
+    let extensor = if options.extensors.is_empty() {
+        json!({ "type": "string" })
+    } else {
+        let names: Vec<_> = options
+            .extensors
+            .iter()
+            .map(|(name, doc)| json!({ "const": name, "description": doc }))
+            .collect();
+        json!({ "oneOf": names })
+    };
+    properties.insert(
+        "extensors".into(),
+        json!({
+            "type": "array",
+            "items": extensor,
+            "description": "Packages extending this definition, added to those it inherits.",
+        }),
     );
     properties.insert("transform".into(), transform);
     properties.insert(

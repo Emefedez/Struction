@@ -10,14 +10,16 @@ use struction_core::{Definition, DefinitionPath};
 
 use crate::build::ComponentValue;
 use crate::error::{DataError, ErrorKind};
+use crate::extensors::{ExtensorUse, Named};
 use crate::source::{Member, Node, NodeValue, Span};
 
-/// Sections in canonical file order: identity and `descendsFrom`, transform, components,
-/// constraints, reactions. The order is a convention for readers, never semantics.
-pub const CANONICAL_ORDER: [&str; 7] = [
+/// Sections in canonical file order: identity and `descendsFrom`, extensors, transform,
+/// components, constraints, reactions. The order is a convention for readers, never semantics.
+pub const CANONICAL_ORDER: [&str; 8] = [
     "$schema",
     "descendsFrom",
     "presets",
+    "extensors",
     "transform",
     "components",
     "constraints",
@@ -51,6 +53,7 @@ pub(crate) struct Layer {
     pub root_span: Span,
     pub descends_from: Option<(String, Span)>,
     pub presets: Vec<(String, Span)>,
+    pub extensors: Vec<(String, Span)>,
     /// `components` (with `transform` folded in as the `Transform` component), `constraints`,
     /// `reactions` and extra sections.
     pub body: Node,
@@ -87,6 +90,7 @@ pub(crate) fn parse_layer(
     };
     let mut descends_from = None;
     let mut presets = Vec::new();
+    let mut extensors = Vec::new();
     let mut transform: Option<Member> = None;
     let mut body = Vec::new();
     for member in members {
@@ -104,6 +108,15 @@ pub(crate) fn parse_layer(
                 for item in items {
                     expect(item, "string", item.as_str().is_some())?;
                     presets.push((item.as_str().unwrap().to_owned(), item.span.clone()));
+                }
+            }
+            "extensors" => {
+                let items = expect(value, "array of extensor names", value.as_array().is_some())?
+                    .as_array()
+                    .unwrap();
+                for item in items {
+                    expect(item, "string", item.as_str().is_some())?;
+                    extensors.push((item.as_str().unwrap().to_owned(), item.span.clone()));
                 }
             }
             "transform" => {
@@ -169,6 +182,7 @@ pub(crate) fn parse_layer(
         root_span,
         descends_from,
         presets,
+        extensors,
     })
 }
 
@@ -196,8 +210,12 @@ pub struct Resolved {
     pub id: String,
     /// Ancestors, nearest first; the last one is the primordial type.
     pub lineage: Vec<String>,
+    /// Extensors in use: named ones first, then those inferred from components or requirements.
+    pub extensors: Vec<ExtensorUse>,
     pub components: Vec<ComponentValue>,
     pub(crate) body: Node,
+    /// The `extensors` entries as written, which instances extend with their overrides.
+    pub(crate) named: Vec<Named>,
     value: Value,
 }
 
@@ -205,6 +223,7 @@ impl Resolved {
     pub(crate) fn new(
         id: String,
         lineage: Vec<String>,
+        (named, extensors): (Vec<Named>, Vec<ExtensorUse>),
         components: Vec<ComponentValue>,
         body: Node,
     ) -> Self {
@@ -212,8 +231,10 @@ impl Resolved {
         Self {
             id,
             lineage,
+            extensors,
             components,
             body,
+            named,
             value,
         }
     }
@@ -224,13 +245,16 @@ impl Resolved {
         self.body.get(name)
     }
 
-    /// The merged data without spans. Two resolutions are equal when this and the lineage are.
+    /// The merged data without spans. Two resolutions are equal when this, the lineage and the
+    /// extensors are.
     pub fn data(&self) -> &Value {
         &self.value
     }
 
     pub fn same_data(&self, other: &Resolved) -> bool {
-        self.lineage == other.lineage && self.value == other.value
+        self.lineage == other.lineage
+            && self.extensors == other.extensors
+            && self.value == other.value
     }
 
     /// The core [`Definition`] component: this definition's path and its lineage, so queries

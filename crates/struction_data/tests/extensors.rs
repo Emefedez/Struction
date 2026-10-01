@@ -1,0 +1,237 @@
+mod common;
+
+use std::collections::BTreeMap;
+
+use common::*;
+use struction_core::{ExtensorMeta, ExtensorRegistry};
+use struction_data::{DefinitionStore, ExtensorReason, ExtensorUse, parse_jsonc};
+
+/// `Health` belongs to the inferred `living` package; `Flammable` to the opt-in `fire`, which
+/// supplies it and builds on `living`, which builds on `physics`.
+fn extensors() -> ExtensorRegistry {
+    let mut extensors = ExtensorRegistry::default();
+    extensors.register(ExtensorMeta::inferred("physics").owns::<Surface>());
+    extensors.register(
+        ExtensorMeta::inferred("living")
+            .owns::<Health>()
+            .requires("physics"),
+    );
+    extensors.register(
+        ExtensorMeta::opt_in("fire")
+            .doc("Burns")
+            .supplies::<Flammable>()
+            .requires("living"),
+    );
+    extensors.register(ExtensorMeta::opt_in("loot").owns::<Loot>());
+    extensors
+}
+
+fn load(files: &[(&str, &str)]) -> DefinitionStore {
+    let sources: BTreeMap<String, String> = files
+        .iter()
+        .map(|(path, text)| (path.to_string(), text.to_string()))
+        .collect();
+    let mut store = DefinitionStore::new("/nonexistent/struction-extensor-test");
+    store.set_extensors(extensors());
+    store.preview_sources(&sources, &registry())
+}
+
+fn errors(store: &DefinitionStore) -> Vec<String> {
+    store.errors().iter().map(ToString::to_string).collect()
+}
+
+fn named(name: &str, by: &str, components: &[&str], supplied: &[&str]) -> ExtensorUse {
+    ExtensorUse {
+        name: name.into(),
+        reason: ExtensorReason::Named { by: by.into() },
+        components: components.iter().map(|c| c.to_string()).collect(),
+        supplied: supplied.iter().map(|c| c.to_string()).collect(),
+    }
+}
+
+#[test]
+fn naming_an_extensor_supplies_its_defaults_and_explains_the_rest() {
+    let store = load(&[
+        (
+            "Actor/entity.jsonc",
+            r#"{ "components": { "Health": { "max": 5 } } }"#,
+        ),
+        (
+            "torch/entity.jsonc",
+            r#"{ "descendsFrom": "Actor", "extensors": ["fire"] }"#,
+        ),
+    ]);
+    assert_eq!(errors(&store), Vec::<String>::new());
+    let torch = store.get("torch").unwrap();
+    assert_eq!(torch.component::<Flammable>(), Some(&Flammable::default()));
+    assert_eq!(
+        torch.extensors,
+        [
+            named("fire", "torch", &["Flammable"], &["Flammable"]),
+            ExtensorUse {
+                name: "living".into(),
+                reason: ExtensorReason::Owns("Health".into()),
+                components: vec!["Health".into()],
+                supplied: vec![],
+            },
+            ExtensorUse {
+                name: "physics".into(),
+                reason: ExtensorReason::RequiredBy("living".into()),
+                components: vec![],
+                supplied: vec![],
+            },
+        ]
+    );
+    // Without the extensor, nothing is supplied and nothing opt-in is used.
+    let actor = store.get("Actor").unwrap();
+    assert!(actor.component::<Flammable>().is_none());
+    assert!(actor.extensors.iter().all(|e| !e.is_named()));
+}
+
+#[test]
+fn authored_tuning_wins_over_supplied_defaults() {
+    let store = load(&[(
+        "Torch/entity.jsonc",
+        r#"{ "extensors": ["fire"], "components": { "Health": {}, "Flammable": { "ignition_temperature": 90 } } }"#,
+    )]);
+    assert_eq!(errors(&store), Vec::<String>::new());
+    let torch = store.get("Torch").unwrap();
+    assert_eq!(
+        torch.component::<Flammable>().unwrap().ignition_temperature,
+        90.0
+    );
+    assert!(torch.extensors[0].supplied.is_empty());
+}
+
+#[test]
+fn opt_in_components_need_their_extensor_named() {
+    let store = load(&[(
+        "Chest/entity.jsonc",
+        "{\n  \"components\": {\n    \"Loot\": { \"items\": [] }\n  }\n}",
+    )]);
+    assert_eq!(
+        errors(&store),
+        [
+            "Chest/entity.jsonc:3: Loot belongs to the opt-in extensor \"loot\"; add it to \"extensors\""
+        ]
+    );
+}
+
+#[test]
+fn unknown_extensors_and_unmet_opt_in_requirements_are_reported() {
+    let mut extensors = extensors();
+    extensors.register(ExtensorMeta::opt_in("arson").requires("fire"));
+    let mut store = DefinitionStore::new("/nonexistent/struction-extensor-test");
+    store.set_extensors(extensors);
+    let store = store.preview_sources(
+        &BTreeMap::from([
+            (
+                "A/entity.jsonc".to_string(),
+                "{\n  \"extensors\": [\"fly\"]\n}".to_string(),
+            ),
+            (
+                "B/entity.jsonc".to_string(),
+                "{\n  \"extensors\": [\"arson\"]\n}".to_string(),
+            ),
+        ]),
+        &registry(),
+    );
+    assert_eq!(
+        errors(&store),
+        [
+            "A/entity.jsonc:2: unknown extensor \"fly\", registered: arson, fire, living, loot, physics",
+            "B/entity.jsonc:2: extensor \"arson\" needs \"fire\"; add it to \"extensors\"",
+        ]
+    );
+}
+
+#[test]
+fn extensors_accumulate_through_presets_inheritance_and_overrides() {
+    let store = load(&[
+        ("presets/burning.jsonc", r#"{ "extensors": ["fire"] }"#),
+        (
+            "Crate/entity.jsonc",
+            r#"{ "components": { "Health": {} } }"#,
+        ),
+        (
+            "crates/rich/entity.jsonc",
+            r#"{ "descendsFrom": "Crate", "presets": ["burning"], "extensors": ["loot"] }"#,
+        ),
+        (
+            "crates/richer/entity.jsonc",
+            r#"{ "descendsFrom": "crates/rich", "extensors": ["fire"] }"#,
+        ),
+    ]);
+    assert_eq!(errors(&store), Vec::<String>::new());
+    let named_by = |id: &str| -> Vec<(String, ExtensorReason)> {
+        store
+            .get(id)
+            .unwrap()
+            .extensors
+            .iter()
+            .filter(|e| e.is_named())
+            .map(|e| (e.name.clone(), e.reason.clone()))
+            .collect()
+    };
+    let by = |by: &str| ExtensorReason::Named { by: by.into() };
+    let expected = vec![
+        ("fire".to_string(), by("preset burning")),
+        ("loot".to_string(), by("crates/rich")),
+    ];
+    assert_eq!(named_by("crates/rich"), expected);
+    // Naming it again changes nothing: the first declaration explains it.
+    assert_eq!(named_by("crates/richer"), expected);
+
+    let over = parse_jsonc("scene.jsonc", r#"{ "extensors": ["fire"] }"#).unwrap();
+    let instance = store
+        .instantiate("Crate", Some(&over), &registry())
+        .unwrap();
+    assert!(instance.component::<Flammable>().is_some());
+    assert_eq!(
+        instance.extensors[0].reason,
+        ExtensorReason::Named {
+            by: "a scene override".into()
+        }
+    );
+}
+
+#[test]
+fn changing_extensors_counts_as_changed_data() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("Torch")).unwrap();
+    let file = dir.path().join("Torch/entity.jsonc");
+    std::fs::write(&file, r#"{ "components": { "Health": {} } }"#).unwrap();
+    let registry = registry();
+    let mut store = DefinitionStore::new(dir.path());
+    store.set_extensors(extensors());
+    store.load(&registry);
+    std::fs::write(
+        &file,
+        r#"{ "extensors": ["fire"], "components": { "Health": {} } }"#,
+    )
+    .unwrap();
+    let report = store.reload_file(&file, &registry);
+    assert_eq!(report.changed, ["Torch"]);
+    assert!(
+        store
+            .get("Torch")
+            .unwrap()
+            .component::<Flammable>()
+            .is_some()
+    );
+}
+
+#[test]
+fn the_schema_offers_registered_extensors() {
+    let store = load(&[]);
+    let schema = store.schema(&registry());
+    let items = &schema["properties"]["extensors"]["items"]["oneOf"];
+    assert!(
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["const"] == "fire" && item["description"] == "Burns"),
+        "{items}"
+    );
+}

@@ -63,6 +63,12 @@ pub enum ErrorKind {
     /// An action reference that does not resolve or does not match the action's signature.
     #[error("{0}")]
     Action(String),
+    #[error("unknown extensor \"{name}\"{}", if .known.is_empty() { String::new() } else { format!(", registered: {}", .known.join(", ")) })]
+    UnknownExtensor { name: String, known: Vec<String> },
+    #[error("{component} belongs to the opt-in extensor \"{extensor}\"; add it to \"extensors\"")]
+    ExtensorNotNamed { component: String, extensor: String },
+    #[error("extensor \"{extensor}\" needs \"{requires}\"; add it to \"extensors\"")]
+    ExtensorRequires { extensor: String, requires: String },
     #[error(
         "definition \"{0}\" has no descendsFrom and is not primordial (primordial names are capitalized)"
     )]
