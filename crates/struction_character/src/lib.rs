@@ -21,9 +21,11 @@ mod combat;
 mod controller;
 mod dodge;
 mod input;
+mod states;
 
 pub use combat::{Attack, Attacking, CombatPlugin};
 pub use dodge::{DodgePlugin, Roll, Rolling};
+pub use states::HeldStates;
 
 pub use animation::{CharacterAnimationPlugin, RigOf, spawn_rig};
 pub use controller::{

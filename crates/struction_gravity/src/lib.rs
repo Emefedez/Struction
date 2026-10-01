@@ -51,13 +51,20 @@ pub enum GravityKind {
     Radial { strength: f32, falloff: Falloff },
 }
 
-/// A source of gravitational acceleration (m/s^2) inside a volume.
+/// A source of gravitational acceleration (m/s^2) inside a volume. The default pulls toward the
+/// entity at 9.81 within 3 m, like a small planet.
 #[derive(Component, Reflect, Clone, Copy, Debug, PartialEq)]
-#[reflect(Component)]
+#[reflect(Component, Default)]
 #[require(Transform)]
 pub struct GravityField {
     pub volume: GravityVolume,
     pub kind: GravityKind,
+}
+
+impl Default for GravityField {
+    fn default() -> Self {
+        Self::planet(9.81, 3.0)
+    }
 }
 
 impl GravityField {

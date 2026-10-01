@@ -261,7 +261,10 @@ fn cancel_windows_let_actions_cut_moves_short() {
     intent(&mut app, body).jump_requested = true;
     step(&mut app, 1);
     assert!(app.world().get::<Rolling>(body).is_none());
-    assert_eq!(app.world().get::<CharacterMove>(body).unwrap().recovery, 0.0);
+    assert_eq!(
+        app.world().get::<CharacterMove>(body).unwrap().recovery,
+        0.0
+    );
     assert!(app.world().get::<LinearVelocity>(body).unwrap().y > 1.0);
 
     // Landed and recovered: a roll cancels a swing into a roll.
@@ -272,4 +275,34 @@ fn cancel_windows_let_actions_cut_moves_short() {
     step(&mut app, 1);
     assert!(app.world().get::<Attacking>(body).is_none());
     assert!(app.world().get::<Rolling>(body).is_some());
+}
+
+#[test]
+fn states_switch_components_while_they_hold() {
+    use std::sync::Arc;
+    use struction_core::{StateRule, StateRules};
+
+    let (mut app, body) = scene();
+    let field = GravityField::planet(9.81, 3.0);
+    app.world_mut()
+        .entity_mut(body)
+        .insert(StateRules(Arc::from(vec![StateRule {
+            state: "Rolling".into(),
+            enable: vec![(std::any::TypeId::of::<GravityField>(), Box::new(field) as _)],
+            disable: vec![std::any::TypeId::of::<Attack>()],
+        }])));
+    step(&mut app, 1);
+    assert!(app.world().get::<GravityField>(body).is_none());
+
+    intent(&mut app, body).roll_requested = true;
+    step(&mut app, 2);
+    assert_eq!(app.world().get::<GravityField>(body), Some(&field));
+    assert!(app.world().get::<Attack>(body).is_none());
+
+    while app.world().get::<Rolling>(body).is_some() {
+        step(&mut app, 1);
+    }
+    step(&mut app, 1);
+    assert!(app.world().get::<GravityField>(body).is_none());
+    assert_eq!(app.world().get::<Attack>(body), Some(&Attack::default()));
 }

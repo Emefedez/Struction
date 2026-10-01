@@ -69,6 +69,10 @@ pub enum ErrorKind {
     ExtensorNotNamed { component: String, extensor: String },
     #[error("extensor \"{extensor}\" needs \"{requires}\"; add it to \"extensors\"")]
     ExtensorRequires { extensor: String, requires: String },
+    #[error("unknown state \"{name}\"{}", if .known.is_empty() { String::new() } else { format!(", registered: {}", .known.join(", ")) })]
+    UnknownState { name: String, known: Vec<String> },
+    #[error("state {state} comes from the opt-in extensor \"{extensor}\"; add it to \"extensors\"")]
+    StateNeedsExtensor { state: String, extensor: String },
     #[error(
         "preset \"{name}\" is defined by the {library} library; give the project's another name"
     )]

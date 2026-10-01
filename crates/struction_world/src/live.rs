@@ -19,7 +19,7 @@ use bevy::ecs::entity_disabling::Disabled;
 use bevy::ecs::query::Allow;
 use bevy::prelude::*;
 use bevy::reflect::{ReflectMut, ReflectRef, TypeRegistry};
-use struction_core::ActionRegistry;
+use struction_core::{ActionRegistry, StateRules};
 use struction_data::{DefinitionStore, Node, Resolved, reload_definition_file};
 
 use crate::cells::CellSize;
@@ -504,6 +504,10 @@ fn refresh(
         }
     }
     entity.insert((resolved.definition(), new));
+    match &resolved.states {
+        Some(states) => entity.insert(states.clone()),
+        None => entity.remove::<StateRules>(),
+    };
     if let Some(grants) = grants {
         entity.insert(grants);
     }

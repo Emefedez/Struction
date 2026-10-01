@@ -104,7 +104,8 @@ impl Plugin for DodgePlugin {
                 ExtensorMeta::opt_in("dodge")
                     .doc("Ground roll in the movement direction (Left Shift, `dodge/roll`)")
                     .supplies::<Roll>()
-                    .requires("character"),
+                    .requires("character")
+                    .state("Rolling"),
             )
             .register_action(
                 ActionMeta::new("dodge/roll")

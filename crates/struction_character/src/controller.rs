@@ -322,7 +322,11 @@ impl Plugin for CharacterControllerPlugin {
                     .doc("A capsule that walks, jumps and swims under local gravity")
                     .owns::<CharacterController>()
                     .owns::<PlayerControlled>()
-                    .requires("physics"),
+                    .requires("physics")
+                    .state("Grounded")
+                    .state("Airborne")
+                    .state("Swimming")
+                    .state("Recovering"),
             )
             .configure_sets(
                 FixedPostUpdate,
@@ -342,6 +346,13 @@ impl Plugin for CharacterControllerPlugin {
                 (probe_ground, sense_motion)
                     .chain()
                     .in_set(CharacterSystems::Sense),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                crate::states::apply_state_rules
+                    .after(CharacterSystems::Moves)
+                    .before(CharacterSystems::Control)
+                    .in_set(PhysicsSystems::Prepare),
             )
             .add_systems(
                 FixedPostUpdate,

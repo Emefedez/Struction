@@ -16,13 +16,15 @@ fn extensors() -> ExtensorRegistry {
     extensors.register(
         ExtensorMeta::inferred("living")
             .owns::<Health>()
-            .requires("physics"),
+            .requires("physics")
+            .state("Resting"),
     );
     extensors.register(
         ExtensorMeta::opt_in("fire")
             .doc("Burns")
             .supplies::<Flammable>()
-            .requires("living"),
+            .requires("living")
+            .state("Burning"),
     );
     extensors.register(ExtensorMeta::opt_in("loot").owns::<Loot>());
     extensors
@@ -322,4 +324,39 @@ fn opt_in_extensors_whose_requirements_are_met_are_suggested() {
     assert!(suggested("Rock").is_empty());
     assert!(suggested("actors/torch").is_empty());
     assert!(suggested("actors/damp").is_empty());
+}
+
+#[test]
+fn states_switch_components_and_are_validated() {
+    let store = load(&[(
+        "Actor/entity.jsonc",
+        r#"{ "extensors": ["fire"], "components": { "Health": {} }, "states": { "Resting": { "enable": { "Surface": { "friction": 2 } }, "disable": ["Health"] }, "Burning": { "disable": ["Flammable"] } } }"#,
+    )]);
+    assert_eq!(errors(&store), Vec::<String>::new());
+    let rules = store.get("Actor").unwrap().states.clone().unwrap();
+    assert_eq!(rules.0.len(), 2);
+    assert_eq!(rules.0[0].state, "Resting");
+    assert_eq!(
+        rules.0[0].enable[0].1.downcast_ref::<Surface>(),
+        Some(&Surface {
+            friction: 2.0,
+            drag: 0.0
+        })
+    );
+    assert_eq!(rules.0[0].disable, [std::any::TypeId::of::<Health>()]);
+
+    let store = load(&[(
+        "Actor/entity.jsonc",
+        "{\n  \"states\": {\n    \"Sleeping\": {},\n    \"Burning\": {},\n    \"Resting\": { \"enable\": { \"Loot\": {} }, \"disable\": [\"Nope\"], \"other\": 1 }\n  }\n}",
+    )]);
+    assert_eq!(
+        errors(&store),
+        [
+            "Actor/entity.jsonc:3: unknown state \"Sleeping\", registered: Burning, Resting",
+            "Actor/entity.jsonc:4: state Burning comes from the opt-in extensor \"fire\"; add it to \"extensors\"",
+            "Actor/entity.jsonc:5: Loot belongs to the opt-in extensor \"loot\"; add it to \"extensors\"",
+            "Actor/entity.jsonc:5: unknown component \"Nope\"",
+            "Actor/entity.jsonc:5: unknown field \"other\" in state Resting",
+        ]
+    );
 }

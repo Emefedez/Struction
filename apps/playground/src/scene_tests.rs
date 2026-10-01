@@ -312,3 +312,35 @@ fn blood_knight_pieces_sit_on_humanoid_joints() {
         assert!(scene.nodes.iter().any(|node| node.name == piece), "{piece}");
     }
 }
+
+#[test]
+fn naming_gravity_makes_the_player_pull_like_a_planet() {
+    use struction_gravity::LocalGravity;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    copy(&default_project(), &root);
+    // A project override of the engine's player: only the extensor and a wider reach.
+    let player = root.join("characters/player/entity.jsonc");
+    std::fs::create_dir_all(player.parent().unwrap()).unwrap();
+    std::fs::write(
+        &player,
+        r#"{ "extensors": ["gravity"], "components": { "GravityField": { "volume": { "Sphere": { "radius": 8 } } } } }"#,
+    )
+    .unwrap();
+    let mut app = scene_app_at(root);
+    assert!(
+        app.world()
+            .resource::<WorldErrors>()
+            .iter()
+            .next()
+            .is_none()
+    );
+    step(&mut app, 5);
+    // The pushable cube, 5 m in front of the player, is pulled toward it as well as down.
+    let cube = entity(&mut app, "Playground/pushable/cube");
+    let pull = app.world().get::<LocalGravity>(cube).unwrap().0;
+    assert!(pull.z > 5.0, "{pull}");
+    let player = entity(&mut app, "Playground/start/player");
+    assert!(app.world().get::<GravityField>(player).is_some());
+}

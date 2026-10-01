@@ -114,7 +114,8 @@ impl Plugin for CombatPlugin {
                 ExtensorMeta::opt_in("combat")
                     .doc("Melee swing that knocks back what it hits (left mouse or F, `combat/attack`)")
                     .supplies::<Attack>()
-                    .requires("character"),
+                    .requires("character")
+                    .state("Attacking"),
             )
             .register_action(
                 ActionMeta::new("combat/attack")

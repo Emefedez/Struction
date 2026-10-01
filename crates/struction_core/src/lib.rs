@@ -9,6 +9,7 @@ mod extensors;
 mod grants;
 mod identity;
 mod relations;
+mod states;
 
 use bevy::prelude::*;
 
@@ -26,6 +27,7 @@ pub use extensors::{
 pub use grants::{ActionSet, GrantRecord, GrantRule, GrantsToWards, RefusesGrants};
 pub use identity::{Definition, DefinitionPath, IdentityError, StableId, StableIdGenerator};
 pub use relations::{MasterIs, Order, Orders, Relations, Wards};
+pub use states::{StateRule, StateRules};
 
 /// Phases of the action machinery in `FixedUpdate`, in this order.
 #[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]

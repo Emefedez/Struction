@@ -2,10 +2,13 @@
 //!
 //! A project directory holds `**/entity.jsonc` (the definition `<dir>`) and `presets/**.jsonc`.
 //! A definition file has the canonical sections `descendsFrom`, `presets`, `extensors`,
-//! `transform`, `components`, `constraints`, `reactions` (plus extra sections other crates own,
-//! kept raw). `transform` is shorthand for the `Transform` component. `extensors` names the
-//! packages extending the definition (see `struction_core::ExtensorRegistry`); they accumulate
-//! through inheritance, presets and overrides.
+//! `transform`, `components`, `constraints`, `reactions` and `states`, plus extra sections other
+//! crates own, kept raw. `transform` is shorthand for the `Transform` component. `extensors`
+//! names the packages extending the definition (see `struction_core::ExtensorRegistry`); they
+//! accumulate through inheritance, presets and overrides. `states` lists components switched
+//! while a state an extensor contributes holds ([`Resolved::states`]). A store may also load
+//! read-only libraries, such as the engine's base definitions, which the project descends from
+//! and overrides.
 //!
 //! Resolution layers, later over earlier, with objects deep-merged field by field and arrays and
 //! scalars replaced: parent definition (recursively), the definition's presets in listed order,

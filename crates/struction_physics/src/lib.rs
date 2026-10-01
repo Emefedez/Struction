@@ -124,8 +124,8 @@ impl Plugin for PhysicsPlugin {
         )
         .register_extensor(
             ExtensorMeta::inferred("gravity")
-                .doc("Gravity fields summed per body")
-                .owns::<GravityField>()
+                .doc("A gravity field: named, the entity pulls what is near it like a small planet")
+                .supplies::<GravityField>()
                 .owns::<GravityHysteresis>(),
         );
     }

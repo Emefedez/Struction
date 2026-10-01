@@ -23,6 +23,8 @@ pub struct SchemaOptions {
     pub extra_sections: Vec<String>,
     /// Registered extensors with their descriptions, offered as `extensors` completions.
     pub extensors: Vec<(String, String)>,
+    /// States extensors contribute, offered as `states` keys.
+    pub states: Vec<String>,
 }
 
 impl Default for SchemaOptions {
@@ -32,6 +34,7 @@ impl Default for SchemaOptions {
             presets: Vec::new(),
             extra_sections: DEFAULT_EXTRA_SECTIONS.map(String::from).into(),
             extensors: Vec::new(),
+            states: Vec::new(),
         }
     }
 }
@@ -128,6 +131,23 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
             "type": "object",
             "properties": component_props,
             "additionalProperties": false,
+        }),
+    );
+    let components = properties["components"].clone();
+    properties.insert(
+        "states".into(),
+        json!({
+            "type": "object",
+            "description": "Components enabled and disabled while a state holds.",
+            "propertyNames": string_or_enum(&options.states),
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "enable": components,
+                    "disable": { "type": "array", "items": { "type": "string" } },
+                },
+                "additionalProperties": false,
+            },
         }),
     );
     properties.insert("constraints".into(), json!({ "type": "array" }));

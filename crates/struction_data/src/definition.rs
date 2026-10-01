@@ -6,7 +6,7 @@ use bevy::ecs::reflect::ReflectComponent;
 use bevy::prelude::*;
 use bevy::reflect::TypeRegistry;
 use serde_json::Value;
-use struction_core::{Definition, DefinitionPath};
+use struction_core::{Definition, DefinitionPath, StateRules};
 
 use crate::build::ComponentValue;
 use crate::error::{DataError, ErrorKind};
@@ -14,8 +14,9 @@ use crate::extensors::{DroppedExtensor, ExtensorUse, Named};
 use crate::source::{Member, Node, NodeValue, Span};
 
 /// Sections in canonical file order: identity and `descendsFrom`, extensors, transform,
-/// components, constraints, reactions. The order is a convention for readers, never semantics.
-pub const CANONICAL_ORDER: [&str; 8] = [
+/// components, constraints, reactions, and last `states`, which switch components over time. The
+/// order is a convention for readers, never semantics.
+pub const CANONICAL_ORDER: [&str; 9] = [
     "$schema",
     "descendsFrom",
     "presets",
@@ -24,6 +25,7 @@ pub const CANONICAL_ORDER: [&str; 8] = [
     "components",
     "constraints",
     "reactions",
+    "states",
 ];
 
 /// Sections other crates own (behavior trees, master grants) that are kept as raw data.
@@ -131,6 +133,10 @@ pub(crate) fn parse_layer(
                 expect(value, "array", value.as_array().is_some())?;
                 body.push(member);
             }
+            "states" => {
+                expect(value, "object of states", value.as_object().is_some())?;
+                body.push(member);
+            }
             other if extra_sections.contains(other) => body.push(member),
             _ => {
                 return Err(DataError::at(
@@ -215,6 +221,8 @@ pub struct Resolved {
     /// Extensors named by an ancestor or preset that a later layer dropped with `"-name"`.
     pub dropped: Vec<DroppedExtensor>,
     pub components: Vec<ComponentValue>,
+    /// What the `states` section switches, applied by the packages owning the states.
+    pub states: Option<StateRules>,
     pub(crate) body: Node,
     /// The `extensors` entries as written, which instances extend with their overrides.
     pub(crate) named: Vec<Named>,
@@ -228,6 +236,7 @@ impl Resolved {
         lineage: Vec<String>,
         (named, dropped, extensors): (Vec<Named>, Vec<Named>, Vec<ExtensorUse>),
         components: Vec<ComponentValue>,
+        states: Option<StateRules>,
         body: Node,
     ) -> Self {
         let value = body.to_value();
@@ -243,6 +252,7 @@ impl Resolved {
                 })
                 .collect(),
             components,
+            states,
             body,
             named,
             dropped_entries: dropped,
@@ -295,5 +305,8 @@ impl Resolved {
             reflect.insert(entity, &*component.value, registry);
         }
         entity.insert(self.definition());
+        if let Some(states) = &self.states {
+            entity.insert(states.clone());
+        }
     }
 }

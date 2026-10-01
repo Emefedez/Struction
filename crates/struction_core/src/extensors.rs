@@ -42,6 +42,8 @@ pub struct ExtensorMeta {
     pub components: Vec<OwnedComponent>,
     /// Extensors this one builds on. Inferred ones follow; opt-in ones must be named as well.
     pub requires: Vec<String>,
+    /// States it contributes, which definitions' `states` sections can name (`Rolling`).
+    pub states: Vec<String>,
 }
 
 impl ExtensorMeta {
@@ -62,6 +64,7 @@ impl ExtensorMeta {
             participation,
             components: Vec::new(),
             requires: Vec::new(),
+            states: Vec::new(),
         }
     }
 
@@ -94,6 +97,11 @@ impl ExtensorMeta {
         self.requires.push(extensor.into());
         self
     }
+
+    pub fn state(mut self, name: impl Into<String>) -> Self {
+        self.states.push(name.into());
+        self
+    }
 }
 
 /// Every registered extensor, by name.
@@ -101,6 +109,7 @@ impl ExtensorMeta {
 pub struct ExtensorRegistry {
     extensors: BTreeMap<String, ExtensorMeta>,
     owners: BTreeMap<TypeId, String>,
+    state_owners: BTreeMap<String, String>,
 }
 
 impl ExtensorRegistry {
@@ -122,6 +131,14 @@ impl ExtensorRegistry {
                 );
             }
         }
+        for state in &meta.states {
+            if let Some(owner) = self.state_owners.insert(state.clone(), meta.name.clone()) {
+                panic!(
+                    "state {state} is contributed by both the {owner} and {} extensors",
+                    meta.name
+                );
+            }
+        }
         self.extensors.insert(meta.name.clone(), meta);
     }
 
@@ -132,6 +149,15 @@ impl ExtensorRegistry {
     /// The extensor owning a component type.
     pub fn owner(&self, type_id: TypeId) -> Option<&ExtensorMeta> {
         self.owners.get(&type_id).and_then(|name| self.get(name))
+    }
+
+    /// The extensor contributing a state.
+    pub fn state_owner(&self, state: &str) -> Option<&ExtensorMeta> {
+        self.state_owners.get(state).and_then(|name| self.get(name))
+    }
+
+    pub fn states(&self) -> impl Iterator<Item = &str> {
+        self.state_owners.keys().map(String::as_str)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &ExtensorMeta> {

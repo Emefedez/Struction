@@ -68,7 +68,28 @@ still subject to its own `blocked_while`. Requests outside a window are refused 
 positive, everything else finite and nonnegative. Invalid tuning refuses the move and logs why.
 Generic JSONC loading validates types, not these ranges.
 
-## Simulation
+## States switch components
+
+A definition's `states` section (last in canonical order) enables and disables components while a
+state holds; leaving the state restores what it replaced:
+
+```jsonc
+"states": {
+  // A rolling character pulls what is near it, and cannot be pushed around by its own Surface.
+  "Rolling": { "enable": { "GravityField": { "volume": { "Sphere": { "radius": 4 } } } }, "disable": ["Surface"] },
+  // Slower while swimming: an enabled component is a whole value, defaults filling what is left out.
+  "Swimming": { "enable": { "CharacterController": { "move_speed": 2 } } }
+}
+```
+
+State names come from the extensors that contribute them: `character` (`Grounded`, `Airborne`,
+`Swimming`, `Recovering`), `dodge` (`Rolling`) and `combat` (`Attacking`). An unknown state is an
+error with its file and line, and a state or enabled component of an opt-in extensor needs that
+extensor named, like any of its components. Rules apply after the moves and before the
+controller each tick, so a state can retune either; two rules should not change the same
+component. Live reload replaces the rules and undoes the old ones first.
+
+
 
 The controller runs in four ordered `FixedPostUpdate` stages: `Sense` (ground probe, leaving
 the ground, swimming, recovery countdown), `Cancel` (cancel windows), `Moves` (extensors), then

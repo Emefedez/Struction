@@ -5,14 +5,17 @@
 //! naming one adds the components it supplies with their defaults. Every other extensor is
 //! inferred from the components it owns or from an extensor that requires it.
 
+use std::sync::Arc;
+
 use bevy::reflect::TypeRegistry;
 use bevy::reflect::std_traits::ReflectDefault;
-use struction_core::{ExtensorRegistry, Participation};
+use struction_core::{ExtensorRegistry, Participation, StateRule, StateRules};
 
-use crate::build::ComponentValue;
+use crate::build::{Builder, ComponentValue};
 use crate::definition::Resolved;
 use crate::error::{DataError, ErrorKind};
 use crate::source::{Node, Span};
+use crate::store::build_component_map;
 
 /// An `extensors` entry as written, with the definition or preset that wrote it.
 #[derive(Clone, Debug)]
@@ -253,4 +256,130 @@ fn short_name<'r>(component: &ComponentValue, registry: &'r TypeRegistry) -> &'r
     registry
         .get(component.type_id)
         .map_or("?", |r| r.type_info().type_path_table().short_path())
+}
+
+/// Builds the `states` section: for each state an extensor contributes, the components it
+/// enables and disables. A state of an opt-in extensor needs that extensor named, and so does an
+/// enabled component it owns.
+pub(crate) fn resolve_states(
+    body: &Node,
+    uses: &[ExtensorUse],
+    extensors: &ExtensorRegistry,
+    registry: &TypeRegistry,
+) -> Result<Option<StateRules>, Vec<DataError>> {
+    let Some(states) = body.get("states").and_then(Node::as_object) else {
+        return Ok(None);
+    };
+    let named = |name: &str| uses.iter().any(|u| u.name == name && u.is_named());
+    let mut errors = Vec::new();
+    let mut rules = Vec::new();
+    for member in states {
+        let state = &member.key;
+        match extensors.state_owner(state) {
+            None => {
+                errors.push(DataError::at(
+                    ErrorKind::UnknownState {
+                        name: state.clone(),
+                        known: extensors.states().map(str::to_owned).collect(),
+                    },
+                    &member.key_span,
+                ));
+                continue;
+            }
+            Some(owner) if owner.participation == Participation::OptIn && !named(&owner.name) => {
+                errors.push(DataError::at(
+                    ErrorKind::StateNeedsExtensor {
+                        state: state.clone(),
+                        extensor: owner.name.clone(),
+                    },
+                    &member.key_span,
+                ));
+                continue;
+            }
+            Some(_) => {}
+        }
+        let Some(fields) = member.value.as_object() else {
+            errors.push(DataError::at(
+                ErrorKind::TypeMismatch {
+                    expected: "object with enable and disable".into(),
+                    found: member.value.kind_name().into(),
+                },
+                &member.value.span,
+            ));
+            continue;
+        };
+        let mut rule = StateRule {
+            state: state.clone(),
+            enable: Vec::new(),
+            disable: Vec::new(),
+        };
+        for field in fields {
+            match field.key.as_str() {
+                "enable" => match build_component_map(&field.value, registry) {
+                    Ok(values) => {
+                        for value in values {
+                            if let Some(owner) = extensors.owner(value.type_id)
+                                && owner.participation == Participation::OptIn
+                                && !named(&owner.name)
+                            {
+                                errors.push(DataError::at(
+                                    ErrorKind::ExtensorNotNamed {
+                                        component: short_name(&value, registry).into(),
+                                        extensor: owner.name.clone(),
+                                    },
+                                    &field.key_span,
+                                ));
+                            }
+                            rule.enable.push((value.type_id, value.value));
+                        }
+                    }
+                    Err(build) => errors.extend(build),
+                },
+                "disable" => {
+                    let Some(items) = field.value.as_array() else {
+                        errors.push(DataError::at(
+                            ErrorKind::TypeMismatch {
+                                expected: "array of component names".into(),
+                                found: field.value.kind_name().into(),
+                            },
+                            &field.value.span,
+                        ));
+                        continue;
+                    };
+                    let builder = Builder { registry };
+                    for item in items {
+                        let found = match item.as_str() {
+                            Some(name) => builder
+                                .component_registration(name, &item.span)
+                                .map(|registration| registration.type_id()),
+                            None => Err(DataError::at(
+                                ErrorKind::TypeMismatch {
+                                    expected: "component name".into(),
+                                    found: item.kind_name().into(),
+                                },
+                                &item.span,
+                            )),
+                        };
+                        match found {
+                            Ok(type_id) => rule.disable.push(type_id),
+                            Err(error) => errors.push(error),
+                        }
+                    }
+                }
+                other => errors.push(DataError::at(
+                    ErrorKind::UnknownField {
+                        field: other.into(),
+                        ty: format!("state {state}"),
+                    },
+                    &field.key_span,
+                )),
+            }
+        }
+        rules.push(rule);
+    }
+    if errors.is_empty() {
+        Ok((!rules.is_empty()).then(|| StateRules(Arc::from(rules))))
+    } else {
+        Err(errors)
+    }
 }

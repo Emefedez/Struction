@@ -276,6 +276,7 @@ impl DefinitionStore {
                     .iter()
                     .map(|e| (e.name.clone(), e.doc.clone()))
                     .collect(),
+                states: self.extensors.states().map(str::to_owned).collect(),
             },
         )
     }
@@ -610,11 +611,13 @@ impl DefinitionStore {
             &self.extensors,
             registry,
         )?;
+        let states = extensors::resolve_states(&merged.body, &uses, &self.extensors, registry)?;
         Ok(Resolved::new(
             id.into(),
             merged.lineage,
             (merged.extensors, merged.dropped, uses),
             components,
+            states,
             merged.body,
         ))
     }
