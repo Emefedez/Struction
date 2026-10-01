@@ -74,6 +74,11 @@ From the design review's pending recommendations, treated as decided:
 | `struction_scene` | 1, 3 | Scene vocabulary (`Shape`, `Look`, rigs), project loading over the engine's base definitions and models (`content/`); drawing behind the `render` feature |
 | `struction_language` | Cross-cutting | Read-only editor host: `analyze` snapshots the definition and scene schemas, resolved definitions, extensor and action registrations and source diagnostics, with unsaved buffers replacing disk sources per request; JSONL `describe`/`analyze` |
 
+
+**IMPORTANT**
+Camera attachment is still a host system, it is intended to be able to easily adapt to needed moments (turn vertical for a top-down section, or forced 2d scrolling with no mouse control for a small section, in which player movement is also reduced (would probably need to publish the state petition from the camera for this, but perhaps the current permission and lineage system)).
+
+
 ## Status
 
 | Area | State |
