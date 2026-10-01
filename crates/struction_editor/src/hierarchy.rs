@@ -65,10 +65,16 @@ impl AuthoringProject {
             self.definitions()
                 .into_iter()
                 .map(|path| {
+                    // The lineage starts at the primordial type, so the parent is its last entry.
                     let parent = self
                         .inspect_definition(&path)
                         .ok()
-                        .and_then(|d| d.lineage.into_iter().filter(|a| a != &path).next_back().map(str::to_string))
+                        .and_then(|d| {
+                            d.lineage
+                                .into_iter()
+                                .rev()
+                                .find(|ancestor| ancestor != &path)
+                        })
                         .or_else(|| {
                             let file = format!("{path}/entity.jsonc");
                             let source = self.session().read(&file).ok()?;

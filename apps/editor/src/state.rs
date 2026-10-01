@@ -621,17 +621,18 @@ mod tests {
         editor.apply(Command::Open(dir.path().to_owned()));
         assert!(editor.rejection.is_none());
 
+        // The project names `dodge` on the sentry, so only `combat` is still suggested.
         let (used, suggested) = extensors(&mut editor, "characters/sentry");
-        assert_eq!(used, ["character", "physics"]);
-        assert_eq!(suggested, ["combat", "dodge"]);
+        assert_eq!(used, ["dodge", "character", "physics"]);
+        assert_eq!(suggested, ["combat"]);
         editor.apply(Command::AddExtensor {
             definition: "characters/sentry".into(),
-            extensor: "dodge".into(),
+            extensor: "combat".into(),
         });
         assert!(editor.rejection.is_none());
         let (used, suggested) = extensors(&mut editor, "characters/sentry");
-        assert_eq!(used[0], "dodge");
-        assert_eq!(suggested, ["combat"]);
+        assert!(used.contains(&"combat".to_owned()));
+        assert_eq!(suggested, Vec::<String>::new());
 
         editor.apply(Command::RemoveExtensor {
             definition: "characters/player".into(),

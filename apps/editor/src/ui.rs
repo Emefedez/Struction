@@ -1126,15 +1126,21 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 fact(ui, "Lineage");
-                for (index, ancestor) in lineage.iter().enumerate() {
+                // The lineage starts at the primordial type; the definition itself ends the chain
+                // unless an older inspection already included it.
+                let mut chain: Vec<&str> = lineage.iter().map(String::as_str).collect();
+                if !chain.contains(&path.as_str()) {
+                    chain.push(path);
+                }
+                for (index, ancestor) in chain.iter().enumerate() {
                     if index > 0 {
                         ui.label(RichText::new("›").color(theme::MUTED));
                     }
-                    if ancestor == path {
-                        ui.label(ancestor);
-                    } else if ui.link(ancestor).clicked() {
+                    if *ancestor == path {
+                        ui.label(*ancestor);
+                    } else if ui.link(*ancestor).clicked() {
                         commands.push(Command::Select(Some(Selected::Definition(
-                            ancestor.clone(),
+                            (*ancestor).to_owned(),
                         ))));
                     }
                 }

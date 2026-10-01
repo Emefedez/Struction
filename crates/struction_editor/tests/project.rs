@@ -260,14 +260,15 @@ fn templates_are_validated_and_never_overwrite_existing_files() {
         .unwrap();
     assert!(project.definitions().contains(&"guards/new".into()));
     assert!(project.create_definition("guards/new", "Actor").is_err());
-    assert!(
+    // A lineage reads from the primordial type down, so the new definition's parent is last.
+    assert_eq!(
         project
             .preview()
             .resource::<DefinitionStore>()
             .get("guards/new")
             .unwrap()
-            .lineage
-            .contains(&"guards/ogre".into())
+            .lineage,
+        ["Actor", "guards/ogre"]
     );
 }
 

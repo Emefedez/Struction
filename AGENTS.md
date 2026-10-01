@@ -52,7 +52,7 @@ From the design review's pending recommendations, treated as decided:
 - Actions are instantaneous; durations are state components (`Dying { timer }`) that invoke another action on completion. A shared system invokes `die` when `Health <= 0`.
 - Spawners author world/zone positions; the streaming cell is derived.
 - Wards of a dead or removed master become orphans; masters declare reactions for anything else.
-- Every lineage ends in a primordial (capitalized) type.
+- Every lineage begins in a primordial (capitalized) type, so a chain reads from the root down to the definition itself (`Actor → characters/humanoid → characters/player`).
 - Renaming a path rewrites references and records an `old -> new` alias for saves.
 - Editor UI: egui (`bevy_egui`). Scripting: Rust only. AI: behavior trees with a running status; boids for schools.
 

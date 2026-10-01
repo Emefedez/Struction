@@ -175,10 +175,10 @@ test('reports keys and values apart from the cursor', () => {
 
 test('hovers a definition path with its lineage', async () => {
   const inherited = '{\n  "descendsFrom": "characters/humanoid"\n}\n';
-  assert.match(await hover(ENTITY, inherited, '"characters/humanoid"'), /characters\/humanoid → Actor/);
+  assert.match(await hover(ENTITY, inherited, '"characters/humanoid"'), /Actor → characters\/humanoid/);
   const library = '{\n  "descendsFrom": "guards/ogre"\n}\n';
   const shown = await hover(ENTITY, library, '"guards/ogre"');
-  assert.match(shown, /guards\/ogre → Actor/);
+  assert.match(shown, /Actor → guards\/ogre/);
   assert.match(shown, /engine library/);
 });
 
@@ -299,10 +299,19 @@ test('maps engine positions onto the token they point at', () => {
   assert.deepEqual(engineRange('{}\n', null, null).start, { line: 0, character: 0 });
 });
 
+test('reads a lineage from the primordial type down to the definition', () => {
+  const chain = describeDefinition({ ...snapshot.definitions[0], path: 'characters/player',
+    lineage: ['Actor', 'characters/humanoid'] });
+  assert.match(chain, /Lineage: Actor → characters\/humanoid → characters\/player/);
+  // A primordial definition is its own root, with nothing to chain.
+  assert.match(describeDefinition({ ...snapshot.definitions[1], path: 'Actor', lineage: [] }),
+    /Lineage: Actor/);
+});
+
 test('describes a definition for inspection', () => {
   const described = describeDefinition(snapshot.definitions[0]);
   assert.match(described, /\*\*guards\/ogre\*\* · engine library/);
-  assert.match(described, /Lineage: guards\/ogre → Actor/);
+  assert.match(described, /Lineage: Actor → guards\/ogre/);
   assert.match(described, /Components: Health, Armor/);
   assert.match(described, /Extensors:\n- \*\*armor\*\*: required by living/);
 });

@@ -178,7 +178,7 @@ mod tests {
     fn small_ogre() -> Definition {
         Definition::new(
             "minions/small_ogre",
-            vec![path("minions/ogre"), path("Actor")],
+            vec![path("Actor"), path("minions/ogre")],
         )
     }
 
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn lineage_must_end_in_a_primordial() {
+    fn lineage_must_begin_in_a_primordial() {
         assert_eq!(small_ogre().validate(), Ok(()));
         assert_eq!(Definition::new("Actor", vec![]).validate(), Ok(()));
         assert_eq!(
@@ -219,12 +219,12 @@ mod tests {
 
     #[test]
     fn lineage_rejects_cycles_and_inner_primordials() {
-        let cyclic = Definition::new("a/b", vec![path("a/c"), path("a/b"), path("Actor")]);
+        let cyclic = Definition::new("a/b", vec![path("Actor"), path("a/c"), path("a/b")]);
         assert!(matches!(
             cyclic.validate(),
             Err(IdentityError::LineageCycle { .. })
         ));
-        let inner = Definition::new("a/b", vec![path("Actor"), path("a/c")]);
+        let inner = Definition::new("a/b", vec![path("a/c"), path("Actor")]);
         assert!(matches!(
             inner.validate(),
             Err(IdentityError::PrimordialInside { .. })

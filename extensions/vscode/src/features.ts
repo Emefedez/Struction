@@ -46,8 +46,9 @@ export function describeDefinition(definition: Definition): string {
     const why = Object.entries(e.reason).map(([kind, value]) => `${kind.replaceAll('_', ' ')} ${value}`).join(', ');
     return `- **${markdown(e.name)}**: ${markdown(why)}${e.supplied.length ? `; supplies ${e.supplied.map(markdown).join(', ')}` : ''}`;
   }).join('\n');
+  // The engine's lineage starts at the primordial type, so the definition itself goes last.
   return `**${markdown(definition.path)}**${definition.library ? ` · ${markdown(definition.library)} library` : ''}\n\n` +
-    `Lineage: ${[definition.path, ...definition.lineage].map(markdown).join(' → ')}\n\n` +
+    `Lineage: ${[...definition.lineage, definition.path].map(markdown).join(' → ')}\n\n` +
     `Components: ${definition.components.map(c => markdown(c.split('::').at(-1)!)).join(', ') || 'none'}` +
     (extensors ? `\n\nExtensors:\n${extensors}` : '');
 }

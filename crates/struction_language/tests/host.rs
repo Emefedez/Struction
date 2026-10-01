@@ -79,6 +79,7 @@ fn library_factory(root: &Path) -> App {
 }
 
 const OGRE: &str = "guards/ogre/entity.jsonc";
+const ELITE: &str = "guards/ogre_elite/entity.jsonc";
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -102,6 +103,10 @@ fn fixture() -> Fixture {
         (
             OGRE,
             "// The courtyard ogre.\n{\n  \"descendsFrom\": \"Actor\",\n  \"extensors\": [\"armor\"],\n  \"components\": { \"Health\": { \"max\": 60 } }\n}\n",
+        ),
+        (
+            ELITE,
+            r#"{"descendsFrom":"guards/ogre","components":{"Health":{"max":120}}}"#,
         ),
         (
             "boss/entity.jsonc",
@@ -248,6 +253,11 @@ fn reports_resolved_definitions_with_their_sources() {
     );
     assert_eq!(ogre["library"], Value::Null);
     assert_eq!(ogre["lineage"], json!(["Actor"]));
+    // The primordial type comes first, so a chain reads from the root down to the definition.
+    assert_eq!(
+        definition(&snapshot, "guards/ogre_elite")["lineage"],
+        json!(["Actor", "guards/ogre"])
+    );
     assert!(
         ogre["components"]
             .as_array()
