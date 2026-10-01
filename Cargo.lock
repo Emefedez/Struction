@@ -5708,6 +5708,7 @@ dependencies = [
  "struction_data",
  "struction_editor",
  "struction_scene",
+ "struction_world",
  "tempfile",
 ]
 

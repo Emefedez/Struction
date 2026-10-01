@@ -185,6 +185,13 @@ impl DefinitionStore {
             .map(|(library, _)| library.root.join(id).join(ENTITY_FILE))
     }
 
+    /// Every library's name and root, so clients can resolve the files it reports.
+    pub fn library_roots(&self) -> impl Iterator<Item = (&str, &Path)> {
+        self.libraries
+            .iter()
+            .map(|library| (library.name.as_str(), library.root.as_path()))
+    }
+
     fn library_entity(&self, id: &str) -> Option<(&Library, &Layer)> {
         self.libraries
             .iter()

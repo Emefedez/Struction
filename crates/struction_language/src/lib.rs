@@ -3,13 +3,91 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 
 use bevy::prelude::AppTypeRegistry;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use struction_core::Participation;
 use struction_data::DefinitionStore;
-use struction_editor::{AuthoringProject, ExtensorEntry, SessionError, protocol};
+use struction_editor::{AuthoringProject, Diagnostic, ExtensorEntry, SessionError, protocol};
+
+/// Library files are reported as `<package>:<path from the library root>`, which no client can
+/// open; project files stay project-relative because the client knows the root it passed.
+fn locatable(file: &str, libraries: &[(String, PathBuf)]) -> String {
+    match file.split_once(':') {
+        Some((library, relative)) => match libraries.iter().find(|(name, _)| name == library) {
+            Some((_, root)) => root.join(relative).to_string_lossy().into_owned(),
+            None => file.to_string(),
+        },
+        None => file.to_string(),
+    }
+}
+
+/// JSON Schema for `scenes/**.jsonc`. The shape mirrors the grammar `struction_world::scene`
+/// reads; `overrides` holds the definition schema, and `definition` lists the resolved paths, so a
+/// client needs nothing else to complete or explain a scene.
+pub fn scene_schema(store: &DefinitionStore, definition_schema: &Value) -> Value {
+    let position = json!({
+        "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3,
+        "description": "Position as [x, y, z]: world coordinates for a zone, the zone's own for a spawner.",
+    });
+    let rotation = json!({
+        "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3,
+        "description": "Euler angles in degrees as [x, y, z], applied yaw then pitch then roll.",
+    });
+    let spawn = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["definition"],
+        "properties": {
+            "definition": { "type": "string", "enum": store.definitions().collect::<Vec<_>>(),
+                "description": "Definition this spawn instantiates." },
+            "offset": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3,
+                "description": "Position in the spawner's frame, as [x, y, z]." },
+            "rotation": rotation.clone(),
+            "masterIs": { "type": "string",
+                "description": "Authored master path. This spawn is the ward; placement is separate." },
+            "overrides": { "$ref": "#/$defs/definition" },
+        },
+    });
+    json!({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "Struction scene",
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Zones and the spawners placed in them.",
+        "properties": {
+            "$schema": { "type": "string" },
+            "zones": {
+                "type": "object",
+                "description": "Zone origins in world coordinates, keyed by path. Undeclared zones sit at the origin.",
+                "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "position": position.clone(), "rotation": rotation.clone() },
+                },
+            },
+            "spawnerList": {
+                "type": "object",
+                "description": "Spawners keyed by name; each one's path is <zone>/<name>.",
+                "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["zone", "position"],
+                    "properties": {
+                        "zone": { "type": "string", "description": "Zone this spawner is placed in." },
+                        "position": position.clone(),
+                        "rotation": rotation.clone(),
+                        "spawns": { "type": "object", "description": "Spawns keyed by name.",
+                            "additionalProperties": spawn },
+                    },
+                },
+            },
+        },
+        "$defs": { "definition": definition_schema },
+    })
+}
 
 /// An entire project snapshot: every supplied buffer replaces its disk source for this request.
 /// Buffers omitted from the next request are read from disk again. No writes or simulation ticks.
@@ -17,10 +95,23 @@ pub fn analyze(
     project: &mut AuthoringProject,
     sources: &BTreeMap<String, String>,
 ) -> Result<Value, SessionError> {
-    let diagnostics = project.validate_sources(sources)?;
+    let reported = project.validate_sources(sources)?;
     let world = project.preview();
     let types = world.resource::<AppTypeRegistry>().read();
-    let store = world.resource::<DefinitionStore>().preview_sources(sources, &types);
+    let store = world
+        .resource::<DefinitionStore>()
+        .preview_sources(sources, &types);
+    let libraries: Vec<_> = store
+        .library_roots()
+        .map(|(name, root)| (name.to_string(), root.to_path_buf()))
+        .collect();
+    let diagnostics: Vec<_> = reported
+        .iter()
+        .map(|error| Diagnostic {
+            file: error.file.as_ref().map(|file| locatable(file, &libraries)),
+            ..error.clone()
+        })
+        .collect();
     let definitions: Vec<_> = store
         .definitions()
         .filter_map(|path| {
@@ -42,24 +133,37 @@ pub fn analyze(
             }))
         })
         .collect();
-    let extensors: Vec<_> = store.extensors().iter().map(|meta| json!({
-        "name": meta.name,
-        "doc": meta.doc,
-        "opt_in": meta.participation == Participation::OptIn,
-        "requires": meta.requires,
-        "states": meta.states,
-        "components": meta.components.iter().map(|c| json!({
-            "name": c.name, "type_path": c.type_path, "supplied": c.supplied,
-        })).collect::<Vec<_>>(),
-    })).collect();
+    let extensors: Vec<_> = store
+        .extensors()
+        .iter()
+        .map(|meta| {
+            json!({
+                "name": meta.name,
+                "doc": meta.doc,
+                "opt_in": meta.participation == Participation::OptIn,
+                "requires": meta.requires,
+                "states": meta.states,
+                "components": meta.components.iter().map(|c| json!({
+                    "name": c.name, "type_path": c.type_path, "supplied": c.supplied,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     let schema = store.schema(&types);
+    let scene_schema = scene_schema(&store, &schema);
     drop(types);
-    let actions = protocol::execute(project, protocol::Request {
-        id: Value::Null,
-        command: protocol::Command::Actions {},
-    }).result;
-    Ok(json!({ "schema": schema, "definitions": definitions, "extensors": extensors,
-        "actions": actions, "diagnostics": diagnostics }))
+    let actions = protocol::execute(
+        project,
+        protocol::Request {
+            id: Value::Null,
+            command: protocol::Command::Actions {},
+        },
+    )
+    .result;
+    Ok(
+        json!({ "schema": schema, "scene_schema": scene_schema, "definitions": definitions,
+        "extensors": extensors, "actions": actions, "diagnostics": diagnostics }),
+    )
 }
 
 #[derive(Deserialize)]
@@ -80,12 +184,20 @@ enum Command {
 }
 
 /// JSONL transport, kept separate from the editor's mutation protocol. Logging belongs on stderr.
-pub fn serve(project: &mut AuthoringProject, input: impl BufRead, mut output: impl Write) -> io::Result<()> {
+pub fn serve(
+    project: &mut AuthoringProject,
+    input: impl BufRead,
+    mut output: impl Write,
+) -> io::Result<()> {
     for line in input.lines() {
         let line = line?;
-        if line.trim().is_empty() { continue; }
-        let id = serde_json::from_str::<Value>(&line).ok()
-            .and_then(|v| v.get("id").cloned()).unwrap_or(Value::Null);
+        if line.trim().is_empty() {
+            continue;
+        }
+        let id = serde_json::from_str::<Value>(&line)
+            .ok()
+            .and_then(|v| v.get("id").cloned())
+            .unwrap_or(Value::Null);
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(request) => {
                 let result = match request.command {
@@ -94,7 +206,9 @@ pub fn serve(project: &mut AuthoringProject, input: impl BufRead, mut output: im
                     Command::Analyze { sources } => analyze(project, &sources),
                 };
                 match result {
-                    Ok(result) => json!({ "id": request.id, "ok": true, "result": result, "error": null }),
+                    Ok(result) => {
+                        json!({ "id": request.id, "ok": true, "result": result, "error": null })
+                    }
                     Err(error) => json!({ "id": request.id, "ok": false, "result": null,
                         "error": protocol::Failure::from(error) }),
                 }
