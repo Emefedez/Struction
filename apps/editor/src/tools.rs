@@ -415,6 +415,25 @@ pub fn asset_root(root: &Path) -> PathBuf {
     }
 }
 
+/// Where an asset listed by [`find_project_assets`] lives: `engine://` names the engine library's
+/// models, anything else is relative to the project's asset root.
+pub fn asset_source(root: &Path, asset: &str) -> PathBuf {
+    match asset.strip_prefix(ENGINE) {
+        Some(engine) => struction_scene::engine_assets().join(engine),
+        None => asset_root(root).join(asset),
+    }
+}
+
+const ENGINE: &str = "engine://";
+
+/// The project's mesh sources, then the engine library's under `engine://`.
+pub fn find_project_assets(root: &Path) -> Vec<String> {
+    let engine = find_assets(&struction_scene::engine_assets());
+    let mut found = find_assets(&asset_root(root));
+    found.extend(engine.into_iter().map(|asset| format!("{ENGINE}{asset}")));
+    found
+}
+
 /// Mesh sources the pipeline accepts, relative to `root`, skipping hidden and build folders.
 pub fn find_assets(root: &Path) -> Vec<String> {
     fn walk(root: &Path, dir: &Path, found: &mut Vec<String>, depth: usize) {
@@ -465,7 +484,7 @@ fn scan_assets(
     toolbox.assets = editor
         .root
         .as_deref()
-        .map(|root| find_assets(&asset_root(root)))
+        .map(find_project_assets)
         .unwrap_or_default();
 }
 
@@ -483,13 +502,12 @@ fn handle_requests(mut commands: Commands, mut toolbox: ResMut<Toolbox>, editor:
                 let result = toolbox
                     .programs
                     .open_in()
-                    .open(&asset_root(&root).join(&asset));
+                    .open(&asset_source(&root, &asset));
                 toolbox.open_error = result.err().map(|error| error.to_string());
             }
             Request::Open { asset, mode } => {
-                let root = asset_root(&root);
                 if let Some(tool) = &mut toolbox.tool {
-                    if tool.source == root.join(&asset) {
+                    if tool.source == asset_source(&root, &asset) {
                         tool.mode = mode;
                         commands
                             .entity(tool.window)
@@ -525,7 +543,7 @@ fn spawn_tool(
     mode: Mode,
     blender: Blender,
 ) -> MeshTool {
-    let source = root.join(&asset);
+    let source = asset_source(root, &asset);
     let name = asset.rsplit('/').next().unwrap_or(&asset).to_owned();
     let window = commands
         .spawn(Window {
@@ -1044,6 +1062,13 @@ mod tests {
         assert_eq!(asset_root(&project), assets);
         assert_eq!(find_assets(&asset_root(&project)), ["models/actor.blend"]);
         assert_eq!(asset_root(dir.path()), dir.path());
+        assert!(
+            find_project_assets(&project).contains(&"engine://models/blood_knight.blend".into())
+        );
+        assert_eq!(
+            asset_source(&project, "engine://models/blood_knight.blend"),
+            struction_scene::engine_assets().join("models/blood_knight.blend")
+        );
     }
 
     #[test]

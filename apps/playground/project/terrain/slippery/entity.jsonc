@@ -1,8 +1,0 @@
-// The project's changes to the engine definition terrain/slippery; the rest comes from it.
-{
-  "components": {
-    "Surface": {
-      "friction": 0.02
-    }
-  }
-}
