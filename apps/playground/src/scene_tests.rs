@@ -46,10 +46,11 @@ fn the_project_loads_without_problems() {
 #[test]
 fn renamed_definitions_keep_save_aliases() {
     let aliases = struction_world::PathAliases::load(&default_project()).unwrap();
-    assert_eq!(aliases.resolve("ground/stone"), "terrain/stone");
-    assert_eq!(aliases.resolve("gravity/scene"), "fields/scene");
-    assert_eq!(aliases.resolve("Ground"), "Ground");
-    assert_eq!(aliases.resolve("Gravity"), "Gravity");
+    assert_eq!(aliases.resolve("ground/stone"), "terrains/stone");
+    assert_eq!(aliases.resolve("terrain/planet"), "terrains/planet");
+    assert_eq!(aliases.resolve("gravity/scene"), "regions/scene_gravity");
+    assert_eq!(aliases.resolve("Ground"), "Terrain");
+    assert_eq!(aliases.resolve("Region"), "Region");
     assert_eq!(aliases.resolve("Player"), "characters/player");
 }
 
@@ -81,7 +82,7 @@ fn spawns_keep_the_milestone_one_layout() {
     let slippery = entity(&mut app, "Playground/floors/slippery");
     let surface = app.world().get::<Surface>(slippery).unwrap();
     assert_eq!(*surface, Surface::slippery());
-    // The pool floor removes the surface it would inherit from `Ground`.
+    // The pool floor removes the surface it would inherit from `Terrain`.
     let pool_floor = entity(&mut app, "Playground/pool/floor");
     assert!(app.world().get::<Surface>(pool_floor).is_none());
     let planet = entity(&mut app, "Playground/planet/planet");

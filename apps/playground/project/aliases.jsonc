@@ -1,9 +1,12 @@
 // Preserve saved definition paths after renames: case-colliding directories separated for macOS,
-// and the player moved under `characters/`.
+// the player moved under `characters/`, and the engine's terrain and gravity reorganized.
 {
   "aliases": {
     "ground": "terrain",
     "gravity": "fields",
+    "terrain": "terrains",
+    "fields/scene": "regions/scene_gravity",
+    "Ground": "Terrain",
     "Player": "characters/player"
   }
 }

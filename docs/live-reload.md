@@ -31,7 +31,7 @@ What it applies:
 
 Instances record what they were built from in `Authored` only when `LiveReloadPlugin` is present, so shipped games pay nothing. The result of each reload is sent as a `LiveReloaded` message.
 
-Try it: run `cargo run -p struction-playground` and edit `apps/playground/project` while it runs, for example a spawn `offset` in `scenes/milestone1.jsonc` or a `Look` color or `Shape` size under `terrain/`. The playground redraws edited looks and shapes, rebuilds colliders, and teleports moved physics bodies (Avian drives `Transform` from `Position`, so it copies each instance listed in `LiveReloaded::placed`). The editor cannot open the playground project yet: its factory registers the authoring example's game, not the playground's components, until a game crate supplies both.
+Try it: run `cargo run -p struction-playground` and edit `apps/playground/project` while it runs, for example a spawn `offset` in `scenes/milestone1.jsonc` or a `Look` color or `Shape` size under `terrains/` (as a project override). The playground redraws edited looks and shapes, rebuilds colliders, and teleports moved physics bodies (Avian drives `Transform` from `Position`, so it copies each instance listed in `LiveReloaded::placed`). The editor cannot open the playground project yet: its factory registers the authoring example's game, not the playground's components, until a game crate supplies both.
 
 Verified headlessly: 4 `struction_world` tests (`tests/live.rs`) and playground tests that edit a copy of the playground project (a floor moves, the planet shrinks with its collider) and redraw an edited water look once. Not yet run natively with a window.
 
