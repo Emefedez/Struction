@@ -56,7 +56,7 @@ pub(crate) fn apply_state_rules(world: &mut World) {
                 .enumerate()
                 .filter(|(_, rule)| {
                     CharacterCondition::named(&rule.state)
-                        .is_some_and(|condition| moving.blocked(state, &[condition], None))
+                        .is_some_and(|condition| moving.holds(state, condition))
                 })
                 .map(|(index, _)| index)
                 .collect();
@@ -67,9 +67,7 @@ pub(crate) fn apply_state_rules(world: &mut World) {
     let orphans: Vec<Entity> = orphans.iter(world).collect();
     for entity in orphans {
         if let Some(mut held) = world.entity_mut(entity).take::<HeldStates>() {
-            for index in held.held.clone().into_iter().rev() {
-                leave(world, entity, &mut held, index, &types);
-            }
+            leave_all(world, entity, &mut held, &types);
         }
     }
 
@@ -84,9 +82,7 @@ pub(crate) fn apply_state_rules(world: &mut World) {
             .as_ref()
             .is_some_and(|old| !Arc::ptr_eq(old, &rules))
         {
-            for index in held.held.clone().into_iter().rev() {
-                leave(world, entity, &mut held, index, &types);
-            }
+            leave_all(world, entity, &mut held, &types);
         }
         for index in held.held.clone().into_iter().rev() {
             if !holding.contains(&index) {
@@ -138,6 +134,17 @@ fn enter(
         }
     }
     held.held.push(index);
+}
+
+fn leave_all(
+    world: &mut World,
+    entity: Entity,
+    held: &mut HeldStates,
+    types: &bevy::reflect::TypeRegistry,
+) {
+    for index in held.held.clone().into_iter().rev() {
+        leave(world, entity, held, index, types);
+    }
 }
 
 /// Restores what entering the rule changed, latest first.
