@@ -25,7 +25,7 @@
       "zone": "Playground",
       "position": [0, 0.8, 3],
       "spawns": {
-        "cube": { "definition": "props/pushable_cube" }
+        "cube": { "definition": "props/pushable_cube"}
       }
     },
     // To the right of the start. The water's surface is level with the floors.
@@ -38,7 +38,7 @@
           "definition": "terrains/pool_floor",
           "offset": [0, -2.75, 0]
         },
-        "floating_cube": { "definition": "props/floating_cube", "offset": [0, 1, 0] }
+        "floating_cube": { "definition": "props/floating_cube", "offset": [0, 1, 0] } //TODO: add a way to load a .jsonc for the definition of these spawns instead of inline definitions, like player
       }
     },
     // Over the slippery tile, on the way to the planet.
@@ -48,7 +48,8 @@
       "spawns": {
         "zone": { "definition": "regions/overhead_camera" },
         "left_post": { "definition": "props/marker_post", "offset": [-5.8, 0, 0] },
-        "right_post": { "definition": "props/marker_post", "offset": [5.8, 0, 0] }
+        "right_post": { "definition": "props/marker_post", "offset": [5.8, 0, 0] },
+        "middle_post": {"definition": "props/marker_post", "offset": [3,0,0]}
       }
     },
     "planet": {
