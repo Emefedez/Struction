@@ -1032,20 +1032,16 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
         } => {
             ui.heading(RichText::new(path.as_str()).color(theme::DEFINITION));
             let file = definition_file(path);
+            ui.label(RichText::new(&file).monospace().small().color(theme::MUTED));
             match library {
-                Some(library) if *overridden => hint(
-                    ui,
-                    &format!("{library} definition, overridden by the project in {file}"),
-                ),
+                Some(library) if *overridden => {
+                    hint(ui, &format!("Overrides the {library} definition."));
+                }
                 Some(library) => hint(
                     ui,
-                    &format!(
-                        "{library} definition (read-only); edits create a project override in {file}"
-                    ),
+                    &format!("From the read-only {library} library; editing creates this file."),
                 ),
-                None => {
-                    ui.label(RichText::new(&file).monospace().small().color(theme::MUTED));
-                }
+                None => {}
             }
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
@@ -1148,7 +1144,13 @@ fn extensor_section(
                         .color(theme::MUTED),
                 );
                 hint(ui, &format!("dropped by {}", dropped.by));
-                if dropped.by == path && !playing && ui.small_button("Restore").clicked() {
+                if dropped.by == path
+                    && !playing
+                    && ui
+                        .small_button("Restore")
+                        .on_hover_text("Stop dropping it here")
+                        .clicked()
+                {
                     commands.push(add(&dropped.name));
                 }
             });

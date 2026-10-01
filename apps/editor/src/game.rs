@@ -1,4 +1,4 @@
-//! Every engine package (`struction_scene::authoring_app`), plus the small authoring example’s
+//! Every engine package (`struction_scene::authoring_app`), plus the small authoring example's
 //! Health behavior.
 use std::path::Path;
 
