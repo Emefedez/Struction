@@ -1,6 +1,11 @@
 import { findNodeAtOffset, getNodePath, parseTree, Node } from 'jsonc-parser';
-import { getLanguageService, JSONSchema, LanguageService, TextDocument, Position, Range, JSONDocument, ObjectASTNode } from 'vscode-json-languageservice';
+import { getLanguageService, JSONSchema, LanguageService, TextDocument, Position, Range, JSONDocument, ObjectASTNode, PropertyASTNode } from 'vscode-json-languageservice';
 import { Snapshot, Definition } from './types';
+
+/** The service's AST types mark properties readonly; dropping one of a document's own keys is local. */
+interface OpenObject extends ObjectASTNode {
+  properties: PropertyASTNode[];
+}
 
 export function sourceFile(file: string): boolean {
   return file.endsWith('/entity.jsonc') || /^(presets|scenes)\/.+\.jsonc$/.test(file);
@@ -55,7 +60,28 @@ export class Features {
 
   constructor(readonly snapshot: Snapshot) {
     this.entitySchema = structuredClone(snapshot.schema);
-    const properties = this.entitySchema.properties ?? {};
+    // Scenes get the host's own schema, which places the definition schema at override sites and
+    // lists the definitions a spawn may name; scene validity stays the backend's to decide.
+    this.sceneSchema = structuredClone(snapshot.scene_schema);
+    const overrides = this.sceneSchema.$defs?.definition;
+    if (overrides && typeof overrides === 'object') this.describe(overrides);
+    this.describe(this.entitySchema);
+    const service = (schema: JSONSchema) => {
+      const language = getLanguageService({});
+      language.configure({ schemas: [{ uri: 'struction://schema/current', fileMatch: ['*'], schema }] });
+      return language;
+    };
+    this.entityService = service(this.entitySchema);
+    this.sceneService = service(this.sceneSchema);
+  }
+
+  /**
+   * Adds what the engine's schema cannot say about itself: what each section means, and which
+   * package contributes each component. A scene's overrides are described the same way, so both
+   * schemas share one vocabulary.
+   */
+  private describe(schema: JSONSchema): void {
+    const properties = schema.properties ?? {};
     const docs: Record<string, string> = {
       descendsFrom: 'Inherits this definition, its components and named extensors. Every lineage ends in a primordial type.',
       presets: 'Named reusable layers applied before this definition’s own overrides.',
@@ -74,43 +100,31 @@ export class Features {
         const reference = component.anyOf?.[0];
         const ref = typeof reference === 'object' ? reference.$ref : undefined;
         const target = ref?.startsWith('#/$defs/') ? this.entitySchema.$defs?.[ref.slice('#/$defs/'.length)] : undefined;
-        const owner = snapshot.extensors.find(e => e.components.some(c => c.name === name || c.type_path === name));
         component.description = [typeof target === 'object' ? target.description : undefined,
-          owner ? `Package: ${owner.name}. ${owner.doc}` : undefined,
-          'Omitted fields inherit; null removes the inherited component.'].filter(Boolean).join('\n\n');
+          this.packageOf(name), 'Omitted fields inherit; null removes the inherited component.'].filter(Boolean).join('\n\n');
       }
     }
-    // Scene structure only places the engine-generated definition schema at override sites.
-    // Scene validity remains the responsibility of SceneCatalog in the shared backend.
-    this.sceneSchema = {
-      $defs: this.entitySchema.$defs,
-      properties: { spawnerList: { additionalProperties: { properties: {
-        spawns: { additionalProperties: { properties: {
-          definition: { type: 'string', enum: snapshot.definitions.map(d => d.path), description: 'Definition instantiated by this named spawn.' },
-          overrides: { ...this.entitySchema, $defs: undefined, $schema: undefined },
-          masterIs: { type: 'string', description: 'Authored master path. This spawn is the ward; this relation is separate from placement.' },
-        } } },
-      } } } },
-    };
-    const service = (schema: JSONSchema) => {
-      const language = getLanguageService({});
-      language.configure({ schemas: [{ uri: 'struction://schema/current', fileMatch: ['*'], schema }] });
-      return language;
-    };
-    this.entityService = service(this.entitySchema);
-    this.sceneService = service(this.sceneSchema);
   }
 
   private service(file: string): LanguageService {
     return file.startsWith('scenes/') ? this.sceneService : this.entityService;
   }
 
+  /** The registered package that supplies or infers a component, when one owns it. */
+  private packageOf(name: string): string | undefined {
+    const owner = this.snapshot.extensors.find(e => e.components.some(c => c.name === name || c.type_path === name));
+    return owner ? `Package: ${owner.name}. ${owner.doc}` : undefined;
+  }
+
   private parse(file: string, document: TextDocument): JSONDocument {
     const json = this.service(file).parseJSONDocument(document);
     // Runtime registrations take precedence over stale or remote $schema links in sources.
-    if (json.root?.type === 'object') {
-      const root = json.root as ObjectASTNode;
-      root.properties = root.properties.filter(p => p.keyNode.value !== '$schema');
+    const root = json.root;
+    if (root?.type === 'object') {
+      const properties = root.properties.filter(p => p.keyNode.value !== '$schema');
+      if (properties.length !== root.properties.length) {
+        json.root = { ...root, properties } as OpenObject;
+      }
     }
     return json;
   }
@@ -157,8 +171,12 @@ export class Features {
       if (owner) text += `\n\n**${markdown(String(field))}** is contributed by **${markdown(owner.name)}**. ${markdown(owner.doc)}`;
     }
     const own = this.snapshot.definitions.find(d => d.path === definitionPath(file));
-    if (key && path.at(-2) === 'components' && own) {
-      const value = (own.resolved.components as Record<string, unknown> | undefined)?.[String(field)];
+    if (key && path.at(-2) === 'components') {
+      // The service describes a key with its value's schema, so the package and the resolved
+      // authored value are read from the snapshot instead of from the composed description.
+      const packaged = this.packageOf(String(field));
+      if (packaged) text += `\n\n${packaged}`;
+      const value = (own?.resolved.components as Record<string, unknown> | undefined)?.[String(field)];
       if (value !== undefined) text += `\n\nResolved authored value:\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
     }
     return text.trim() ? { text: text.trim(), range: {

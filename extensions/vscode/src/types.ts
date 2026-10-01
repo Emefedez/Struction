@@ -33,6 +33,7 @@ export interface Action {
 
 export interface Snapshot {
   schema: import('vscode-json-languageservice').JSONSchema;
+  scene_schema: import('vscode-json-languageservice').JSONSchema;
   diagnostics: EngineDiagnostic[];
   definitions: Definition[];
   extensors: Extensor[];

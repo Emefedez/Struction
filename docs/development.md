@@ -112,6 +112,19 @@ cargo run -p struction_assets --bin struction-assets -- build \
 
 Saving over the generated file discards manual edits, so choose one: edit the script and regenerate, or keep editing the `.blend`. A `.blend` saved by a newer Blender may not open in an older one; it was generated with Blender 5.0. `cargo test -p struction-playground` checks that every piece sits on a humanoid joint (skipped without Blender).
 
+## VS Code extension
+
+`extensions/vscode` is a Node extension (no bundler, `tsc` only) over the read-only language host. Build the host and put it on `PATH`, or point the extension at it:
+
+```bash
+cargo install --path crates/struction_language --locked
+cd extensions/vscode && npm install && npm run compile
+```
+
+Open `extensions/vscode` in VS Code and press F5 ("Struction Extension") to launch an extension host against this workspace. Without a workspace setting the extension discovers `project/` or `apps/playground/project/`, looks for `struction-language` on `PATH`, and restarts when `struction.projectRoot`, `struction.hostPath` or `struction.hostArgs` changes. The status bar shows whether a project was found, whether a snapshot is being computed, and how many problems the host reported; the **Struction** output channel carries the host's stderr and any diagnostics without a file.
+
+Tests are headless: `npm test` compiles and runs `test/*.test.ts` against the feature layer, which imports no `vscode` module, and `cargo test -p struction_language` covers the snapshots and the JSONL transport. Neither needs VS Code or a running host.
+
 ## WebAssembly
 
 The pinned toolchain installs `wasm32-unknown-unknown`. The `wasm-bindgen` CLI version must match the `wasm-bindgen` crate in `Cargo.lock`. Install the matching version with:

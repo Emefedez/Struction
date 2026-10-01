@@ -106,6 +106,30 @@ The editor builds projects with `struction_scene::authoring_app`: every engine p
 
 The Assets panel reads a project's sibling `assets/` directory when it has one; the engine's models live in `crates/struction_scene/content/assets`. `--mesh` paths are relative to the asset directory shown by this layout.
 
+## The VS Code extension
+
+`crates/struction_language` is a read-only host for editors, and `extensions/vscode` is the client built on it. The host answers two JSONL commands and never writes a source file:
+
+```bash
+cargo run -p struction_language --bin struction-language -- apps/playground/project
+```
+
+```jsonl
+{"id":1,"command":{"op":"describe"}}
+{"id":2,"command":{"op":"analyze","sources":{"characters/player/entity.jsonc":"{\n  \"descendsFrom\": \"characters/humanoid\"\n}\n"}}}
+```
+
+`describe` returns `protocol_version` 1 and the supported commands, so a client can refuse a host it does not understand. `analyze` takes every open buffer of a Struction source, keyed by project-relative path, and returns one snapshot:
+
+- `schema`: the JSON Schema generated from the registered types, which drives completions and diagnostics.
+- `scene_schema`: the same schema for `scenes/**.jsonc` — `zones`, `spawnerList`, and each spawn's `definition`, `offset`, `rotation`, `masterIs` and `overrides`, with the definition schema placed at override sites. `struction_world::scene` is the authority for that grammar and a test compares the two, so a scene completes and explains itself the way a definition does. Scene *semantics* (references, masters, overrides) stay the backend's: the client does not re-report them.
+- `definitions`: every resolved path with its lineage, resolved data, components, why each extensor is in use, its library and the absolute file it came from.
+- `extensors`: every registered package with its doc, opt-in flag, requirements, contributed states and components.
+- `actions`: every registered action with its doc, typed parameters and requirements.
+- `diagnostics`: the backend's validation of the project with the supplied buffers. Files are project-relative, except library files, which are absolute so a client can open them.
+
+Buffers replace disk sources for that request only, and the next request without them reads disk again, so nothing reaches the filesystem. A definition that does not resolve is absent from `definitions` but still reported in `diagnostics` with its position; that is how a broken file stays repairable. The extension (`extensions/vscode`, see [development.md](development.md#vs-code-extension)) adds hovers, completions, go-to-definition and problems on top of the snapshot, and its `Struction: Inspect Definition` command renders the same description the hover uses.
+
 ## Choosing Blender
 
 **Programs… → Blender executable → Browse… → Save** stores a machine-local executable path. Linux accepts the actual executable, including custom installations; macOS accepts the executable inside the application bundle (pasting a `.app` path also resolves it). Spaces are passed literally, without shell parsing. The same choice drives mesh imports, collision/LOD preparation and **Open in Blender**. Close an open mesh tool before saving a different program, then reopen the asset.
