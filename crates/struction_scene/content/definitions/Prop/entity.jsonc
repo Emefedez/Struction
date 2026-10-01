@@ -1,6 +1,0 @@
-// Anything drawn with a matte `Look`. Props with a `RigidBody` also collide with their `Shape`.
-{
-  "components": {
-    "Look": { "finish": "Matte" }
-  }
-}
