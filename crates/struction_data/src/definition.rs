@@ -61,7 +61,8 @@ pub(crate) struct Layer {
     pub body: Node,
 }
 
-fn expect<'n>(node: &'n Node, what: &str, ok: bool) -> Result<&'n Node, DataError> {
+/// `node` when `ok`, else a type mismatch naming `what` was expected.
+pub(crate) fn expect<'n>(node: &'n Node, what: &str, ok: bool) -> Result<&'n Node, DataError> {
     if ok {
         Ok(node)
     } else {
