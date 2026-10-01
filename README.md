@@ -42,6 +42,8 @@ Definitions are classes; spawned instances are objects. Primordial engine types 
 "grantsToWards": [
   { "to": "minions/ogre", "components": { "Follower": { "distance": 3 } }, "actions": ["fetch", "guard"] }
 ]
+
+//I prefer the master naming, but I am unsure of "newMasterIs", think about it.
 ```
 
 Groups (squads, encounters, fish schools) are master entities. Queries combine both relations: "wards of this player that descend from `minions/ogre`". Streaming residency is tracked separately, so crossing a streaming boundary never changes a relation.

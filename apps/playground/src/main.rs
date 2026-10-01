@@ -2,7 +2,7 @@
 
 mod camera_occlusion;
 mod figures;
-mod scene;
+use struction_playground::scene;
 
 use camera_occlusion::{FadeMaterial, FadesWith, fade_material};
 #[cfg(test)]

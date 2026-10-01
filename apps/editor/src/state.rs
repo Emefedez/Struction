@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use serde_json::Value;
 use struction_data::parse_jsonc;
 use struction_editor::{
-    AuthoringProject, Diagnostic, EditRequest, EntityEntry, Field, SessionError,
+    AuthoringProject, Diagnostic, EditRequest, EntityEntry, Field, HierarchyNode, SessionError,
 };
 
 use crate::game;
@@ -38,6 +38,16 @@ pub enum Command {
     CreateDefinition {
         path: String,
         parent: String,
+    },
+    SetMaster {
+        path: String,
+        master: Option<String>,
+    },
+    CreateSpawn {
+        spawner: String,
+        name: String,
+        definition: String,
+        master: Option<String>,
     },
     StartPlay,
     StopPlay,
@@ -77,6 +87,11 @@ pub enum Inspection {
         local: Value,
     },
     Missing(String),
+    InvalidDefinition {
+        path: String,
+        message: String,
+        source: String,
+    },
     /// Drawn from the toolbox, not the project.
     Asset,
 }
@@ -87,6 +102,8 @@ pub struct Editor {
     pub root: Option<PathBuf>,
     pub entities: Vec<EntityEntry>,
     pub definitions: Vec<String>,
+    pub masters: Vec<HierarchyNode>,
+    pub lineages: Vec<HierarchyNode>,
     pub diagnostics: Vec<Diagnostic>,
     pub rejection: Option<Rejection>,
     pub status: Option<String>,
@@ -146,6 +163,23 @@ impl Editor {
                     .create_definition(&path, &parent)
                     .map(|()| Some(format!("Created {path}"))),
             ),
+            Command::SetMaster { path, master } => (
+                "Set master",
+                project
+                    .set_master(&path, master.as_deref())
+                    .map(|a| Some(a.label)),
+            ),
+            Command::CreateSpawn {
+                spawner,
+                name,
+                definition,
+                master,
+            } => (
+                "Create actor",
+                project
+                    .create_spawn(&spawner, &name, &definition, master.as_deref(), Vec3::ZERO)
+                    .map(|a| Some(a.label)),
+            ),
             Command::StartPlay => {
                 let started = project.start_play();
                 if started.is_ok() {
@@ -188,6 +222,7 @@ impl Editor {
     }
 
     fn open(&mut self, root: PathBuf) {
+        let root = project_root(root);
         self.project = None;
         self.play = None;
         self.selected = None;
@@ -212,13 +247,19 @@ impl Editor {
         let Some(project) = &self.project else {
             self.entities.clear();
             self.definitions.clear();
+            self.masters.clear();
+            self.lineages.clear();
             self.diagnostics.clear();
             return;
         };
         self.entities = project.entities(self.play.is_some()).unwrap_or_default();
+        self.masters = project
+            .master_hierarchy(self.play.is_some())
+            .unwrap_or_default();
         if validate {
             self.definitions = project.definitions();
             self.definitions.sort();
+            self.lineages = project.definition_hierarchy();
             // Errors reached through several paths can repeat once reduced to diagnostics.
             self.diagnostics = project.validate();
             self.diagnostics.sort_by(|a, b| {
@@ -354,8 +395,18 @@ impl Editor {
             }
             Selected::Asset(_) => Inspection::Asset,
             Selected::Definition(path) => {
-                let Ok(inspected) = project.inspect_definition(path) else {
-                    return Some(Inspection::Missing(path.clone()));
+                let inspected = match project.inspect_definition(path) {
+                    Ok(inspected) => inspected,
+                    Err(error) => {
+                        return Some(Inspection::InvalidDefinition {
+                            path: path.clone(),
+                            message: error.to_string(),
+                            source: project
+                                .session()
+                                .read(&definition_file(path))
+                                .unwrap_or_default(),
+                        });
+                    }
                 };
                 let components = inspected
                     .components
@@ -373,11 +424,30 @@ impl Editor {
     }
 }
 
+/// Accept the data directory, the playground application, or this repository checkout.
+fn project_root(root: PathBuf) -> PathBuf {
+    if root.join("scenes").is_dir() {
+        return root;
+    }
+    for child in ["project", "apps/playground/project"] {
+        let candidate = root.join(child);
+        if candidate.join("scenes").is_dir() {
+            return candidate;
+        }
+    }
+    root
+}
+
 fn rejection(action: &'static str, error: SessionError) -> Rejection {
     match error {
         SessionError::Validation(errors) => Rejection {
             action,
-            message: "the change would make the project invalid".into(),
+            message: if action == "Refresh" {
+                "sources contain errors; showing the last valid preview"
+            } else {
+                "the change would make the project invalid"
+            }
+            .into(),
             diagnostics: errors.iter().map(Diagnostic::from).collect(),
         },
         error => Rejection {
@@ -457,6 +527,27 @@ mod tests {
 
     fn ogre_position(editor: &Editor) -> Vec3 {
         editor.entity(OGRE).unwrap().position.unwrap()
+    }
+
+    #[test]
+    fn playground_uses_its_registered_game_types_and_plays_headlessly() {
+        let mut editor = Editor::default();
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        editor.apply(Command::Open(repository));
+        assert!(editor.rejection.is_none());
+        assert!(editor.diagnostics.is_empty(), "{:?}", editor.diagnostics);
+        let player = "Playground/start/player";
+        assert!(editor.entity(player).is_some());
+        editor.apply(Command::Select(Some(Selected::Entity(player.into()))));
+        let Some(Inspection::Entity { authored, .. }) = editor.inspection() else {
+            panic!("player must be inspectable")
+        };
+        assert!(authored.contains("CharacterController"));
+        editor.apply(Command::StartPlay);
+        assert!(editor.rejection.is_none());
+        editor.apply(Command::Step);
+        assert_eq!(editor.play.as_ref().unwrap().ticks, 1);
+        editor.apply(Command::StopPlay);
     }
 
     #[test]

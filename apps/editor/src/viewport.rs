@@ -143,6 +143,9 @@ fn setup(
 
 /// Whether the cursor is over the 3D view rather than a panel, in window coordinates.
 fn viewport_cursor(window: &Window, camera: &Camera, egui: &EguiWantsInput) -> Option<Vec2> {
+    if !camera.is_active {
+        return None;
+    }
     let cursor = window.cursor_position()?;
     let inside = camera
         .logical_viewport_rect()

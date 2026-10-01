@@ -1,12 +1,8 @@
-//! The game whose data the editor authors. Preview and play build it headless through
-//! `AuthoringProject`; this is the registration of the authoring example
-//! (`examples/authoring`) until a game crate provides its own.
+//! Shared playground registrations, plus the small authoring example’s Health behavior.
 use std::path::Path;
 
 use bevy::prelude::*;
-use struction_core::{CorePlugin, CoreSet};
-use struction_data::DataPlugin;
-use struction_world::WorldPlugin;
+use struction_core::CoreSet;
 
 #[derive(Component, Reflect, Default)]
 #[reflect(Component, Default)]
@@ -16,14 +12,9 @@ struct Health {
 }
 
 pub fn factory(root: &Path) -> App {
-    let mut app = App::new();
-    app.add_plugins((
-        CorePlugin { seed: 7 },
-        DataPlugin::new(root).primordial("Actor"),
-        WorldPlugin::default(),
-    ))
-    .register_type::<Health>()
-    .add_systems(FixedUpdate, regenerate.in_set(CoreSet::Invoke));
+    let mut app = struction_playground::factory(root);
+    app.register_type::<Health>()
+        .add_systems(FixedUpdate, regenerate.in_set(CoreSet::Invoke));
     app
 }
 

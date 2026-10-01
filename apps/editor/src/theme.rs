@@ -17,6 +17,12 @@ const PRESSED: Color32 = Color32::from_rgb(0x34, 0x3a, 0x45);
 const BORDER: Color32 = Color32::from_rgb(0x26, 0x2a, 0x31);
 const TEXT: Color32 = Color32::from_rgb(0xd7, 0xdb, 0xe2);
 pub const MUTED: Color32 = Color32::from_rgb(0x8a, 0x91, 0x9e);
+/// Semantic roles stay consistent across the hierarchy, inspectors and legends.
+pub const ACTOR: Color32 = Color32::from_rgb(0x78, 0xc8, 0xf0);
+pub const MASTER: Color32 = Color32::from_rgb(0xf2, 0xc1, 0x6a);
+pub const WARD: Color32 = Color32::from_rgb(0x76, 0xd4, 0xb2);
+pub const DEFINITION: Color32 = Color32::from_rgb(0xbd, 0xa1, 0xf0);
+pub const ASSET: Color32 = Color32::from_rgb(0xe8, 0xad, 0x8b);
 pub const ACCENT: Color32 = Color32::from_rgb(0xf2, 0xa9, 0x3b);
 /// Axis colors shared by gizmos and vector fields.
 pub const AXES: [Color32; 3] = [
@@ -70,7 +76,7 @@ pub fn apply(ctx: &egui::Context) {
         visuals.hyperlink_color = ACCENT;
         visuals.warn_fg_color = Color32::from_rgb(0xe8, 0xc1, 0x5a);
         visuals.error_fg_color = Color32::from_rgb(0xf0, 0x65, 0x5a);
-        visuals.indent_has_left_vline = false;
+        visuals.indent_has_left_vline = true;
         visuals.collapsing_header_frame = false;
         visuals.slider_trailing_fill = true;
 

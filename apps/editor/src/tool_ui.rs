@@ -116,7 +116,7 @@ pub fn tool_ui(
                         error_text(ui, error);
                         hint(
                             ui,
-                            "Fix the source (or install Blender for .blend files) and reopen it.",
+                            "Fix the source, or choose Blender in Programs… on the main window, then reopen it.",
                         );
                     }
                     ToolState::Ready(ready) => match mode {

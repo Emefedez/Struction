@@ -8,6 +8,7 @@
 //! quits, for checking the GUI without a person at the screen.
 
 mod game;
+mod programs;
 mod state;
 mod theme;
 mod tool_ui;
@@ -26,15 +27,19 @@ use bevy_egui::{EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryE
 use crate::state::{Command, Editor};
 use crate::tools::{Mode, Request, Toolbox};
 
-const USAGE: &str = "struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision]] [--screenshot <directory>]";
+const USAGE: &str = "struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision]] [--screenshot <directory>] [--blender <executable>] [--headless]";
 
 fn main() {
     let mut editor = Editor::default();
     let (mut mesh, mut mode, mut capture) = (None, Mode::Inspect, None);
+    let mut blender = None;
+    let mut headless = false;
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| exit_with_usage());
         match arg.to_str() {
+            Some("--headless") => headless = true,
+            Some("--blender") => blender = Some(std::path::PathBuf::from(value())),
             Some("--mesh") => mesh = Some(value().to_string_lossy().into_owned()),
             Some("--mode") => {
                 mode = match value().to_str() {
@@ -50,7 +55,31 @@ fn main() {
             _ => exit_with_usage(),
         }
     }
+    if headless {
+        let Some(project) = editor.project.as_mut() else {
+            eprintln!("--headless requires a project directory");
+            if let Some(rejection) = &editor.rejection {
+                eprintln!("{}", rejection.message);
+            }
+            std::process::exit(2);
+        };
+        if let Err(error) = struction_editor::protocol::serve(
+            project,
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+        ) {
+            eprintln!("Authoring protocol: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut toolbox = Toolbox::default();
+    if let Some(executable) = blender
+        && let Err(error) = toolbox.programs.select(executable, false)
+    {
+        eprintln!("Blender: {error}");
+        std::process::exit(2);
+    }
     if let Some(asset) = mesh {
         toolbox.requests.push(Request::Open { asset, mode });
     }

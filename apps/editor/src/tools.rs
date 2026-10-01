@@ -20,7 +20,7 @@ use bevy::{
 };
 use bevy_egui::EguiSchedule;
 use struction_assets::{
-    AssetError, Blender, OpenIn, PrepPreview, PrepSession, PreviewJob, collision::convex_hull,
+    AssetError, Blender, PrepPreview, PrepSession, PreviewJob, collision::convex_hull,
     compile::PrepareSettings, format::MeshBundle, lod_mesh,
 };
 
@@ -55,10 +55,12 @@ impl Mode {
 pub enum Request {
     Open { asset: String, mode: Mode },
     OpenExternally(String),
+    OpenSource(String),
 }
 
 #[derive(Resource, Default)]
 pub struct Toolbox {
+    pub programs: crate::programs::Programs,
     /// Project-relative mesh sources.
     pub assets: Vec<String>,
     scanned: Option<PathBuf>,
@@ -347,9 +349,10 @@ impl MeshTool {
 
 /// The external application "Open in…" hands a source to, by name.
 pub fn open_in_label(source: &Path) -> &'static str {
-    let open_in = OpenIn::default();
-    let blender = Blender::default().executable.to_string_lossy().into_owned();
-    if open_in.command_for(source).first() == Some(&blender) {
+    if source
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("blend"))
+    {
         "Open in Blender"
     } else {
         "Open in default app"
@@ -396,6 +399,19 @@ impl Plugin for ToolboxPlugin {
             )
                 .chain(),
         );
+    }
+}
+
+/// The playground keeps portable data in `project/` and model sources in sibling `assets/`.
+/// Other projects retain their existing project-relative asset layout.
+pub fn asset_root(root: &Path) -> PathBuf {
+    if root.file_name().is_some_and(|name| name == "project")
+        && let Some(parent) = root.parent()
+        && parent.join("assets").is_dir()
+    {
+        parent.join("assets")
+    } else {
+        root.to_owned()
     }
 }
 
@@ -446,7 +462,11 @@ fn scan_assets(
     }
     toolbox.scanned.clone_from(&editor.root);
     toolbox.rescan = false;
-    toolbox.assets = editor.root.as_deref().map(find_assets).unwrap_or_default();
+    toolbox.assets = editor
+        .root
+        .as_deref()
+        .map(|root| find_assets(&asset_root(root)))
+        .unwrap_or_default();
 }
 
 fn handle_requests(mut commands: Commands, mut toolbox: ResMut<Toolbox>, editor: NonSend<Editor>) {
@@ -455,13 +475,21 @@ fn handle_requests(mut commands: Commands, mut toolbox: ResMut<Toolbox>, editor:
             continue;
         };
         match request {
+            Request::OpenSource(file) => {
+                let result = toolbox.programs.open_in().open(&root.join(file));
+                toolbox.open_error = result.err().map(|error| error.to_string());
+            }
             Request::OpenExternally(asset) => {
-                let result = OpenIn::default().open(&root.join(&asset));
+                let result = toolbox
+                    .programs
+                    .open_in()
+                    .open(&asset_root(&root).join(&asset));
                 toolbox.open_error = result.err().map(|error| error.to_string());
             }
             Request::Open { asset, mode } => {
+                let root = asset_root(&root);
                 if let Some(tool) = &mut toolbox.tool {
-                    if tool.asset == asset {
+                    if tool.source == root.join(&asset) {
                         tool.mode = mode;
                         commands
                             .entity(tool.window)
@@ -478,13 +506,25 @@ fn handle_requests(mut commands: Commands, mut toolbox: ResMut<Toolbox>, editor:
                 if let Some(old) = old {
                     despawn_tool(&mut commands, &old);
                 }
-                toolbox.tool = Some(spawn_tool(&mut commands, &root, asset, mode));
+                toolbox.tool = Some(spawn_tool(
+                    &mut commands,
+                    &root,
+                    asset,
+                    mode,
+                    toolbox.programs.blender.clone(),
+                ));
             }
         }
     }
 }
 
-fn spawn_tool(commands: &mut Commands, root: &Path, asset: String, mode: Mode) -> MeshTool {
+fn spawn_tool(
+    commands: &mut Commands,
+    root: &Path,
+    asset: String,
+    mode: Mode,
+    blender: Blender,
+) -> MeshTool {
     let source = root.join(&asset);
     let name = asset.rsplit('/').next().unwrap_or(&asset).to_owned();
     let window = commands
@@ -535,7 +575,6 @@ fn spawn_tool(commands: &mut Commands, root: &Path, asset: String, mode: Mode) -
             EguiSchedule::new(ToolWindowPass),
         ))
         .id();
-    let blender = Blender::default();
     let opening = source.clone();
     MeshTool {
         asset,
@@ -690,12 +729,7 @@ fn orbit_tool(
 
 /// Places the tool's 3D view in the area its panels leave, given in egui points. Returns that
 /// area in logical window coordinates, where cursor positions are measured.
-pub fn place_view(
-    camera: &mut Camera,
-    window: &Window,
-    view: Rect,
-    pixels_per_point: f32,
-) -> Rect {
+pub fn place_view(camera: &mut Camera, window: &Window, view: Rect, pixels_per_point: f32) -> Rect {
     let physical = UVec2::new(window.physical_width(), window.physical_height());
     let position = (view.min * pixels_per_point).as_uvec2().min(physical);
     let size = (view.size() * pixels_per_point)
@@ -707,7 +741,10 @@ pub fn place_view(
         ..default()
     });
     let scale = window.scale_factor();
-    Rect::from_corners(position.as_vec2() / scale, (position + size).as_vec2() / scale)
+    Rect::from_corners(
+        position.as_vec2() / scale,
+        (position + size).as_vec2() / scale,
+    )
 }
 
 impl MeshTool {
@@ -995,6 +1032,19 @@ fn solid_mesh(positions: &[[f32; 3]], faces: &[[u32; 3]]) -> Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playground_models_are_discovered_beside_its_data_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        let assets = dir.path().join("assets");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(assets.join("models")).unwrap();
+        std::fs::write(assets.join("models/actor.blend"), "fixture").unwrap();
+        assert_eq!(asset_root(&project), assets);
+        assert_eq!(find_assets(&asset_root(&project)), ["models/actor.blend"]);
+        assert_eq!(asset_root(dir.path()), dir.path());
+    }
 
     #[test]
     fn finds_mesh_sources_but_not_hidden_or_build_folders() {

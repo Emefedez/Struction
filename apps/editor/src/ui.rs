@@ -12,7 +12,7 @@ use bevy_egui::{
     },
 };
 use serde_json::Value;
-use struction_editor::{Diagnostic, EditRequest, EntityEntry, Field};
+use struction_editor::{Diagnostic, EditRequest, EntityEntry, Field, HierarchyNode};
 
 use crate::state::{Command, Editor, Inspection, Selected, definition_file, lookup};
 use crate::theme;
@@ -20,10 +20,30 @@ use crate::tools::{self, Mode, Request, Toolbox};
 use crate::viewport::SceneCamera;
 
 /// Text fields that must survive between passes.
-#[derive(Default)]
 pub struct Drafts {
     open_path: String,
     new_definition: String,
+    new_actor: String,
+    actor_definition: String,
+    actor_spawner: String,
+    actor_master: Option<String>,
+    by_master: bool,
+    compact_tab: u8,
+}
+
+impl Default for Drafts {
+    fn default() -> Self {
+        Self {
+            open_path: String::new(),
+            new_definition: String::new(),
+            new_actor: String::new(),
+            actor_definition: String::new(),
+            actor_spawner: String::new(),
+            actor_master: None,
+            by_master: true,
+            compact_tab: 0,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -58,9 +78,11 @@ pub fn editor_ui(
     let bar = Frame::new()
         .fill(theme::BASE)
         .inner_margin(Margin::symmetric(14, 8));
-    let top = egui::Panel::top("top_bar")
+    let mut top = egui::Panel::top("top_bar")
         .frame(bar)
-        .show(&mut root, |ui| top_bar(ui, &editor, &mut commands))
+        .show(&mut root, |ui| {
+            top_bar(ui, &editor, &mut toolbox, &mut commands)
+        })
         .response
         .rect
         .height();
@@ -68,42 +90,13 @@ pub fn editor_ui(
     let panel = Frame::new()
         .fill(theme::PANEL)
         .inner_margin(Margin::same(12));
-    let left = egui::Panel::left("hierarchy")
-        .resizable(true)
-        .default_size(260.0)
-        .size_range(180.0..=480.0)
-        .frame(panel)
-        .show(&mut root, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                hierarchy(ui, &editor, &mut drafts, &mut commands);
-                assets(ui, &editor, &mut toolbox, &mut commands);
-            });
-            ui.allocate_rect(ui.available_rect_before_wrap(), Sense::hover());
-        })
-        .response
-        .rect
-        .width();
-
-    let right = egui::Panel::right("inspector")
-        .resizable(true)
-        .default_size(340.0)
-        .size_range(260.0..=560.0)
-        .frame(panel)
-        .show(&mut root, |ui| {
-            ui.label(theme::section("Inspector"));
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                inspector(ui, &mut editor, &mut toolbox, &mut commands);
-            });
-            ui.allocate_rect(ui.available_rect_before_wrap(), Sense::hover());
-        })
-        .response
-        .rect
-        .width();
-
     let bottom = egui::Panel::bottom("problems")
         .resizable(true)
-        .default_size(150.0)
+        .default_size(if editor.diagnostics.is_empty() {
+            64.0
+        } else {
+            150.0
+        })
         .frame(panel)
         .show(&mut root, |ui| {
             problems(ui, &editor, &mut commands);
@@ -112,6 +105,74 @@ pub fn editor_ui(
         .response
         .rect
         .height();
+    let compact = ctx.viewport_rect().width() < 800.0;
+    let (left, right) = if compact && editor.project.is_some() {
+        top += egui::Panel::top("compact_tabs")
+            .frame(panel)
+            .show(&mut root, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut drafts.compact_tab, 0, "Scene");
+                    ui.selectable_value(&mut drafts.compact_tab, 1, "Inspector");
+                    ui.selectable_value(&mut drafts.compact_tab, 2, "Viewport");
+                });
+            })
+            .response
+            .rect
+            .height();
+        if drafts.compact_tab != 2 {
+            let size = root.available_size();
+            panel.show(&mut root, |ui| {
+                ui.set_min_size(size - egui::vec2(24.0, 24.0));
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if drafts.compact_tab == 0 {
+                        hierarchy(ui, &editor, &mut drafts, &mut commands);
+                        assets(ui, &editor, &mut toolbox, &mut commands);
+                    } else {
+                        inspector(ui, &mut editor, &mut toolbox, &mut commands);
+                    }
+                });
+                ui.allocate_rect(ui.available_rect_before_wrap(), Sense::hover());
+            });
+        }
+        (0.0, 0.0)
+    } else if editor.project.is_some() {
+        let left = egui::Panel::left("hierarchy")
+            .resizable(true)
+            .default_size(260.0)
+            .size_range(180.0..=480.0)
+            .frame(panel)
+            .show(&mut root, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    hierarchy(ui, &editor, &mut drafts, &mut commands);
+                    assets(ui, &editor, &mut toolbox, &mut commands);
+                });
+                ui.allocate_rect(ui.available_rect_before_wrap(), Sense::hover());
+            })
+            .response
+            .rect
+            .width();
+
+        let right = egui::Panel::right("inspector")
+            .resizable(true)
+            .default_size(340.0)
+            .size_range(260.0..=560.0)
+            .frame(panel)
+            .show(&mut root, |ui| {
+                ui.label(theme::section("Inspector"));
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    inspector(ui, &mut editor, &mut toolbox, &mut commands);
+                });
+                ui.allocate_rect(ui.available_rect_before_wrap(), Sense::hover());
+            })
+            .response
+            .rect
+            .width();
+
+        (left, right)
+    } else {
+        (0.0, 0.0)
+    };
 
     if editor.project.is_none() {
         let free = egui::Rect::from_min_max(
@@ -127,6 +188,7 @@ pub fn editor_ui(
     let size = UVec2::new(window.physical_width(), window.physical_height())
         .saturating_sub(position)
         .saturating_sub(UVec2::new((right * scale) as u32, (bottom * scale) as u32));
+    camera.is_active = !(compact && editor.project.is_some() && drafts.compact_tab != 2);
     camera.viewport = (size.x > 0 && size.y > 0).then(|| Viewport {
         physical_position: position,
         physical_size: size,
@@ -134,6 +196,9 @@ pub fn editor_ui(
     });
 
     for command in commands {
+        if compact && matches!(&command, Command::Select(Some(_))) {
+            drafts.compact_tab = 1;
+        }
         editor.apply(command);
     }
     Ok(())
@@ -169,7 +234,7 @@ fn shortcuts(ctx: &egui::Context, editor: &Editor, commands: &mut Vec<Command>) 
     });
 }
 
-fn top_bar(ui: &mut Ui, editor: &Editor, commands: &mut Vec<Command>) {
+fn top_bar(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut Vec<Command>) {
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("STRUCTION")
@@ -178,77 +243,123 @@ fn top_bar(ui: &mut Ui, editor: &Editor, commands: &mut Vec<Command>) {
         );
         ui.label(RichText::new("●").color(theme::ACCENT).small());
         ui.add_space(12.0);
-        let Some(project) = &editor.project else {
-            ui.label(RichText::new("No project open").color(theme::MUTED));
-            return;
-        };
-        let root = editor.root.as_ref().map(|root| root.display().to_string());
-        ui.label(RichText::new(root.unwrap_or_default()).color(theme::MUTED));
-
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if let Some(play) = &editor.play {
-                if ui.button("Stop").clicked() {
-                    commands.push(Command::StopPlay);
+        ui.menu_button("Programs…", |ui| {
+            ui.set_min_width(360.0);
+            ui.label(RichText::new("Blender executable").strong());
+            ui.add(TextEdit::singleline(&mut toolbox.programs.input).desired_width(360.0));
+            ui.horizontal(|ui| {
+                if ui.button("Browse…").clicked()
+                    && let Some(path) = crate::programs::picker(&toolbox.programs.input)
+                {
+                    toolbox.programs.input = path.to_string_lossy().into_owned();
                 }
-                if ui.button("Step").clicked() {
-                    commands.push(Command::Step);
+                if ui
+                    .add_enabled(toolbox.tool.is_none(), egui::Button::new("Save"))
+                    .clicked()
+                {
+                    let path = PathBuf::from(toolbox.programs.input.trim());
+                    if let Err(error) = toolbox.programs.select(path, true) {
+                        toolbox.programs.error = Some(error);
+                    }
                 }
-                let label = if play.running { "Pause" } else { "Resume" };
-                if ui.button(label).clicked() {
-                    commands.push(Command::TogglePause);
+                if ui.button("Detect").clicked() {
+                    toolbox.programs.input = struction_assets::Blender::default()
+                        .executable
+                        .to_string_lossy()
+                        .into_owned();
                 }
-                ui.label(
-                    RichText::new(format!("PLAYING · tick {}", play.ticks))
-                        .color(theme::ACCENT)
-                        .monospace(),
+            });
+            hint(ui, "Used for mesh import, preparation and Open in Blender.");
+            if toolbox.tool.is_some() {
+                hint(
+                    ui,
+                    "Close the mesh tool before saving a different executable.",
                 );
-            } else {
-                let valid = editor.diagnostics.is_empty();
-                let play = ui
-                    .add_enabled(valid, egui::Button::new("▶ Play"))
-                    .on_hover_text("Run the game from current sources (Ctrl+P)")
-                    .on_disabled_hover_text("Play requires valid sources: see Problems");
-                if play.clicked() {
-                    commands.push(Command::StartPlay);
-                }
             }
-            ui.separator();
-            let history = project.session().history();
-            let editing = !editor.playing();
-            let redo = ui
-                .add_enabled(editing && history.can_redo(), egui::Button::new("Redo"))
-                .on_hover_text(history.redo_label().map_or("Nothing to redo".into(), |l| {
-                    format!("Redo {l} (Ctrl+Shift+Z)")
-                }));
-            if redo.clicked() {
-                commands.push(Command::Redo);
+            if let Some(error) = &toolbox.programs.error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
             }
-            let undo = ui
-                .add_enabled(editing && history.can_undo(), egui::Button::new("Undo"))
-                .on_hover_text(
-                    history
-                        .undo_label()
-                        .map_or("Nothing to undo".into(), |l| format!("Undo {l} (Ctrl+Z)")),
-                );
-            if undo.clicked() {
-                commands.push(Command::Undo);
+            if let Some(status) = &toolbox.programs.status {
+                ui.colored_label(theme::WARD, status);
             }
-            if ui
-                .add_enabled(editing, egui::Button::new("Open…"))
-                .on_hover_text("Open another project folder")
-                .clicked()
-                && let Some(folder) = pick_project()
-            {
-                commands.push(Command::Open(folder));
-            }
-            if ui
-                .add_enabled(editing, egui::Button::new("Refresh"))
-                .on_hover_text("Revalidate sources edited outside the editor")
-                .clicked()
-            {
-                commands.push(Command::Refresh);
-            }
+            ui.label(format!(
+                "Current: {}",
+                toolbox.programs.blender.executable.display()
+            ));
         });
+    });
+    let Some(project) = &editor.project else {
+        ui.label(RichText::new("No project open").color(theme::MUTED));
+        return;
+    };
+    let root = editor.root.as_ref().map(|root| root.display().to_string());
+    ui.add(
+        egui::Label::new(RichText::new(root.unwrap_or_default()).color(theme::MUTED)).truncate(),
+    );
+
+    ui.horizontal_wrapped(|ui| {
+        if let Some(play) = &editor.play {
+            if ui.button("Stop").clicked() {
+                commands.push(Command::StopPlay);
+            }
+            if ui.button("Step").clicked() {
+                commands.push(Command::Step);
+            }
+            let label = if play.running { "Pause" } else { "Resume" };
+            if ui.button(label).clicked() {
+                commands.push(Command::TogglePause);
+            }
+            ui.label(
+                RichText::new(format!("PLAYING · tick {}", play.ticks))
+                    .color(theme::ACCENT)
+                    .monospace(),
+            );
+        } else {
+            let valid = editor.diagnostics.is_empty() && !editor.definitions.is_empty();
+            let play = ui
+                .add_enabled(valid, egui::Button::new("▶ Play"))
+                .on_hover_text("Run the game from current sources (Ctrl+P)")
+                .on_disabled_hover_text("Play requires valid sources: see Problems");
+            if play.clicked() {
+                commands.push(Command::StartPlay);
+            }
+        }
+        ui.separator();
+        let history = project.session().history();
+        let editing = !editor.playing();
+        let redo = ui
+            .add_enabled(editing && history.can_redo(), egui::Button::new("Redo"))
+            .on_hover_text(history.redo_label().map_or("Nothing to redo".into(), |l| {
+                format!("Redo {l} (Ctrl+Shift+Z)")
+            }));
+        if redo.clicked() {
+            commands.push(Command::Redo);
+        }
+        let undo = ui
+            .add_enabled(editing && history.can_undo(), egui::Button::new("Undo"))
+            .on_hover_text(
+                history
+                    .undo_label()
+                    .map_or("Nothing to undo".into(), |l| format!("Undo {l} (Ctrl+Z)")),
+            );
+        if undo.clicked() {
+            commands.push(Command::Undo);
+        }
+        if ui
+            .add_enabled(editing, egui::Button::new("Open…"))
+            .on_hover_text("Open another project folder")
+            .clicked()
+            && let Some(folder) = pick_project()
+        {
+            commands.push(Command::Open(folder));
+        }
+        if ui
+            .add_enabled(editing, egui::Button::new("Refresh"))
+            .on_hover_text("Revalidate sources edited outside the editor")
+            .clicked()
+        {
+            commands.push(Command::Refresh);
+        }
     });
 }
 
@@ -307,11 +418,26 @@ struct Node<'a> {
 
 fn hierarchy(ui: &mut Ui, editor: &Editor, drafts: &mut Drafts, commands: &mut Vec<Command>) {
     ui.label(theme::section("Scene"));
+    ui.horizontal_wrapped(|ui| {
+        for (label, color) in [
+            ("Instance", theme::ACTOR),
+            ("Master", theme::MASTER),
+            ("Ward", theme::WARD),
+            ("Definition", theme::DEFINITION),
+        ] {
+            ui.label(RichText::new(label).small().color(color));
+        }
+    });
     ui.add_space(4.0);
     if editor.project.is_none() {
         ui.label(RichText::new("Open a project to see its scene.").color(theme::MUTED));
         return;
     }
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut drafts.by_master, false, "Placement");
+        ui.selectable_value(&mut drafts.by_master, true, "Masters & wards");
+    });
+    actor_creator(ui, editor, drafts, commands);
     let mut tree = Node::default();
     let mut runtime = Vec::new();
     for entity in &editor.entities {
@@ -328,21 +454,25 @@ fn hierarchy(ui: &mut Ui, editor: &Editor, drafts: &mut Drafts, commands: &mut V
         if tree.children.is_empty() {
             ui.label(RichText::new("No authored spawns.").color(theme::MUTED));
         }
-        for (name, node) in &tree.children {
-            tree_node(ui, name, node, editor, commands);
-        }
-        for entity in runtime {
-            entity_row(ui, entity.key(), entity, editor, commands);
+        if drafts.by_master {
+            for node in &editor.masters {
+                master_node(ui, node, editor, commands);
+            }
+        } else {
+            for (name, node) in &tree.children {
+                tree_node(ui, name, node, editor, commands);
+            }
+            for entity in runtime {
+                entity_row(ui, entity.key(), entity, editor, commands);
+            }
         }
 
         ui.add_space(14.0);
-        ui.label(theme::section("Definitions"));
+        ui.label(theme::section("Definitions").color(theme::DEFINITION));
         ui.add_space(4.0);
-        for path in &editor.definitions {
-            let selected = editor.selected == Some(Selected::Definition(path.clone()));
-            if ui.selectable_label(selected, path).clicked() {
-                commands.push(Command::Select(Some(Selected::Definition(path.clone()))));
-            }
+        hint(ui, "Inheritance (descendsFrom)");
+        for node in &editor.lineages {
+            definition_node(ui, node, editor, commands);
         }
     });
     ui.add_space(8.0);
@@ -352,6 +482,7 @@ fn hierarchy(ui: &mut Ui, editor: &Editor, drafts: &mut Drafts, commands: &mut V
         _ => editor.definitions.first().cloned(),
     };
     if let Some(parent) = parent {
+        ui.label(format!("New definition descends from: {parent}"));
         ui.horizontal(|ui| {
             ui.add(
                 TextEdit::singleline(&mut drafts.new_definition)
@@ -375,6 +506,154 @@ fn hierarchy(ui: &mut Ui, editor: &Editor, drafts: &mut Drafts, commands: &mut V
             }
         });
     }
+}
+
+fn master_node(ui: &mut Ui, node: &HierarchyNode, editor: &Editor, commands: &mut Vec<Command>) {
+    let Some(entity) = editor.entity(&node.key) else {
+        return;
+    };
+    let name = node.key.rsplit('/').next().unwrap_or(&node.key);
+    if node.children.is_empty() {
+        entity_row(ui, name, entity, editor, commands);
+        return;
+    }
+    egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        ui.make_persistent_id(("master", &node.key)),
+        true,
+    )
+    .show_header(ui, |ui| entity_row(ui, name, entity, editor, commands))
+    .body(|ui| {
+        for child in &node.children {
+            master_node(ui, child, editor, commands);
+        }
+    });
+}
+
+fn definition_node(
+    ui: &mut Ui,
+    node: &HierarchyNode,
+    editor: &Editor,
+    commands: &mut Vec<Command>,
+) {
+    let row = |ui: &mut Ui, commands: &mut Vec<Command>| {
+        if ui
+            .selectable_label(
+                editor.selected == Some(Selected::Definition(node.key.clone())),
+                RichText::new(&node.key).color(
+                    if editor
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.file.as_deref() == Some(definition_file(&node.key).as_str()))
+                    {
+                        ui.visuals().error_fg_color
+                    } else {
+                        theme::DEFINITION
+                    },
+                ),
+            )
+            .clicked()
+        {
+            commands.push(Command::Select(Some(Selected::Definition(
+                node.key.clone(),
+            ))));
+        }
+    };
+    if node.children.is_empty() {
+        row(ui, commands);
+        return;
+    }
+    egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        ui.make_persistent_id(("definition", &node.key)),
+        true,
+    )
+    .show_header(ui, |ui| row(ui, commands))
+    .body(|ui| {
+        for child in &node.children {
+            definition_node(ui, child, editor, commands);
+        }
+    });
+}
+
+fn master_choices(
+    ui: &mut Ui,
+    nodes: &[HierarchyNode],
+    selected: &mut Option<String>,
+    excluded: Option<&str>,
+    depth: usize,
+) {
+    for node in nodes {
+        // A ward cannot become its own master or adopt an ancestor.
+        if excluded == Some(node.key.as_str()) {
+            continue;
+        }
+        ui.selectable_value(
+            selected,
+            Some(node.key.clone()),
+            format!("{}{}", "  ".repeat(depth), node.key),
+        );
+        master_choices(ui, &node.children, selected, excluded, depth + 1);
+    }
+}
+
+fn definition_choices(ui: &mut Ui, nodes: &[HierarchyNode], selected: &mut String, depth: usize) {
+    for node in nodes {
+        ui.selectable_value(
+            selected,
+            node.key.clone(),
+            RichText::new(format!("{}{}", "  ".repeat(depth), node.key)).color(theme::DEFINITION),
+        );
+        definition_choices(ui, &node.children, selected, depth + 1);
+    }
+}
+
+fn actor_creator(ui: &mut Ui, editor: &Editor, drafts: &mut Drafts, commands: &mut Vec<Command>) {
+    egui::CollapsingHeader::new("New actor (instance)").show(ui, |ui| {
+        ui.add_enabled_ui(!editor.playing(), |ui| {
+            ui.add(TextEdit::singleline(&mut drafts.new_actor).hint_text("Actor name"));
+            let definition = if drafts.actor_definition.is_empty() {
+                "Choose definition"
+            } else { &drafts.actor_definition };
+            egui::ComboBox::from_id_salt("actor_definition")
+                .selected_text(definition)
+                .show_ui(ui, |ui| {
+                    definition_choices(ui, &editor.lineages, &mut drafts.actor_definition, 0);
+                });
+            let spawner = if drafts.actor_spawner.is_empty() {
+                "Choose placement spawner"
+            } else { &drafts.actor_spawner };
+            egui::ComboBox::from_id_salt("actor_spawner")
+                .selected_text(spawner)
+                .show_ui(ui, |ui| {
+                    for entity in &editor.entities {
+                        if entity.source.as_ref().is_some_and(|s| s.path.len() == 2) {
+                            ui.selectable_value(&mut drafts.actor_spawner, entity.key().to_owned(), entity.key());
+                        }
+                    }
+                });
+            ui.label("Master (masterIs)");
+            egui::ComboBox::from_id_salt("actor_master")
+                .selected_text(drafts.actor_master.as_deref().unwrap_or("None — independent actor"))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut drafts.actor_master, None, "None — independent actor");
+                    master_choices(ui, &editor.masters, &mut drafts.actor_master, None, 0);
+                });
+            hint(ui, "The new actor will be a ward beneath this master. Placement stays with the chosen spawner.");
+            let ready = !drafts.new_actor.trim().is_empty()
+                && !drafts.actor_definition.is_empty()
+                && !drafts.actor_spawner.is_empty();
+            if ui.add_enabled(ready, egui::Button::new("Create actor")).clicked() {
+                let name = drafts.new_actor.trim().to_owned();
+                commands.push(Command::CreateSpawn {
+                    spawner: drafts.actor_spawner.clone(), name: name.clone(),
+                    definition: drafts.actor_definition.clone(), master: drafts.actor_master.clone(),
+                });
+                commands.push(Command::Select(Some(Selected::Entity(format!("{}/{name}", drafts.actor_spawner)))));
+                drafts.by_master = true;
+            }
+        });
+    });
 }
 
 fn tree_node(ui: &mut Ui, name: &str, node: &Node, editor: &Editor, commands: &mut Vec<Command>) {
@@ -408,14 +687,32 @@ fn entity_row(
 ) {
     let key = entity.key().to_owned();
     let selected = editor.selected == Some(Selected::Entity(key.clone()));
-    let mut text = RichText::new(name);
+    let master = editor
+        .entities
+        .iter()
+        .any(|e| e.master.as_deref() == Some(key.as_str()));
+    let (role, color) = if master && entity.master.is_some() {
+        ("master + ward", theme::MASTER)
+    } else if master {
+        ("master", theme::MASTER)
+    } else if entity.master.is_some() {
+        ("ward", theme::WARD)
+    } else if entity.is_instance() {
+        ("instance", theme::ACTOR)
+    } else {
+        ("placement", theme::MUTED)
+    };
+    let mut text = RichText::new(format!("{name} · {role}")).color(color);
     if entity.disabled {
         text = text.color(theme::MUTED).italics();
     }
     let row = ui.selectable_label(selected, text);
     let row = match &entity.definition {
-        Some(definition) => row.on_hover_text(definition),
-        None => row,
+        Some(definition) => row.on_hover_text(format!(
+            "{key}\nDefinition: {definition}\nMaster: {}",
+            entity.master.as_deref().unwrap_or("none")
+        )),
+        None => row.on_hover_text(&key),
     };
     if row.clicked() {
         commands.push(Command::Select(Some(Selected::Entity(key))));
@@ -429,7 +726,7 @@ fn assets(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut Ve
     }
     ui.add_space(14.0);
     ui.horizontal(|ui| {
-        ui.label(theme::section("Assets"));
+        ui.label(theme::section("Assets").color(theme::ASSET));
         if ui
             .small_button("↻")
             .on_hover_text("Look for new mesh sources")
@@ -440,7 +737,10 @@ fn assets(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut Ve
     });
     ui.add_space(4.0);
     if toolbox.assets.is_empty() {
-        hint(ui, "No .blend, .gltf or .glb sources in the project.");
+        hint(
+            ui,
+            "No .blend, .gltf or .glb sources in the asset directory.",
+        );
         return;
     }
     ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
@@ -467,7 +767,11 @@ fn asset_inspector(ui: &mut Ui, asset: &str, editor: &Editor, toolbox: &mut Tool
     ui.heading(name);
     ui.label(RichText::new(asset).monospace().small().color(theme::MUTED));
     ui.add_space(6.0);
-    let Some(source) = editor.root.as_ref().map(|root| root.join(asset)) else {
+    let Some(source) = editor
+        .root
+        .as_ref()
+        .map(|root| tools::asset_root(root).join(asset))
+    else {
         return;
     };
     let recipe = struction_assets::recipe_path(&source).is_file();
@@ -546,6 +850,7 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
         return;
     }
     let playing = editor.playing();
+    let masters = editor.masters.clone();
     let Some(inspection) = editor.inspection() else {
         ui.label(RichText::new("Select an entity or definition.").color(theme::MUTED));
         return;
@@ -554,7 +859,32 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
         // Drawn by `asset_inspector` above.
         Inspection::Asset => {}
         Inspection::Missing(target) => {
-            ui.label(RichText::new(format!("{target} no longer exists.")).color(theme::MUTED));
+            ui.label(
+                RichText::new(format!(
+                    "No instance at {target}. It may not have spawned; see Problems."
+                ))
+                .color(theme::MUTED),
+            );
+        }
+        Inspection::InvalidDefinition {
+            path,
+            message,
+            source,
+        } => {
+            ui.heading(RichText::new(path.as_str()).color(ui.visuals().error_fg_color));
+            ui.label(message.as_str());
+            let file = definition_file(path);
+            ui.label(RichText::new(&file).monospace());
+            if ui.button("Open source in editor…").clicked() {
+                toolbox.requests.push(Request::OpenSource(file));
+            }
+            hint(
+                ui,
+                "Fix the source, then Refresh. This definition remains listed while invalid.",
+            );
+            egui::ScrollArea::both().show(ui, |ui| {
+                ui.monospace(source.as_str());
+            });
         }
         Inspection::Entity {
             entry,
@@ -565,7 +895,13 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
             overrides,
         } => {
             let key = entry.key();
-            ui.heading(key.rsplit('/').next().unwrap_or(key));
+            ui.heading(RichText::new(key.rsplit('/').next().unwrap_or(key)).color(
+                if entry.master.is_some() {
+                    theme::WARD
+                } else {
+                    theme::ACTOR
+                },
+            ));
             ui.label(RichText::new(key).monospace().small().color(theme::MUTED));
             ui.add_space(6.0);
             egui::Grid::new("entity_facts")
@@ -591,11 +927,23 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
                         mono(ui, id);
                         ui.end_row();
                     }
-                    if let Some(master) = &entry.master {
-                        fact(ui, "Master");
-                        mono(ui, master);
-                        ui.end_row();
+                    fact(ui, "Master (masterIs)");
+                    let mut master = entry.master.clone();
+                    ui.add_enabled_ui(entry.is_named_spawn() && !playing, |ui| {
+                        egui::ComboBox::from_id_salt(("master", key))
+                            .selected_text(master.as_deref().unwrap_or("None — independent"))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut master, None, "None — independent");
+                                master_choices(ui, &masters, &mut master, Some(key), 0);
+                            });
+                    });
+                    if master != entry.master {
+                        commands.push(Command::SetMaster {
+                            path: key.into(),
+                            master,
+                        });
                     }
+                    ui.end_row();
                 });
             ui.add_space(10.0);
 
@@ -679,7 +1027,7 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
             components,
             local,
         } => {
-            ui.heading(path.as_str());
+            ui.heading(RichText::new(path.as_str()).color(theme::DEFINITION));
             let file = definition_file(path);
             ui.label(RichText::new(&file).monospace().small().color(theme::MUTED));
             ui.add_space(6.0);
@@ -1041,12 +1389,24 @@ fn problems(ui: &mut Ui, editor: &Editor, commands: &mut Vec<Command>) {
             );
             ui.indent("rejection", |ui| {
                 for diagnostic in &rejection.diagnostics {
+                    if editor.diagnostics.iter().any(|d| {
+                        d.file == diagnostic.file
+                            && d.line == diagnostic.line
+                            && d.column == diagnostic.column
+                            && d.message == diagnostic.message
+                    }) {
+                        continue;
+                    }
                     diagnostic_row(ui, diagnostic, warn, editor, commands);
                 }
             });
         }
         if editor.project.is_some() && count == 0 && editor.rejection.is_none() {
-            ui.label(RichText::new("All sources are valid.").color(theme::MUTED));
+            if editor.definitions.is_empty() {
+                ui.label(RichText::new("No definitions found. Open the data directory containing entity.jsonc definitions and scenes/.").color(ui.visuals().warn_fg_color));
+            } else {
+                ui.label(RichText::new("All sources are valid.").color(theme::WARD));
+            }
         }
         let error = ui.visuals().error_fg_color;
         for diagnostic in &editor.diagnostics {

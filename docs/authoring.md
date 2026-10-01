@@ -83,17 +83,38 @@ For runtime change streams, add `struction_debug` to the game's factory and conf
 ```bash
 cp -r examples/authoring /tmp/struction-authoring
 cargo run -p struction-editor -- /tmp/struction-authoring
+# The playground data is supported by the same game registration as its native host:
+cargo run -p struction-editor -- apps/playground/project
+# The repository directory or apps/playground also resolves to that data directory.
+# Use the editor’s registrations through JSONL without opening a window:
+cargo run -p struction-editor -- apps/playground/project --headless
 ```
 
 Without an argument the editor asks for a project directory. The UI is egui (`bevy_egui`) with its own theme (`apps/editor/src/theme.rs`); egui was chosen over Dear ImGui for being pure Rust with a maintained Bevy 0.19 integration and egui-native docking, gizmo and node-graph crates. Every widget emits a `Command` (`apps/editor/src/state.rs`) that calls the `AuthoringProject` operation of the same name, so the GUI and the JSONL protocol share validation, history and source formatting:
 
-- **Scene**: the authored path tree (zones, spawners, named spawns) and the definitions list. New definitions descend from the selected one through `create_definition`.
-- **Inspector**: an entity's definition, source `file:line`, StableId and placement; its authored components are edited as scene `overrides` on the spawn. A definition shows its lineage and resolved components; edits write its own file. Amber dots mark values set in that source; ↺ removes them to inherit again. Drags on a number form one undo group.
+- **Scene**: switch between **Masters & wards** (`masterIs`) and **Placement** (zones, spawners, named spawns). Definitions form a separate inheritance tree (`descendsFrom`). **New actor (instance)** chooses a definition, placement spawner and optional master from the hierarchy; the created actor appears beneath its master and can be undone. New definitions descend from the selected definition; the parent is shown explicitly.
+- **Colors**: blue instances, gold masters, green wards, purple definitions and peach assets; role labels and indentation carry the same meaning. Source problems are red, rejected operations amber, and locally authored fields have amber dots.
+- **Inspector**: an entity's definition, source `file:line`, StableId, master selector and placement; its authored components are edited as scene `overrides` on the spawn. A definition shows its lineage and resolved components; edits write its own file. Amber dots mark values set in that source; ↺ removes them to inherit again. Drags on a number form one undo group.
 - **Viewport**: instances as capsules, zones and spawners as gizmos. Click selects; dragging a named spawn moves it on the ground (Shift: height) through `move_spawn`, one undo step per drag. Right-drag orbits, middle-drag pans, the wheel zooms, F frames the selection.
-- **Problems**: `validate` diagnostics and the last rejected operation with its diagnostics; definition locations select their definition.
+- **Problems**: `validate` diagnostics and the last rejected operation without duplicating identical diagnostics. Broken definitions stay listed and show their original source with an **Open source in editor…** action; definition locations select their definition.
+- **Narrow windows**: Scene, Inspector and Viewport become tabs; selecting an object opens its inspector. Problems stays across the bottom and toolbar controls wrap.
 - **Top bar**: Undo/Redo (Ctrl+Z, Ctrl+Shift+Z), Refresh (also on window focus, for outside edits), Play/Pause/Step/Stop (Ctrl+P). Play steps the separate play world by the game's fixed timestep; the panels then inspect that world read-only.
 
-The editor hosts the example game's registration (`apps/editor/src/game.rs`) until a game crate provides its own factory. Instances render as markers rather than their meshes, and rotation/scale are read-only, like the backend.
+The editor shares `apps/playground/src/scene.rs` through the playground library’s unstarted headless factory, and also registers the small example’s `Health` behavior. Physics, gravity, character components and game actions are therefore available to preview, validation and isolated play. New game registrations belong in that shared module. Instances render as markers rather than their meshes, and rotation/scale are read-only, like the backend.
+
+The playground’s Assets panel reads its sibling `apps/playground/assets` directory, so the character’s `models/blood_knight.blend` is discoverable. Other projects keep their project-relative asset layout. `--mesh` paths are relative to the asset directory shown by this layout.
+
+## Choosing Blender
+
+**Programs… → Blender executable → Browse… → Save** stores a machine-local executable path. Linux accepts the actual executable, including custom installations; macOS accepts the executable inside the application bundle (pasting a `.app` path also resolves it). Spaces are passed literally, without shell parsing. The same choice drives mesh imports, collision/LOD preparation and **Open in Blender**. Close an open mesh tool before saving a different program, then reopen the asset.
+
+A one-run override is also available:
+
+```bash
+cargo run -p struction-editor -- apps/playground/project --blender /path/to/blender
+```
+
+The order is `--blender`, saved editor choice, then automatic discovery (`STRUCTION_BLENDER`, `PATH`, macOS application directories). **Detect** fills the discovered path; **Save** activates it. Settings live in `$XDG_CONFIG_HOME/struction/programs.json` or `~/.config/struction/programs.json` on Linux, and `~/Library/Application Support/struction/programs.json` on macOS. These paths stay out of project sources. The asset CLI still accepts `STRUCTION_BLENDER` for its own processes.
 
 ## Guarantees and current limits
 
