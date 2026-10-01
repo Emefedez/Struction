@@ -6,8 +6,8 @@ use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*};
 use struction_anim::{
     humanoid::{self, ANKLE_HEIGHT},
     locomotion::{FootTarget, LocomotionParams},
+    moves::{MoveKind, MovePose},
     plugin::{AnimMotion, Locomotor, SolvedPose},
-    roll::RollPose,
 };
 use struction_character::{CharacterAnimationPlugin, prelude::*, spawn_rig};
 use struction_physics::{prelude::*, testing::*};
@@ -29,9 +29,7 @@ fn roll_tumbles_the_pose_without_rotating_the_body_or_rig_root() {
     let mut app = app();
     floor(&mut app, Quat::IDENTITY);
     let (body, rig) = character(&mut app, Vec3::new(0.0, FEET, 0.0));
-    app.world_mut()
-        .entity_mut(body)
-        .insert(RollAbility::default());
+    app.world_mut().entity_mut(body).insert(Roll::default());
     step(&mut app, 30);
     let standing = app.world().get::<SolvedPose>(rig).unwrap().0.clone();
     app.world_mut()
@@ -39,7 +37,8 @@ fn roll_tumbles_the_pose_without_rotating_the_body_or_rig_root() {
         .unwrap()
         .roll_requested = true;
     step(&mut app, 20);
-    let roll = app.world().get::<RollPose>(rig).unwrap();
+    let roll = app.world().get::<MovePose>(rig).unwrap();
+    assert_eq!(roll.kind, MoveKind::Roll);
     assert!(roll.phase > 0.4 && roll.phase < 0.55, "{}", roll.phase);
     let pose = &app.world().get::<SolvedPose>(rig).unwrap().0;
     let humanoid = humanoid::rig();
@@ -62,7 +61,7 @@ fn roll_tumbles_the_pose_without_rotating_the_body_or_rig_root() {
         0
     );
     step(&mut app, 70);
-    assert_eq!(app.world().get::<RollPose>(rig).unwrap().weight, 0.0);
+    assert_eq!(app.world().get::<MovePose>(rig).unwrap().weight, 0.0);
     for foot in feet(&app, rig) {
         assert!(foot.planted);
         assert!((foot.position.y - ANKLE_HEIGHT).abs() < 0.02);
@@ -75,24 +74,63 @@ fn cancelled_roll_blends_out_and_animation_never_moves_physics() {
     let mut app = app();
     floor(&mut app, Quat::IDENTITY);
     let (body, rig) = character(&mut app, Vec3::new(0.0, FEET, 0.0));
-    app.world_mut()
-        .entity_mut(body)
-        .insert(RollAbility::default());
+    app.world_mut().entity_mut(body).insert(Roll::default());
     step(&mut app, 30);
     app.world_mut()
         .get_mut::<CharacterIntent>(body)
         .unwrap()
         .roll_requested = true;
     step(&mut app, 18);
-    app.world_mut().entity_mut(body).remove::<RollAbility>();
+    app.world_mut().entity_mut(body).remove::<Roll>();
     step(&mut app, 1);
-    let weight = app.world().get::<RollPose>(rig).unwrap().weight;
+    let weight = app.world().get::<MovePose>(rig).unwrap().weight;
     assert!(weight > 0.0 && weight < 1.0);
     let before = *app.world().get::<Position>(body).unwrap();
     app.world_mut().run_schedule(PostUpdate);
     assert_eq!(*app.world().get::<Position>(body).unwrap(), before);
     step(&mut app, 10);
-    assert_eq!(app.world().get::<RollPose>(rig).unwrap().weight, 0.0);
+    assert_eq!(app.world().get::<MovePose>(rig).unwrap().weight, 0.0);
+}
+
+#[test]
+fn a_swing_raises_the_arm_while_the_legs_keep_walking() {
+    let mut app = app();
+    floor(&mut app, Quat::IDENTITY);
+    let (body, rig) = character(&mut app, Vec3::new(0.0, FEET, 0.0));
+    app.world_mut().entity_mut(body).insert(Attack::default());
+    step(&mut app, 30);
+    let standing = app.world().get::<SolvedPose>(rig).unwrap().0.clone();
+    {
+        let mut intent = app.world_mut().get_mut::<CharacterIntent>(body).unwrap();
+        intent.attack_requested = true;
+        intent.movement = Vec2::Y;
+    }
+    step(&mut app, 12);
+    let swing = *app.world().get::<MovePose>(rig).unwrap();
+    assert_eq!(swing.kind, MoveKind::Swing);
+    assert!(swing.phase > 0.2 && swing.phase < 0.5, "{}", swing.phase);
+    let humanoid = humanoid::rig();
+    let arm = humanoid.skeleton.joint_id("upper_arm_r").unwrap();
+    let pose = &app.world().get::<SolvedPose>(rig).unwrap().0;
+    assert!(
+        pose.locals[arm]
+            .rotation
+            .angle_between(standing.locals[arm].rotation)
+            > 1.0
+    );
+    let mut footfalls = 0;
+    for _ in 0..40 {
+        step(&mut app, 1);
+        footfalls += app
+            .world()
+            .get::<Locomotor>(rig)
+            .unwrap()
+            .state
+            .output()
+            .footfalls;
+    }
+    assert!(footfalls > 0, "walking continues through the swing");
+    assert_eq!(app.world().get::<MovePose>(rig).unwrap().weight, 0.0);
 }
 
 fn floor(app: &mut App, rotation: Quat) {

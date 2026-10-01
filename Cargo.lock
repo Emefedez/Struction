@@ -5695,6 +5695,7 @@ dependencies = [
  "avian3d",
  "bevy",
  "bevy_transform_interpolation",
+ "struction_core",
  "struction_gravity",
 ]
 

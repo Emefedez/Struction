@@ -225,6 +225,38 @@ pub fn base_poses() -> BasePoseSet {
         ]
     }));
     set.poses.insert("roll".into(), BasePose { joints: roll });
+
+    // An overhead swing of the right hand: raised behind the head, then struck down in front.
+    let mut swing_raise = vec![
+        euler("spine", 6.0, 0.0, 0.0),
+        euler("chest", 0.0, -28.0, 0.0),
+        euler("head", 0.0, 20.0, 0.0),
+        euler("upper_arm_r", 160.0, 0.0, 18.0),
+        euler("forearm_r", 70.0, 0.0, 0.0),
+        euler("upper_arm_l", 30.0, 0.0, -12.0),
+        euler("forearm_l", 40.0, 0.0, 0.0),
+    ];
+    swing_raise.extend(hand([75.0, 90.0, 65.0], [20.0, 35.0]));
+    set.poses.insert(
+        "swing_raise".into(),
+        BasePose {
+            joints: swing_raise,
+        },
+    );
+    set.poses.insert(
+        "swing_strike".into(),
+        BasePose {
+            joints: vec![
+                euler("spine", -16.0, 0.0, 0.0),
+                euler("chest", 0.0, 30.0, 0.0),
+                euler("head", 0.0, -18.0, 0.0),
+                euler("upper_arm_r", 40.0, 0.0, -14.0),
+                euler("forearm_r", 12.0, 0.0, 0.0),
+                euler("upper_arm_l", -10.0, 0.0, -10.0),
+                euler("forearm_l", 30.0, 0.0, 0.0),
+            ],
+        },
+    );
     set
 }
 
@@ -250,7 +282,16 @@ mod tests {
     #[test]
     fn every_base_pose_resolves() {
         let rig = rig();
-        for name in ["idle", "grip", "fist", "seated", "aim", "roll"] {
+        for name in [
+            "idle",
+            "grip",
+            "fist",
+            "seated",
+            "aim",
+            "roll",
+            "swing_raise",
+            "swing_strike",
+        ] {
             base_poses().resolve(name, &rig.skeleton).unwrap();
         }
     }

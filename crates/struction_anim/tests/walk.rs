@@ -91,7 +91,7 @@ impl<'g> Sim<'g> {
                 goals: &goals,
                 locomotion: Some(&output),
                 body_weight: 1.0,
-                roll: None,
+                moving: None,
                 dt: DT,
             })
             .unwrap();
@@ -430,7 +430,7 @@ fn feet_lie_flat_on_a_slope_under_an_upright_body() {
         goals: &foot_goals(sim.state.output(), Vec3::Y, sim.root.rotation, 1.0),
         locomotion: Some(sim.state.output()),
         body_weight: 1.0,
-        roll: None,
+        moving: None,
         dt: DT,
     });
     let model = sim.solver.rig.skeleton.model_transforms(&pose.unwrap());

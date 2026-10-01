@@ -12,6 +12,7 @@ workspace = true
 avian3d = { workspace = true }
 bevy = { workspace = true }
 struction_gravity = { workspace = true }
+struction_core = { workspace = true }
 
 [dev-dependencies]
 bevy_transform_interpolation = { workspace = true }

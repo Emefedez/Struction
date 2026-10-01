@@ -2,12 +2,12 @@ use std::time::Duration;
 
 use avian3d::prelude::*;
 use bevy::{prelude::*, time::TimeUpdateStrategy};
-use struction_character::{RollActionsPlugin, prelude::*};
+use struction_character::prelude::*;
 use struction_core::{ActionArgs, ActionInvocation, ActionQueue, CorePlugin};
 use struction_physics::{prelude::*, testing::*};
 
 fn scene() -> (App, Entity, Entity) {
-    let mut app = headless_app_with((CharacterPlugins, CorePlugin::default(), RollActionsPlugin));
+    let mut app = headless_app_with((CharacterPlugins, CorePlugin::default()));
     app.world_mut()
         .spawn(GravityField::scene(Vec3::NEG_Y * 9.81));
     let floor = app
@@ -22,7 +22,7 @@ fn scene() -> (App, Entity, Entity) {
         .world_mut()
         .spawn((
             CharacterController::default(),
-            RollAbility::default(),
+            Roll::default(),
             Transform::from_xyz(0.0, 0.8, 0.0),
         ))
         .id();
@@ -32,7 +32,7 @@ fn scene() -> (App, Entity, Entity) {
         "settling: {:?} {:?} {:?}",
         app.world().get::<CharacterState>(body),
         app.world().get::<Position>(body),
-        app.world().get::<RollRecovery>(body)
+        app.world().get::<CharacterMove>(body)
     );
     (app, body, floor)
 }
@@ -68,13 +68,13 @@ fn idle_roll_has_a_bounded_distance_and_recovers() {
         assert!(ticks < 45);
     }
     let distance = (position(&app, body) - start).length();
-    let tuning = RollAbility::default();
+    let tuning = Roll::default();
     let expected = 2.0 * tuning.peak_speed * tuning.duration / std::f32::consts::PI;
     assert!(
         (distance - expected).abs() < 0.05,
         "distance {distance}, expected {expected}"
     );
-    assert!(app.world().get::<RollRecovery>(body).unwrap().remaining > 0.0);
+    assert!(app.world().get::<CharacterMove>(body).unwrap().recovery > 0.0);
     request(&mut app, body);
     step(&mut app, 1);
     assert!(app.world().get::<Rolling>(body).is_none());
@@ -124,12 +124,12 @@ fn direction_is_captured_and_jump_cannot_interrupt() {
 #[test]
 fn roll_requires_capability_valid_tuning_and_ground() {
     let (mut app, body, _) = scene();
-    app.world_mut().entity_mut(body).remove::<RollAbility>();
+    app.world_mut().entity_mut(body).remove::<Roll>();
     request(&mut app, body);
     step(&mut app, 1);
     assert!(app.world().get::<Rolling>(body).is_none());
     for duration in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-        app.world_mut().entity_mut(body).insert(RollAbility {
+        app.world_mut().entity_mut(body).insert(Roll {
             duration,
             ..default()
         });
@@ -138,9 +138,7 @@ fn roll_requires_capability_valid_tuning_and_ground() {
         assert!(app.world().get::<Rolling>(body).is_none());
         assert!(position(&app, body).is_finite());
     }
-    app.world_mut()
-        .entity_mut(body)
-        .insert(RollAbility::default());
+    app.world_mut().entity_mut(body).insert(Roll::default());
     app.world_mut()
         .get_mut::<CharacterIntent>(body)
         .unwrap()
@@ -219,7 +217,7 @@ fn roll_follows_planet_curvature() {
         .world_mut()
         .spawn((
             CharacterController::default(),
-            RollAbility::default(),
+            Roll::default(),
             Transform::from_xyz(0.0, radius + 0.8, 0.0),
         ))
         .id();
@@ -270,11 +268,7 @@ fn registered_action_uses_the_same_simulation_request() {
     let (mut app, body, _) = scene();
     app.world_mut()
         .resource_mut::<ActionQueue>()
-        .invoke(ActionInvocation::new(
-            "character/roll",
-            body,
-            ActionArgs::new(),
-        ));
+        .invoke(ActionInvocation::new("dodge/roll", body, ActionArgs::new()));
     step(&mut app, 1);
     assert!(app.world().get::<Rolling>(body).is_some());
 }
@@ -284,16 +278,13 @@ fn live_tuning_changes_only_the_next_roll() {
     let (mut app, body, _) = scene();
     request(&mut app, body);
     step(&mut app, 1);
-    app.world_mut()
-        .get_mut::<RollAbility>(body)
-        .unwrap()
-        .duration = 0.1;
+    app.world_mut().get_mut::<Roll>(body).unwrap().duration = 0.1;
     step(&mut app, 15);
     assert_eq!(
-        app.world().get::<Rolling>(body).unwrap().ability.duration,
+        app.world().get::<Rolling>(body).unwrap().tuning.duration,
         0.65
     );
-    app.world_mut().entity_mut(body).remove::<RollAbility>();
+    app.world_mut().entity_mut(body).remove::<Roll>();
     step(&mut app, 1);
     assert!(app.world().get::<Rolling>(body).is_none());
 }

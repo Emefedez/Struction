@@ -171,7 +171,9 @@ pub(crate) fn resolve(
                     uses.push(use_of(required, ExtensorReason::RequiredBy(user.clone())));
                     spans.push(span.clone());
                 }
-                _ => errors.push(DataError::new(
+                // Explaining a package another app does not include is not the author's problem.
+                None => {}
+                Some(_) => errors.push(DataError::new(
                     ErrorKind::ExtensorRequires {
                         extensor: user.clone(),
                         requires: required.clone(),

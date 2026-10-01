@@ -32,9 +32,9 @@ use crate::constraint::{
 use crate::error::AnimError;
 use crate::humanoid;
 use crate::locomotion::{Ground, LocomotionInput, LocomotionParams, LocomotionState};
+use crate::moves::MovePose;
 use crate::pose::Pose;
 use crate::rig::{Limb, Rig};
-use crate::roll::RollPose;
 use crate::solve::{PoseSolver, SolveFrame, SolverSettings, foot_goals};
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -67,7 +67,7 @@ impl Plugin for AnimPlugin {
             .register_type::<AnimMotion>()
             .register_type::<MotionFromTransform>()
             .register_type::<CustomGround>()
-            .register_type::<RollPose>()
+            .register_type::<MovePose>()
             .register_type::<AnimConstraints>()
             .register_type::<AnimIntent>()
             .register_type::<Locomotor>()
@@ -548,7 +548,7 @@ type SolveData = (
     &'static AnimConstraints,
     Option<&'static Locomotor>,
     Option<&'static LocalUp>,
-    Option<&'static RollPose>,
+    Option<&'static MovePose>,
 );
 
 fn solve_poses(
@@ -558,13 +558,13 @@ fn solve_poses(
     transforms: WorldTransforms,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut solver, mut solved, constraints, locomotor, up, roll) in &mut characters {
+    for (entity, mut solver, mut solved, constraints, locomotor, up, moving) in &mut characters {
         let Some(root) = transforms.get(entity) else {
             continue;
         };
         let up = up.map_or(Vec3::Y, |u| u.0).normalize_or(Vec3::Y);
         let mut goals = core::mem::take(&mut solver.goals);
-        let ordinary_weight = 1.0 - roll.map_or(0.0, RollPose::blend_weight);
+        let ordinary_weight = 1.0 - moving.map_or(0.0, MovePose::takeover);
         for goal in &mut goals {
             goal.weight *= ordinary_weight;
         }
@@ -585,7 +585,7 @@ fn solve_poses(
             goals: &goals,
             locomotion: output,
             body_weight,
-            roll,
+            moving,
             dt,
         };
         match solver.solver.solve(&frame) {

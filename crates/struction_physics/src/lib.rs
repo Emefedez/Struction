@@ -14,7 +14,8 @@
 
 use avian3d::{physics_transform::PhysicsTransformSystems, prelude::*};
 use bevy::{ecs::schedule::IntoScheduleConfigs, prelude::*};
-use struction_gravity::{GravityPlugin, GravitySystems};
+use struction_core::{ExtensorAppExt, ExtensorMeta};
+use struction_gravity::{GravityField, GravityHysteresis, GravityPlugin, GravitySystems};
 
 mod camera_occlusion;
 mod camera_zone;
@@ -54,7 +55,8 @@ pub enum EnvironmentSystems {
     Effects,
 }
 
-/// Adds Avian, gravity fields, and the packages in this crate.
+/// Adds Avian, gravity fields, and the packages in this crate. Registers the inferred `physics`,
+/// `volumes` and `gravity` extensors.
 pub struct PhysicsPlugin {
     /// Fixed simulation frequency.
     pub tick_hz: f64,
@@ -101,5 +103,30 @@ impl Plugin for PhysicsPlugin {
             camera_zone::plugin,
             gravity::plugin,
         ));
+
+        app.register_extensor(
+            ExtensorMeta::inferred("physics")
+                .doc("Rigid bodies and their colliders, mass and surfaces")
+                .owns::<RigidBody>()
+                .owns::<ColliderDensity>()
+                .owns::<Surface>(),
+        )
+        .register_extensor(
+            ExtensorMeta::inferred("volumes")
+                .doc("Regions that affect what enters them: water, damage, camera zones")
+                .owns::<Volume>()
+                .owns::<Buoyancy>()
+                .owns::<VolumeDrag>()
+                .owns::<DamageField>()
+                .owns::<CameraZone>()
+                .owns::<CameraTarget>()
+                .requires("physics"),
+        )
+        .register_extensor(
+            ExtensorMeta::inferred("gravity")
+                .doc("Gravity fields summed per body")
+                .owns::<GravityField>()
+                .owns::<GravityHysteresis>(),
+        );
     }
 }

@@ -3,13 +3,13 @@ use bevy::prelude::*;
 use struction_anim::{
     AnimError, AnimPlugin, AnimSystems,
     locomotion::{Ground, GroundHit, LocomotionParams},
+    moves::{MoveKind, MovePose},
     plugin::{AnimMotion, CustomGround, Locomotor, spawn_character},
     rig::Rig,
-    roll::RollPose,
 };
 use struction_gravity::{LocalGravity, LocalUp};
 
-use crate::{CharacterState, CharacterSystems, Rolling};
+use crate::{Attacking, CharacterState, CharacterSystems, Rolling};
 
 /// On an animation rig root: the character body it follows. The rig stays unparented so
 /// animation reads this frame's root instead of last frame's `GlobalTransform`.
@@ -51,7 +51,7 @@ pub fn spawn_rig(
     let root = spawn_character(commands, rig, Transform::IDENTITY, params)?;
     commands
         .entity(root)
-        .insert((RigOf(body), CustomGround, RollPose::default()));
+        .insert((RigOf(body), CustomGround, MovePose::default()));
     Ok(root)
 }
 
@@ -63,6 +63,7 @@ type Body = (
     &'static CharacterState,
     &'static Collider,
     Option<&'static Rolling>,
+    Option<&'static Attacking>,
 );
 
 fn follow_bodies(
@@ -74,11 +75,15 @@ fn follow_bodies(
         &mut Transform,
         &mut AnimMotion,
         &mut struction_anim::plugin::LocalUp,
-        &mut RollPose,
+        &mut MovePose,
     )>,
 ) {
+    // Simulation timers run ahead of the interpolated body by the unspent part of a tick.
+    let lag = fixed.timestep().as_secs_f32() * (1.0 - fixed.overstep_fraction());
     for (of, mut root, mut motion, mut anim_up, mut pose) in &mut rigs {
-        let Ok((body, up, gravity, velocity, state, collider, rolling)) = bodies.get(of.0) else {
+        let Ok((body, up, gravity, velocity, state, collider, rolling, attacking)) =
+            bodies.get(of.0)
+        else {
             continue;
         };
         // The rig origin is on the ground below the pelvis; the body origin is the capsule center.
@@ -86,14 +91,15 @@ fn follow_bodies(
         root.translation = body.translation - body.rotation * Vec3::Y * feet;
         root.rotation = body.rotation;
         anim_up.0 = *up.0;
-        if let Some(rolling) = rolling {
-            let elapsed = (rolling.elapsed
-                - fixed.timestep().as_secs_f32() * (1.0 - fixed.overstep_fraction()))
-            .max(0.0);
-            *pose = RollPose {
-                phase: (elapsed / rolling.ability.duration).clamp(0.0, 1.0),
+        let running = rolling
+            .map(|r| (MoveKind::Roll, r.elapsed, r.tuning.duration, r.direction))
+            .or(attacking.map(|a| (MoveKind::Swing, a.elapsed, a.tuning.duration, a.direction)));
+        if let Some((kind, elapsed, duration, direction)) = running {
+            *pose = MovePose {
+                kind,
+                phase: ((elapsed - lag).max(0.0) / duration).clamp(0.0, 1.0),
                 weight: 1.0,
-                direction: rolling.direction,
+                direction,
             };
         } else {
             pose.weight = (pose.weight - time.delta_secs() / 0.12).max(0.0);
@@ -137,6 +143,7 @@ impl Ground for PhysicsGround<'_, '_, '_> {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn step_locomotion(
     time: Res<Time>,
     spatial: SpatialQuery,
@@ -149,7 +156,7 @@ fn step_locomotion(
             &AnimMotion,
             &struction_anim::plugin::LocalUp,
             &mut Locomotor,
-            &RollPose,
+            &MovePose,
         ),
         With<CustomGround>,
     >,
@@ -158,7 +165,7 @@ fn step_locomotion(
     if dt <= 0.0 {
         return;
     }
-    for (of, root, motion, up, mut locomotor, roll) in &mut rigs {
+    for (of, root, motion, up, mut locomotor, moving) in &mut rigs {
         // Feet stand on solid colliders other than the character's own body.
         let body = of.0;
         let solid = |other: Entity| {
@@ -170,7 +177,8 @@ fn step_locomotion(
             solid: &solid,
         };
         let mut input = motion.locomotion_input(*root, up.0);
-        if roll.weight > 0.0 {
+        // Feet do not stay planted at the takeoff point of a roll, nor while it fades out.
+        if moving.kind == MoveKind::Roll && moving.weight > 0.0 {
             locomotor.state.reset();
             input.grounded = false;
         }

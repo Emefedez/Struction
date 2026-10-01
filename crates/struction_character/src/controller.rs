@@ -1,9 +1,10 @@
 use avian3d::{physics_transform::PhysicsTransformSystems, prelude::*};
 use bevy::prelude::*;
+use struction_core::{ExtensorAppExt, ExtensorMeta};
 use struction_gravity::{LocalGravity, LocalUp};
 use struction_physics::{EnvironmentSystems, Submersion, Surface};
 
-use crate::{RollAbility, RollRecovery, Rolling};
+use crate::PlayerControlled;
 
 /// Speed (m/s) away from the ground above which a character counts as airborne even if the
 /// ground probe still reaches: it is leaving the ground, not standing on it.
@@ -34,6 +35,7 @@ const GROUND_PROBE_LIFT: f32 = 0.02;
     CharacterIntent,
     CharacterState,
     CharacterLook,
+    CharacterMove,
 )]
 pub struct CharacterController {
     /// Top speed on the ground and in the air (m/s).
@@ -96,11 +98,26 @@ pub struct CharacterIntent {
     pub jump_requested: bool,
     /// A roll was asked for since the last tick; consumed even when it cannot start.
     pub roll_requested: bool,
+    /// An attack was asked for since the last tick; consumed even when it cannot start.
+    pub attack_requested: bool,
     /// Jump is held: swims upward in water.
     pub jump_held: bool,
     /// Turn the heading toward the movement direction instead of keeping it, so a camera can
     /// orbit freely while the body faces where it goes.
     pub face_movement: bool,
+}
+
+impl CharacterIntent {
+    /// The asked-for movement in world space, tangent to `up`, relative to `forward` unless the
+    /// intent carries its own movement frame. Length at most 1.
+    pub fn wish(&self, forward: Vec3, up: Vec3) -> Vec3 {
+        let forward = self
+            .movement_forward
+            .and_then(|direction| (direction - up * direction.dot(up)).try_normalize())
+            .unwrap_or(forward);
+        let right = forward.cross(up);
+        (forward * self.movement.y + right * self.movement.x).clamp_length_max(1.0)
+    }
 }
 
 /// Where the character faces. `forward` is kept tangent to the local up, so movement stays
@@ -122,6 +139,50 @@ impl Default for CharacterLook {
             up: Vec3::Y,
             pitch: 0.0,
         }
+    }
+}
+
+impl CharacterLook {
+    /// The heading carried over to `up`; projection alone can reverse it at a field boundary.
+    pub fn heading(&self, up: Vec3) -> Vec3 {
+        transport(self.forward, self.up, up)
+    }
+}
+
+/// `direction` rotated from one up to another, kept tangent to the new up.
+pub fn transport(direction: Vec3, from_up: Vec3, to_up: Vec3) -> Vec3 {
+    let turned = Quat::from_rotation_arc(from_up, to_up) * direction;
+    (turned - to_up * turned.dot(to_up)).normalize_or(to_up.any_orthonormal_vector())
+}
+
+/// The timed move holding a character, such as a roll or an attack. One runs at a time, and the
+/// next waits until `recovery` runs out. The extensor running a move writes this in
+/// [`CharacterSystems::Moves`]; the controller then leaves velocity and heading to the move and
+/// refuses jumps.
+#[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq)]
+#[reflect(Component)]
+pub struct CharacterMove {
+    /// A move holds the character until it calls [`Self::end`].
+    pub busy: bool,
+    /// Velocity the move drives this tick instead of walking or swimming; cleared every tick.
+    pub velocity: Option<Vec3>,
+    /// Heading the move holds while the character faces its movement; cleared every tick.
+    pub facing: Option<Vec3>,
+    /// Seconds before the next move can start.
+    pub recovery: f32,
+}
+
+impl CharacterMove {
+    pub fn can_start(&self) -> bool {
+        !self.busy && self.recovery <= 0.0
+    }
+
+    /// Releases the character and starts the wait before the next move.
+    pub fn end(&mut self, recovery: f32) {
+        *self = Self {
+            recovery,
+            ..default()
+        };
     }
 }
 
@@ -149,8 +210,38 @@ impl Default for CharacterState {
     }
 }
 
+impl CharacterState {
+    pub fn is(&self, condition: CharacterCondition) -> bool {
+        match condition {
+            CharacterCondition::Grounded => self.grounded && !self.swimming,
+            CharacterCondition::Airborne => !self.grounded && !self.swimming,
+            CharacterCondition::Swimming => self.swimming,
+        }
+    }
+
+    /// Whether any of `conditions` holds, such as a move's `blocked_while`.
+    pub fn any(&self, conditions: &[CharacterCondition]) -> bool {
+        conditions.iter().any(|&condition| self.is(condition))
+    }
+}
+
+/// A state of the character that moves can be refused in: authored as a move's `blocked_while`
+/// list, which stops the move from starting and cancels it when one holds.
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CharacterCondition {
+    /// On walkable ground, not swimming.
+    Grounded,
+    /// Jumping or falling: neither on walkable ground nor swimming.
+    Airborne,
+    Swimming,
+}
+
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CharacterSystems {
+    /// Measures ground and water for this tick and counts down move recovery.
+    Sense,
+    /// Extensors start, run and end timed moves (rolls, attacks) through [`CharacterMove`].
+    Moves,
     /// Turns intents into velocity, jumps, and orientation for the next physics step.
     Control,
     /// Copies interpolated bodies and their motion to animation rigs (`PostUpdate`).
@@ -158,7 +249,7 @@ pub enum CharacterSystems {
 }
 
 /// Runs the controller in `FixedPostUpdate`, right before the physics step, after gravity and
-/// fluid forces are known.
+/// fluid forces are known. Registers the `character` extensor.
 pub struct CharacterControllerPlugin;
 
 impl Plugin for CharacterControllerPlugin {
@@ -167,19 +258,37 @@ impl Plugin for CharacterControllerPlugin {
             .register_type::<CharacterIntent>()
             .register_type::<CharacterLook>()
             .register_type::<CharacterState>()
-            .register_type::<RollAbility>()
-            .register_type::<Rolling>()
-            .register_type::<RollRecovery>()
+            .register_type::<CharacterMove>()
+            .register_type::<CharacterCondition>()
+            .register_type::<Vec<CharacterCondition>>()
+            .register_extensor(
+                ExtensorMeta::inferred("character")
+                    .doc("A capsule that walks, jumps and swims under local gravity")
+                    .owns::<CharacterController>()
+                    .owns::<PlayerControlled>()
+                    .requires("physics"),
+            )
             .configure_sets(
                 FixedPostUpdate,
-                CharacterSystems::Control
+                (
+                    CharacterSystems::Sense,
+                    CharacterSystems::Moves,
+                    CharacterSystems::Control,
+                )
+                    .chain()
                     .in_set(PhysicsSystems::Prepare)
                     .after(EnvironmentSystems::Effects)
                     .after(PhysicsTransformSystems::TransformToPosition),
             )
             .add_systems(
                 FixedPostUpdate,
-                (probe_ground, control_characters, hold_on_slopes)
+                (probe_ground, sense_motion)
+                    .chain()
+                    .in_set(CharacterSystems::Sense),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                (control_characters, hold_on_slopes)
                     .chain()
                     .in_set(CharacterSystems::Control),
             );
@@ -263,128 +372,84 @@ fn probe_ground(
     }
 }
 
-#[allow(clippy::type_complexity)]
-fn control_characters(
-    mut commands: Commands,
+/// Completes the ground probe with motion: a probe that still reaches the ground while the body
+/// shoots away from it means leaving it. Measured along the ground normal: walking up a ramp,
+/// or across a planet whose up is tilted by other fields, moves along up without leaving the
+/// surface.
+fn sense_motion(
     time: Res<Time>,
     mut characters: Query<(
-        Entity,
+        &CharacterController,
+        &mut CharacterState,
+        &mut CharacterMove,
+        &LocalUp,
+        &Submersion,
+        &LinearVelocity,
+    )>,
+) {
+    for (controller, mut state, mut moving, up, submersion, velocity) in &mut characters {
+        let normal = state.ground_normal.normalize_or(*up.0);
+        state.grounded &= velocity.0.dot(normal) <= LEAVING_GROUND_SPEED;
+        state.swimming = submersion.0 >= controller.swim_threshold;
+        moving.recovery = (moving.recovery - time.delta_secs()).max(0.0);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn control_characters(
+    time: Res<Time>,
+    mut characters: Query<(
         &CharacterController,
         &mut CharacterIntent,
         &mut CharacterState,
         &mut CharacterLook,
+        &mut CharacterMove,
         &LocalUp,
         &LocalGravity,
-        &Submersion,
         &mut Rotation,
         &mut LinearVelocity,
-        Option<&RollAbility>,
-        Option<&Rolling>,
-        Option<&mut RollRecovery>,
     )>,
 ) {
     let dt = time.delta_secs();
     for (
-        entity,
         controller,
         mut intent,
         mut state,
         mut look,
+        mut moving,
         up,
         gravity,
-        submersion,
         mut rotation,
         mut velocity,
-        ability,
-        rolling,
-        mut recovery,
     ) in &mut characters
     {
         let up = *up.0;
-
-        // Transport the heading with gravity; projection alone can reverse it at a field boundary.
-        let transported = Quat::from_rotation_arc(look.up, up) * look.forward;
-        let mut forward = transported - up * transported.dot(up);
-        if forward.length_squared() < 1e-6 {
-            forward = up.any_orthonormal_vector();
-        }
-        forward = forward.normalize();
         let look_delta = core::mem::take(&mut intent.look);
-        forward = Quat::from_axis_angle(up, -look_delta.x) * forward;
+        let forward = Quat::from_axis_angle(up, -look_delta.x) * look.heading(up);
         look.forward = forward;
         look.up = up;
         look.pitch = (look.pitch - look_delta.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
-        let movement_forward = intent
-            .movement_forward
-            .and_then(|direction| (direction - up * direction.dot(up)).try_normalize())
-            .unwrap_or(forward);
-        let right = movement_forward.cross(up);
 
         let mut vertical = velocity.0.dot(up);
         let mut tangent = velocity.0 - up * vertical;
-
-        // A probe that still reaches the ground while the body shoots away from it means leaving
-        // it. Measured along the ground normal: walking up a ramp, or across a planet whose up
-        // is tilted by other fields, moves along up without leaving the surface.
         let normal = state.ground_normal.normalize_or(up);
-        state.grounded &= velocity.0.dot(normal) <= LEAVING_GROUND_SPEED;
-        let swimming = submersion.0 >= controller.swim_threshold;
-        state.swimming = swimming;
+        let swimming = state.swimming;
+        let wish = intent.wish(forward, up);
 
-        let wish = (movement_forward * intent.movement.y + right * intent.movement.x)
-            .clamp_length_max(1.0);
-        let was_rolling = rolling.is_some();
-        let mut rolling = rolling.copied();
-        if let Some(recovery) = recovery.as_mut() {
-            recovery.remaining = (recovery.remaining - dt).max(0.0);
-        }
-        if let Some(active) = rolling
-            && (active.phase() >= 1.0 || !state.grounded || swimming || ability.is_none())
-        {
-            if let Some(recovery) = recovery.as_mut() {
-                recovery.remaining = active.ability.recovery;
-            }
-            rolling = None;
-            commands.entity(entity).remove::<Rolling>();
-        }
-        let requested = core::mem::take(&mut intent.roll_requested);
-        if requested
-            && !was_rolling
-            && state.grounded
-            && !swimming
-            && recovery.as_ref().is_some_and(|r| r.remaining <= 0.0)
-            && let Some(ability) = ability
-        {
-            match ability.validate() {
-                Ok(()) => {
-                    rolling = Some(Rolling {
-                        elapsed: 0.0,
-                        direction: wish.try_normalize().unwrap_or(forward),
-                        up,
-                        ability: *ability,
-                    })
-                }
-                Err(error) => warn!("{entity}: {error}"),
+        let driven = moving.velocity.take();
+        let facing = moving.facing.take();
+        if intent.face_movement {
+            if let Some(facing) = facing {
+                look.forward = facing;
+            } else if !moving.busy
+                && let Some(direction) = wish.try_normalize()
+            {
+                look.forward = turn_toward(forward, direction, up, controller.turn_speed * dt);
             }
         }
-        let rolling_this_tick = rolling.is_some() || was_rolling;
-        if !rolling_this_tick
-            && intent.face_movement
-            && let Some(direction) = wish.try_normalize()
-        {
-            look.forward = turn_toward(forward, direction, up, controller.turn_speed * dt);
-        }
-        if let Some(active) = rolling.as_mut() {
-            let speed = active.advance(dt, up);
-            let ground_direction = (active.direction - normal * active.direction.dot(normal))
-                .normalize_or(active.direction);
-            let linear = ground_direction * speed;
+        if let Some(linear) = driven {
             vertical = linear.dot(up);
             tangent = linear - up * vertical;
-            if intent.face_movement {
-                look.forward = active.direction;
-            }
-            commands.entity(entity).insert(*active);
         } else if swimming {
             let target = wish * controller.swim_speed;
             tangent = step_toward(tangent, target, controller.swim_acceleration * dt);
@@ -399,13 +464,13 @@ fn control_characters(
                 target,
                 controller.traction * state.ground_friction * dt,
             );
-        } else if !was_rolling && wish != Vec3::ZERO {
+        } else if wish != Vec3::ZERO {
             let target = wish * controller.move_speed;
             tangent = step_toward(tangent, target, controller.air_acceleration * dt);
         }
 
         if core::mem::take(&mut intent.jump_requested)
-            && !rolling_this_tick
+            && !moving.busy
             && state.grounded
             && !swimming
         {

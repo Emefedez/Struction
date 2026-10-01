@@ -14,9 +14,9 @@ use crate::constraint::{AnimConstraint, ConstraintProperty, ResolvedConstraint};
 use crate::error::AnimError;
 use crate::ik::{self, GazeLimits};
 use crate::locomotion::LocomotionOutput;
+use crate::moves::MovePose;
 use crate::pose::{BoneMask, Pose};
 use crate::rig::{Limb, Rig};
-use crate::roll::RollPose;
 use crate::spring::{SpringParams, SpringQuat};
 
 /// Joint rotations that chase a target pose with springs: secondary motion and snap-back after
@@ -110,7 +110,7 @@ pub struct SolveFrame<'a> {
     /// Locomotion result; `body_weight` scales its pelvis motion and deformation.
     pub locomotion: Option<&'a LocomotionOutput>,
     pub body_weight: f32,
-    pub roll: Option<&'a RollPose>,
+    pub moving: Option<&'a MovePose>,
     pub dt: f32,
 }
 
@@ -352,8 +352,8 @@ impl PoseSolver {
             let w = frame.body_weight.clamp(0.0, 1.0);
             pose.locals[self.rig.root].scale = Vec3::ONE.lerp(loco.scale, w);
         }
-        if let Some(roll) = frame.roll {
-            roll.apply(&self.rig, frame.base_poses, frame.root, frame.up, &mut pose)?;
+        if let Some(moving) = frame.moving {
+            moving.apply(&self.rig, frame.base_poses, frame.root, frame.up, &mut pose)?;
         }
         let final_model = skeleton.model_transforms(&pose);
         report.ends = self
