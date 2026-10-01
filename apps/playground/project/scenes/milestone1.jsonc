@@ -67,7 +67,10 @@
       "zone": "Playground",
       "position": [-3, 0.9, 3],
       "spawns": {
-        "sentry": { "definition": "characters/sentry" }
+        "sentry": {
+          "definition": "characters/sentry",
+          "offset": [0.0, 1.100000023841858, 0.0]
+        }
       }
     }
   }

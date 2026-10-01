@@ -1,6 +1,6 @@
 // A shallow rim makes the pool's edge readable and keeps its base solid.
 {
-  "descendsFrom": "Ground",
+  "descendsFrom": "Terrain",
   "components": {
     "Surface": null,
     "Shape": { "Box": { "size": [7, 0.5, 8] } },

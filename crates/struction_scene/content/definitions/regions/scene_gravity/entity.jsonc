@@ -1,6 +1,6 @@
-// The same downward pull everywhere.
+// Scene gravity: the same downward pull everywhere, a region with an infinite volume.
 {
-  "descendsFrom": "Gravity",
+  "descendsFrom": "Region",
   "components": {
     "GravityField": {
       "volume": "Infinite",

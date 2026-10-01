@@ -2,7 +2,7 @@
 // `Attack`; the tuning below only spells out their default `blocked_while` conditions, the states
 // in which each is refused (`Recovering` only refuses starting).
 {
-  "descendsFrom": "Actor",
+  "descendsFrom": "characters/humanoid",
   "extensors": ["dodge", "combat"],
   "components": {
     "PlayerControlled": {},

@@ -1,5 +1,6 @@
-// Static ground. Its `Shape` is both the collider and the mesh; ground that hides the player gets
-// a cut-out along the camera's line of sight.
+// The world actors stand in: static ground and planets. Its `Shape` is both the collider and the
+// mesh; terrain that hides the player gets a cut-out along the camera's line of sight. Something
+// that should fall once touched (a crumbling tile) descends from it and overrides its body.
 {
   "components": {
     "RigidBody": "Static",

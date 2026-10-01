@@ -1,6 +1,6 @@
 // A stone tile that everything slides on.
 {
-  "descendsFrom": "terrain/stone",
+  "descendsFrom": "terrains/stone",
   "components": {
     "Surface": { "friction": 0.02 },
     "Look": { "color": [0.20, 0.57, 0.72] }

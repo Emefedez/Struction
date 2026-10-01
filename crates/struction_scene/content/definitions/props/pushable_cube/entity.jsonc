@@ -1,6 +1,6 @@
 // Light enough for the player to push.
 {
-  "descendsFrom": "Prop",
+  "descendsFrom": "Actor",
   "components": {
     "RigidBody": "Dynamic",
     "Shape": { "Box": { "size": [1, 1, 1] } },

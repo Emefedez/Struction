@@ -1,0 +1,4 @@
+// Something in the world that acts or can be acted upon: characters and props. Actors are what
+// gameplay addresses (masters, wards, hits, saves); what they can do comes from their
+// descendants' components and extensors.
+{}
