@@ -5,14 +5,15 @@
 //! naming one adds the components it supplies with their defaults. Every other extensor is
 //! inferred from the components it owns or from an extensor that requires it.
 
+use std::any::TypeId;
 use std::sync::Arc;
 
 use bevy::reflect::TypeRegistry;
 use bevy::reflect::std_traits::ReflectDefault;
-use struction_core::{ExtensorRegistry, Participation, StateRule, StateRules};
+use struction_core::{ExtensorMeta, ExtensorRegistry, Participation, StateRule, StateRules};
 
 use crate::build::{Builder, ComponentValue};
-use crate::definition::Resolved;
+use crate::definition::{Resolved, expect};
 use crate::error::{DataError, ErrorKind};
 use crate::source::{Node, Span};
 use crate::store::build_component_map;
@@ -270,43 +271,39 @@ pub(crate) fn resolve_states(
     let Some(states) = body.get("states").and_then(Node::as_object) else {
         return Ok(None);
     };
-    let named = |name: &str| uses.iter().any(|u| u.name == name && u.is_named());
+    let unnamed_opt_in = |meta: &ExtensorMeta| {
+        meta.participation == Participation::OptIn
+            && !uses.iter().any(|u| u.name == meta.name && u.is_named())
+    };
     let mut errors = Vec::new();
     let mut rules = Vec::new();
     for member in states {
         let state = &member.key;
-        match extensors.state_owner(state) {
-            None => {
-                errors.push(DataError::at(
-                    ErrorKind::UnknownState {
-                        name: state.clone(),
-                        known: extensors.states().map(str::to_owned).collect(),
-                    },
-                    &member.key_span,
-                ));
-                continue;
-            }
-            Some(owner) if owner.participation == Participation::OptIn && !named(&owner.name) => {
-                errors.push(DataError::at(
-                    ErrorKind::StateNeedsExtensor {
-                        state: state.clone(),
-                        extensor: owner.name.clone(),
-                    },
-                    &member.key_span,
-                ));
-                continue;
-            }
-            Some(_) => {}
-        }
-        let Some(fields) = member.value.as_object() else {
-            errors.push(DataError::at(
-                ErrorKind::TypeMismatch {
-                    expected: "object with enable and disable".into(),
-                    found: member.value.kind_name().into(),
-                },
-                &member.value.span,
-            ));
+        let refusal = match extensors.state_owner(state) {
+            None => Some(ErrorKind::UnknownState {
+                name: state.clone(),
+                known: extensors.states().map(str::to_owned).collect(),
+            }),
+            Some(owner) if unnamed_opt_in(owner) => Some(ErrorKind::StateNeedsExtensor {
+                state: state.clone(),
+                extensor: owner.name.clone(),
+            }),
+            Some(_) => None,
+        };
+        if let Some(kind) = refusal {
+            errors.push(DataError::at(kind, &member.key_span));
             continue;
+        }
+        let fields = match expect(
+            &member.value,
+            "object with enable and disable",
+            member.value.as_object().is_some(),
+        ) {
+            Ok(node) => node.as_object().expect("checked"),
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
         };
         let mut rule = StateRule {
             state: state.clone(),
@@ -319,8 +316,7 @@ pub(crate) fn resolve_states(
                     Ok(values) => {
                         for value in values {
                             if let Some(owner) = extensors.owner(value.type_id)
-                                && owner.participation == Participation::OptIn
-                                && !named(&owner.name)
+                                && unnamed_opt_in(owner)
                             {
                                 errors.push(DataError::at(
                                     ErrorKind::ExtensorNotNamed {
@@ -335,37 +331,10 @@ pub(crate) fn resolve_states(
                     }
                     Err(build) => errors.extend(build),
                 },
-                "disable" => {
-                    let Some(items) = field.value.as_array() else {
-                        errors.push(DataError::at(
-                            ErrorKind::TypeMismatch {
-                                expected: "array of component names".into(),
-                                found: field.value.kind_name().into(),
-                            },
-                            &field.value.span,
-                        ));
-                        continue;
-                    };
-                    let builder = Builder { registry };
-                    for item in items {
-                        let found = match item.as_str() {
-                            Some(name) => builder
-                                .component_registration(name, &item.span)
-                                .map(|registration| registration.type_id()),
-                            None => Err(DataError::at(
-                                ErrorKind::TypeMismatch {
-                                    expected: "component name".into(),
-                                    found: item.kind_name().into(),
-                                },
-                                &item.span,
-                            )),
-                        };
-                        match found {
-                            Ok(type_id) => rule.disable.push(type_id),
-                            Err(error) => errors.push(error),
-                        }
-                    }
-                }
+                "disable" => match disabled_components(&field.value, registry) {
+                    Ok(disable) => rule.disable = disable,
+                    Err(failed) => errors.extend(failed),
+                },
                 other => errors.push(DataError::at(
                     ErrorKind::UnknownField {
                         field: other.into(),
@@ -377,9 +346,34 @@ pub(crate) fn resolve_states(
         }
         rules.push(rule);
     }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok((!rules.is_empty()).then(|| StateRules(Arc::from(rules))))
+}
+
+/// A state's `disable` list: component names, each registered.
+fn disabled_components(
+    node: &Node,
+    registry: &TypeRegistry,
+) -> Result<Vec<TypeId>, Vec<DataError>> {
+    let items = expect(node, "array of component names", node.as_array().is_some())
+        .map_err(|error| vec![error])?
+        .as_array()
+        .expect("checked");
+    let builder = Builder { registry };
+    let (found, errors): (Vec<_>, Vec<_>) = items
+        .iter()
+        .map(|item| {
+            let name = expect(item, "component name", item.as_str().is_some())?;
+            builder
+                .component_registration(name.as_str().expect("checked"), &item.span)
+                .map(|registration| registration.type_id())
+        })
+        .partition(Result::is_ok);
     if errors.is_empty() {
-        Ok((!rules.is_empty()).then(|| StateRules(Arc::from(rules))))
+        Ok(found.into_iter().map(Result::unwrap).collect())
     } else {
-        Err(errors)
+        Err(errors.into_iter().map(Result::unwrap_err).collect())
     }
 }
