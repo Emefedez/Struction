@@ -12,11 +12,12 @@ use bevy::time::{TimePlugin, TimeUpdateStrategy};
 use serde::Serialize;
 use serde_json::{Value, json};
 use struction_core::{ActionRegistry, Definition, MasterIs, StableId};
-use struction_data::{DataError, DefinitionStore, ErrorKind, ExtensorReason, ExtensorUse};
+use struction_data::{DataError, DefinitionStore, ErrorKind};
 use struction_world::{
     EntityPath, PathAliases, SceneCatalog, WorldEntity, link_masters, run_pending_spawners,
 };
 
+use crate::extensors::{DroppedEntry, ExtensorEntry, SuggestedExtensor};
 use crate::session::{Applied, EditRequest, EditSession, Field, SessionError};
 
 #[derive(Clone, Debug, Serialize)]
@@ -260,14 +261,19 @@ impl AuthoringProject {
                     .map_err(|e| invalid(ErrorKind::UnsupportedType(e.to_string())))
             })
             .collect::<Result<_, _>>()?;
+        let registry = world.resource::<DefinitionStore>().extensors();
         let in_use = |name: &str| resolved.extensors.iter().any(|used| used.name == name);
         Ok(DefinitionInspection {
             definition: path.into(),
             lineage: resolved.lineage.clone(),
             extensors: resolved.extensors.iter().map(ExtensorEntry::from).collect(),
-            available_extensors: world
-                .resource::<DefinitionStore>()
-                .extensors()
+            dropped_extensors: resolved.dropped.iter().map(DroppedEntry::from).collect(),
+            suggested_extensors: resolved
+                .suggested_extensors(registry)
+                .into_iter()
+                .map(SuggestedExtensor::from)
+                .collect(),
+            available_extensors: registry
                 .names()
                 .filter(|name| !in_use(name))
                 .map(str::to_owned)
@@ -328,6 +334,23 @@ impl AuthoringProject {
     }
     pub fn end_group(&mut self) {
         self.session.end_group();
+    }
+
+    /// Several field edits of one entity source as one validated, undoable step.
+    pub(crate) fn edit_fields(
+        &mut self,
+        file: &str,
+        label: &str,
+        edits: Vec<(Vec<struction_data::edit::PathSegment>, Option<Value>)>,
+    ) -> Result<Applied, SessionError> {
+        let world = self.preview.world();
+        let applied = self
+            .session
+            .apply_fields_checked(file, label, edits, |sources| validate(world, sources))?;
+        if !applied.files.is_empty() {
+            self.refresh()?;
+        }
+        Ok(applied)
     }
 
     /// Templates become user-owned files; existing files are never overwritten.
@@ -655,45 +678,14 @@ pub struct DefinitionInspection {
     pub lineage: Vec<String>,
     /// Extensors in use: named ones first, then inferred ones.
     pub extensors: Vec<ExtensorEntry>,
+    /// Inherited extensors this definition (or an ancestor or preset) dropped.
+    pub dropped_extensors: Vec<DroppedEntry>,
+    /// Opt-in extensors whose requirements are met, for the author to consider.
+    pub suggested_extensors: Vec<SuggestedExtensor>,
     /// Registered extensors the definition does not use.
     pub available_extensors: Vec<String>,
     /// Merged data after inheritance, presets and overrides.
     pub resolved: Value,
     /// Reflected values by full type path.
     pub components: BTreeMap<String, Value>,
-}
-
-/// An extensor a definition uses, and why.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ExtensorEntry {
-    pub name: String,
-    pub reason: ExtensorWhy,
-    /// Components of the definition the extensor owns.
-    pub components: Vec<String>,
-    /// Those it added with their defaults.
-    pub supplied: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtensorWhy {
-    /// Named in `extensors` by this definition, preset or override.
-    NamedBy(String),
-    Owns(String),
-    RequiredBy(String),
-}
-
-impl From<&ExtensorUse> for ExtensorEntry {
-    fn from(used: &ExtensorUse) -> Self {
-        Self {
-            name: used.name.clone(),
-            reason: match &used.reason {
-                ExtensorReason::Named { by } => ExtensorWhy::NamedBy(by.clone()),
-                ExtensorReason::Owns(component) => ExtensorWhy::Owns(component.clone()),
-                ExtensorReason::RequiredBy(extensor) => ExtensorWhy::RequiredBy(extensor.clone()),
-            },
-            components: used.components.clone(),
-            supplied: used.supplied.clone(),
-        }
-    }
 }

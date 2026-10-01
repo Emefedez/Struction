@@ -121,6 +121,19 @@ impl History {
         }
     }
 
+    /// Records a complete transaction, such as several field edits made as one operation.
+    pub fn record_transaction(&mut self, transaction: Transaction) {
+        if transaction.changes.iter().all(Change::is_noop) {
+            return;
+        }
+        self.close_group();
+        self.redo.clear();
+        self.undo.push(transaction);
+        if self.undo.len() > self.limit {
+            self.undo.remove(0);
+        }
+    }
+
     /// Records both semantic edits and exact source text for lossless undo.
     pub fn record_source(
         &mut self,

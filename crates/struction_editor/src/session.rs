@@ -14,7 +14,7 @@ use struction_data::DataError;
 use struction_data::edit::{self, EditError, PathSegment};
 use thiserror::Error;
 
-use crate::history::{Change, History, SourceChange};
+use crate::history::{Change, History, SourceChange, Transaction};
 
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -256,6 +256,57 @@ impl EditSession {
             },
             validate,
         )
+    }
+
+    /// Several field edits of one file as one validated, undoable step: `None` removes a field.
+    pub fn apply_fields_checked(
+        &mut self,
+        file: &str,
+        label: &str,
+        edits: Vec<(Vec<PathSegment>, Option<Value>)>,
+        validate: impl FnOnce(&BTreeMap<String, String>) -> Result<(), Vec<DataError>>,
+    ) -> Result<Applied, SessionError> {
+        if self.playing {
+            return Err(SessionError::Playing);
+        }
+        let before = self.read_checked(file)?;
+        let mut after = before.clone();
+        let mut changes = Vec::new();
+        for (path, value) in edits {
+            let edited = match value {
+                Some(value) => edit::set_value(&after, &path, value),
+                None => edit::remove_value(&after, &path),
+            }
+            .map_err(|source| SessionError::Edit {
+                file: file.into(),
+                source,
+            })?;
+            after = edited.text;
+            if edited.edit.previous != edited.edit.next {
+                changes.push(Change {
+                    file: file.into(),
+                    edit: edited.edit,
+                });
+            }
+        }
+        if changes.is_empty() {
+            return Ok(Applied {
+                label: label.into(),
+                files: vec![],
+            });
+        }
+        let sources = BTreeMap::from([(file.to_owned(), SourceChange { before, after })]);
+        validate(&candidates(&sources)).map_err(SessionError::Validation)?;
+        self.write_sources(&sources)?;
+        self.history.record_transaction(Transaction {
+            label: label.into(),
+            changes,
+            sources,
+        });
+        Ok(Applied {
+            label: label.into(),
+            files: vec![file.into()],
+        })
     }
 
     fn change(

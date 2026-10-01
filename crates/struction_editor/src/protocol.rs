@@ -17,7 +17,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Bounds one request's work, so a typo cannot hang the session.
 const MAX_STEP_TICKS: usize = 10_000;
 
-const COMMANDS: [&str; 24] = [
+const COMMANDS: [&str; 26] = [
     "master_hierarchy",
     "definition_hierarchy",
     "set_master",
@@ -28,6 +28,8 @@ const COMMANDS: [&str; 24] = [
     "actions",
     "definitions",
     "inspect_definition",
+    "add_extensor",
+    "remove_extensor",
     "read",
     "entities",
     "inspect_entity",
@@ -79,6 +81,14 @@ pub enum Command {
     Definitions {},
     InspectDefinition {
         path: String,
+    },
+    AddExtensor {
+        path: String,
+        extensor: String,
+    },
+    RemoveExtensor {
+        path: String,
+        extensor: String,
     },
     Read {
         file: String,
@@ -201,6 +211,10 @@ fn apply(project: &mut AuthoringProject, command: Command) -> Result<Value, Sess
         Command::Actions {} => project.actions().into_iter().map(action).collect(),
         Command::Definitions {} => json!(project.definitions()),
         Command::InspectDefinition { path } => json!(project.inspect_definition(&path)?),
+        Command::AddExtensor { path, extensor } => json!(project.add_extensor(&path, &extensor)?),
+        Command::RemoveExtensor { path, extensor } => {
+            json!(project.remove_extensor(&path, &extensor)?)
+        }
         Command::Read { file } => {
             let source = project.session().read(&file)?;
             json!({ "revision": revision(&source), "source": source })

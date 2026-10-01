@@ -56,7 +56,12 @@ fn armored_factory(root: &Path) -> App {
     let mut app = factory(root);
     app.register_type::<Armor>()
         .register_extensor(ExtensorMeta::inferred("living").owns::<Health>())
-        .register_extensor(ExtensorMeta::opt_in("armor").supplies::<Armor>());
+        .register_extensor(
+            ExtensorMeta::opt_in("armor")
+                .doc("Protection")
+                .supplies::<Armor>()
+                .requires("living"),
+        );
     app
 }
 
@@ -616,4 +621,121 @@ fn definitions_explain_their_extensors() {
             .iter()
             .all(|e| e.name != "armor")
     );
+}
+
+fn armor_of(project: &AuthoringProject, path: &str) -> Option<f64> {
+    project
+        .inspect_definition(path)
+        .unwrap()
+        .components
+        .get(Armor::type_path())
+        .map(|armor| armor["rating"].as_f64().unwrap())
+}
+
+#[test]
+fn extensors_are_suggested_added_dropped_and_removed_as_undoable_steps() {
+    let dir = fixture();
+    let read = |file: &str| std::fs::read_to_string(dir.path().join(file)).unwrap();
+    let ogre_source = read(GUARD);
+    let mut project = AuthoringProject::open(dir.path(), armored_factory).unwrap();
+    assert_eq!(
+        project
+            .inspect_definition("Actor")
+            .unwrap()
+            .suggested_extensors,
+        [SuggestedExtensor {
+            name: "armor".into(),
+            doc: "Protection".into(),
+            because: vec!["living".into()],
+            supplies: vec!["Armor".into()],
+        }]
+    );
+
+    project.add_extensor("Actor", "armor").unwrap();
+    assert!(read("Actor/entity.jsonc").contains(r#""extensors": ["armor"]"#));
+    assert_eq!(armor_of(&project, "guards/ogre"), Some(0.0));
+    assert!(
+        project
+            .inspect_definition("Actor")
+            .unwrap()
+            .suggested_extensors
+            .is_empty()
+    );
+    project
+        .edit(set(
+            "Actor/entity.jsonc",
+            &["components", "Armor", "rating"],
+            json!(3),
+        ))
+        .unwrap();
+
+    // Inherited: the ogre drops it, and it is no longer suggested there.
+    project.remove_extensor("guards/ogre", "armor").unwrap();
+    assert!(read(GUARD).contains(r#""-armor""#));
+    assert!(read(GUARD).contains("// Ogre guard."));
+    let ogre = project.inspect_definition("guards/ogre").unwrap();
+    assert_eq!(armor_of(&project, "guards/ogre"), None);
+    assert_eq!(
+        ogre.dropped_extensors,
+        [DroppedEntry {
+            name: "armor".into(),
+            by: "guards/ogre".into()
+        }]
+    );
+    assert!(ogre.suggested_extensors.is_empty());
+
+    // Adding it back only removes the drop, so the inherited tuning returns.
+    project.add_extensor("guards/ogre", "armor").unwrap();
+    assert!(!read(GUARD).contains("armor"));
+    assert_eq!(armor_of(&project, "guards/ogre"), Some(3.0));
+
+    // Removing its own extensor also removes its own tuning, in one undoable step.
+    project.remove_extensor("Actor", "armor").unwrap();
+    let actor = read("Actor/entity.jsonc");
+    assert!(
+        !actor.contains("extensors") && !actor.contains("Armor"),
+        "{actor}"
+    );
+    assert_eq!(armor_of(&project, "Actor"), None);
+    project.undo().unwrap();
+    assert_eq!(armor_of(&project, "Actor"), Some(3.0));
+
+    let error = |result: Result<Applied, SessionError>| result.unwrap_err().to_string();
+    assert!(error(project.add_extensor("Actor", "wings")).contains("registered: armor, living"));
+    assert_eq!(
+        error(project.remove_extensor("Actor", "living")),
+        "the armor extensor builds on living; remove armor first"
+    );
+    project.remove_extensor("Actor", "armor").unwrap();
+    assert_eq!(
+        error(project.remove_extensor("Actor", "armor")),
+        "Actor does not use the armor extensor"
+    );
+    while project.undo().unwrap().is_some() {}
+    assert_eq!(read(GUARD), ogre_source);
+}
+
+#[test]
+fn protocol_adds_and_removes_extensors() {
+    use struction_editor::protocol::{Request, execute};
+    let dir = fixture();
+    let mut project = AuthoringProject::open(dir.path(), armored_factory).unwrap();
+    let mut run = |command: serde_json::Value| {
+        let request: Request = serde_json::from_value(json!({"id":1,"command":command})).unwrap();
+        execute(&mut project, request)
+    };
+    let inspected = run(json!({"op":"inspect_definition", "path":"Actor"}));
+    assert_eq!(
+        inspected.result.unwrap()["suggested_extensors"][0]["name"],
+        "armor"
+    );
+    assert!(run(json!({"op":"add_extensor", "path":"Actor", "extensor":"armor"})).ok);
+    assert!(run(json!({"op":"remove_extensor", "path":"guards/ogre", "extensor":"armor"})).ok);
+    let inspected = run(json!({"op":"inspect_definition", "path":"guards/ogre"}));
+    assert_eq!(
+        inspected.result.unwrap()["dropped_extensors"],
+        json!([{ "name": "armor", "by": "guards/ogre" }])
+    );
+    let refused = run(json!({"op":"remove_extensor", "path":"Actor", "extensor":"living"}));
+    assert!(!refused.ok);
 }
