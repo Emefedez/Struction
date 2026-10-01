@@ -484,7 +484,7 @@ fn scan_assets(
     toolbox.assets = editor
         .root
         .as_deref()
-        .map(|root| find_project_assets(root))
+        .map(find_project_assets)
         .unwrap_or_default();
 }
 
