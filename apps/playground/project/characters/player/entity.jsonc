@@ -3,6 +3,7 @@
   "components": {
     "Roll": {
       "recovery": 0.0
-    }
+    },
+    "CharacterController": {}
   }
 }

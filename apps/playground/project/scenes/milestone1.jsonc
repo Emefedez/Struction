@@ -57,7 +57,7 @@
       "spawns": {
         "planet": {
           "definition": "terrains/planet",
-          "offset": [3.1380462646484375, 0.0, -2.643138885498047],
+          "offset": [-0.09756612777709961, 0.0, -2.0403976440429688],
           "overrides": {
             "components": {
               "GravityField": {
@@ -86,7 +86,10 @@
       "zone": "Playground",
       "position": [0, 0, 8],
       "spawns": {
-        "player": { "definition": "characters/player", "offset": [0, 0.9, 0] }
+        "player": {
+          "definition": "characters/player",
+          "offset": [0, 0.9, 0]
+        }
       }
     },
     // Beside the pushable cube.
