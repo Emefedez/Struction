@@ -236,12 +236,14 @@ impl Editor {
                 ("Stop", Ok(None))
             }
             Command::TogglePause => {
+                project.release_play_input();
                 if let Some(play) = &mut self.play {
                     play.running = !play.running;
                 }
                 return;
             }
             Command::Step => {
+                project.release_play_input();
                 if let Some(play) = &mut self.play {
                     play.running = false;
                 }

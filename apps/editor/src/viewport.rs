@@ -1,7 +1,9 @@
 //! The 3D view of the project snapshot: a marker per authored entity, an orbit camera, click
 //! selection and drag moves. Moves go through `AuthoringProject::move_spawn`, one history group
 //! per drag, so the view never owns positions itself.
-use std::collections::HashMap;
+use crate::{play_view, scene_view, spatial_guides};
+use bevy::camera::primitives::Aabb;
+use struction_character::RigOf;
 
 use crate::state::{Command, Editor, Selected};
 use crate::ui::Typing;
@@ -35,18 +37,6 @@ impl Default for Orbit {
     }
 }
 
-/// Stands in for an authored entity until instances render their own meshes.
-#[derive(Component)]
-struct Marker(String);
-
-#[derive(Resource)]
-struct MarkerAssets {
-    mesh: Handle<Mesh>,
-    idle: Handle<StandardMaterial>,
-    selected: Handle<StandardMaterial>,
-    disabled: Handle<StandardMaterial>,
-}
-
 struct Drag {
     path: String,
     group: String,
@@ -61,7 +51,6 @@ struct Drag {
 struct Dragging(Option<Drag>);
 
 const MARKER_HEIGHT: f32 = 1.8;
-const MARKER_RADIUS: f32 = 0.4;
 const POINT_RADIUS: f32 = 0.5;
 
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
@@ -77,10 +66,14 @@ impl Plugin for ViewportPlugin {
         app.init_resource::<Orbit>()
             .init_resource::<Dragging>()
             .init_resource::<Typing>()
+            .init_resource::<play_view::PlayControl>()
+            .init_resource::<spatial_guides::GuideSettings>()
             .add_systems(Startup, setup)
             .configure_sets(
                 Update,
-                (ViewportSystems::Input, ViewportSystems::Sync).chain(),
+                (ViewportSystems::Input, ViewportSystems::Sync)
+                    .chain()
+                    .before(struction_scene::SceneRigSystems),
             )
             .add_systems(
                 Update,
@@ -90,23 +83,30 @@ impl Plugin for ViewportPlugin {
                         focus_selection,
                         orbit,
                         pick_and_drag,
+                        play_view::capture_input,
                         advance_play,
                     )
                         .chain()
                         .in_set(ViewportSystems::Input),
-                    (sync_markers, place_camera, draw_guides)
+                    (
+                        scene_view::sync_entities,
+                        place_camera,
+                        draw_guides,
+                        spatial_guides::draw,
+                        scene_view::selection_outline,
+                    )
                         .chain()
                         .in_set(ViewportSystems::Sync),
                 ),
+            )
+            .add_systems(
+                Update,
+                scene_view::sync_poses.after(struction_scene::render::SceneRenderSystems::Dress),
             );
     }
 }
 
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
+fn setup(mut commands: Commands) {
     commands.spawn((Name::new("Camera"), SceneCamera, Camera3d::default()));
     commands.spawn((
         DirectionalLight {
@@ -120,29 +120,10 @@ fn setup(
         brightness: 400.0,
         ..default()
     });
-    let matte = |color: Color| StandardMaterial {
-        base_color: color,
-        perceptual_roughness: 0.8,
-        ..default()
-    };
-    let mesh = Capsule3d::new(MARKER_RADIUS, MARKER_HEIGHT - 2.0 * MARKER_RADIUS)
-        .mesh()
-        .build()
-        .translated_by(Vec3::Y * MARKER_HEIGHT / 2.0);
-    commands.insert_resource(MarkerAssets {
-        mesh: meshes.add(mesh),
-        idle: materials.add(matte(Color::srgb(0.55, 0.58, 0.63))),
-        selected: materials.add(matte(Color::srgb(0.95, 0.66, 0.23))),
-        disabled: materials.add(StandardMaterial {
-            base_color: Color::srgba(0.55, 0.58, 0.63, 0.25),
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        }),
-    });
 }
 
 /// Whether the cursor is over the 3D view rather than a panel, in window coordinates.
-fn viewport_cursor(window: &Window, camera: &Camera, egui: &EguiWantsInput) -> Option<Vec2> {
+pub fn viewport_cursor(window: &Window, camera: &Camera, egui: &EguiWantsInput) -> Option<Vec2> {
     if !camera.is_active {
         return None;
     }
@@ -188,7 +169,7 @@ fn focus_selection(
     editor: NonSend<Editor>,
     mut orbit: ResMut<Orbit>,
 ) {
-    if typing.0 || !keys.just_pressed(KeyCode::KeyF) {
+    if editor.playing() || typing.0 || !keys.just_pressed(KeyCode::KeyF) {
         return;
     }
     if let Some(Selected::Entity(target)) = &editor.selected
@@ -201,6 +182,7 @@ fn focus_selection(
 
 #[allow(clippy::too_many_arguments)]
 fn orbit(
+    editor: NonSend<Editor>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
@@ -210,6 +192,9 @@ fn orbit(
     mut orbit: ResMut<Orbit>,
     mut held: Local<bool>,
 ) {
+    if editor.playing() {
+        return;
+    }
     let (camera, transform) = *camera;
     let over = viewport_cursor(&window, camera, &egui).is_some();
     let buttons_down = buttons.any_pressed([MouseButton::Right, MouseButton::Middle]);
@@ -245,7 +230,15 @@ pub fn zoom_factor(scroll: &AccumulatedMouseScroll) -> f32 {
     0.88f32.powf(lines.clamp(-3.0, 3.0))
 }
 
-fn place_camera(orbit: Res<Orbit>, mut camera: Single<&mut Transform, With<SceneCamera>>) {
+fn place_camera(
+    editor: NonSend<Editor>,
+    orbit: Res<Orbit>,
+    mut camera: Single<&mut Transform, With<SceneCamera>>,
+) {
+    if let Some(transform) = play_view::camera_transform(&editor) {
+        **camera = transform;
+        return;
+    }
     let rotation = Quat::from_euler(EulerRot::YXZ, orbit.yaw, orbit.pitch, 0.0);
     **camera = Transform::from_translation(orbit.focus + rotation * Vec3::Z * orbit.distance)
         .with_rotation(rotation);
@@ -253,28 +246,6 @@ fn place_camera(orbit: Res<Orbit>, mut camera: Single<&mut Transform, With<Scene
 
 fn advance_play(time: Res<Time>, mut editor: NonSendMut<Editor>) {
     editor.advance(time.delta_secs());
-}
-
-/// Where along `ray` a marker is hit, if at all.
-fn marker_hit(ray: Ray3d, position: Vec3, rotation: Quat, scale: Vec3) -> Option<f32> {
-    let size = scale.max_element().max(0.01);
-    let center = position + rotation * Vec3::Y * MARKER_HEIGHT / 2.0 * size;
-    let half = rotation * Vec3::Y * (MARKER_HEIGHT / 2.0 - MARKER_RADIUS) * size;
-    // Closest approach between the ray and the capsule's segment.
-    let (a, b) = (center - half, center + half);
-    let segment = b - a;
-    let w = ray.origin - a;
-    let (dd, ds, ss) = (1.0, ray.direction.dot(segment), segment.length_squared());
-    let (dw, sw) = (ray.direction.dot(w), segment.dot(w));
-    let det = dd * ss - ds * ds;
-    let s = if det > 1e-6 {
-        ((dd * sw - ds * dw) / det).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let t = (ds * s - dw).max(0.0);
-    let gap = ray.get_point(t).distance(a + segment * s);
-    (gap <= MARKER_RADIUS * size * 1.2).then_some(t)
 }
 
 /// Zones and spawners are points drawn as gizmos.
@@ -293,7 +264,14 @@ fn pick_and_drag(
     mut editor: NonSendMut<Editor>,
     mut dragging: ResMut<Dragging>,
     mut drags: Local<u64>,
+    meshes: Query<(Entity, &Aabb, &GlobalTransform)>,
+    proxies: Query<&scene_view::SceneEntity>,
+    parents: Query<&ChildOf>,
+    rigs: Query<&RigOf>,
 ) {
+    if editor.playing() {
+        return;
+    }
     let (camera, camera_transform) = *camera;
     let ray = window
         .cursor_position()
@@ -334,24 +312,23 @@ fn pick_and_drag(
         return;
     }
     let Some(ray) = ray else { return };
-    let hit = editor
-        .entities
+    let mesh_hit = meshes
         .iter()
-        .filter_map(|entity| {
-            let transform = entity.transform()?;
-            let t = if entity.is_instance() {
-                marker_hit(
-                    ray,
-                    transform.translation,
-                    transform.rotation,
-                    transform.scale,
-                )?
-            } else {
-                point_hit(ray, transform.translation)?
-            };
-            Some((t, entity))
+        .filter_map(|(entity, bounds, transform)| {
+            let proxy = scene_view::owner(entity, &proxies, &parents, &rigs)?;
+            Some((
+                scene_view::bounds_hit(ray, transform, bounds)?,
+                editor.entity(&proxy.0)?,
+            ))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0));
+    let hit = mesh_hit.or_else(|| {
+        editor
+            .entities
+            .iter()
+            .filter_map(|entity| Some((point_hit(ray, entity.position?)?, entity)))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+    });
     let Some((_, entity)) = hit else {
         editor.apply(Command::Select(None));
         return;
@@ -385,61 +362,8 @@ fn pick_and_drag(
     }
 }
 
-fn sync_markers(
-    mut commands: Commands,
-    editor: NonSend<Editor>,
-    assets: Res<MarkerAssets>,
-    mut markers: Query<(
-        Entity,
-        &Marker,
-        &mut Transform,
-        &mut MeshMaterial3d<StandardMaterial>,
-    )>,
-    mut synced: Local<Option<(u64, Option<Selected>)>>,
-) {
-    let state = (editor.generation, editor.selected.clone());
-    if synced.as_ref() == Some(&state) {
-        return;
-    }
-    *synced = Some(state);
-    let mut wanted: HashMap<&str, (Transform, Handle<StandardMaterial>)> = editor
-        .entities
-        .iter()
-        .filter(|entity| entity.is_instance())
-        .filter_map(|entity| {
-            let key = entity.key();
-            let transform = entity.transform()?;
-            let material = if editor.selected == Some(Selected::Entity(key.to_owned())) {
-                &assets.selected
-            } else if entity.disabled {
-                &assets.disabled
-            } else {
-                &assets.idle
-            };
-            Some((key, (transform, material.clone())))
-        })
-        .collect();
-    for (entity, marker, mut transform, mut material) in &mut markers {
-        match wanted.remove(marker.0.as_str()) {
-            Some((wanted_transform, wanted_material)) => {
-                *transform = wanted_transform;
-                material.0 = wanted_material;
-            }
-            None => commands.entity(entity).despawn(),
-        }
-    }
-    for (key, (transform, material)) in wanted {
-        commands.spawn((
-            Marker(key.to_owned()),
-            Mesh3d(assets.mesh.clone()),
-            MeshMaterial3d(material),
-            transform,
-        ));
-    }
-}
-
 fn draw_guides(editor: NonSend<Editor>, mut gizmos: Gizmos) {
-    if editor.project.is_none() {
+    if editor.project.is_none() || editor.playing() {
         return;
     }
     gizmos.grid(
@@ -490,10 +414,6 @@ fn draw_guides(editor: NonSend<Editor>, mut gizmos: Gizmos) {
 mod tests {
     use super::*;
 
-    fn ray(origin: Vec3, toward: Vec3) -> Ray3d {
-        Ray3d::new(origin, Dir3::new(toward - origin).unwrap())
-    }
-
     #[test]
     fn zoom_follows_the_scroll_amount() {
         let scroll = |unit, y| AccumulatedMouseScroll {
@@ -509,21 +429,5 @@ mod tests {
         // A burst is capped per frame.
         let burst = zoom_factor(&scroll(MouseScrollUnit::Line, 50.0));
         assert!((burst - 0.88f32.powi(3)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn markers_are_hit_along_their_scaled_body() {
-        let at = Vec3::new(4.0, 0.0, 0.0);
-        let eye = Vec3::new(4.0, 1.0, 10.0);
-        let hit = |target: Vec3, scale: f32| {
-            marker_hit(ray(eye, target), at, Quat::IDENTITY, Vec3::splat(scale))
-        };
-        assert!(hit(Vec3::new(4.0, 1.0, 0.0), 1.0).is_some());
-        // Above a 1.8 m marker, but inside the same marker scaled by 1.5.
-        assert!(hit(Vec3::new(4.0, 2.4, 0.0), 1.0).is_none());
-        assert!(hit(Vec3::new(4.0, 2.4, 0.0), 1.5).is_some());
-        assert!(hit(Vec3::new(5.0, 1.0, 0.0), 1.0).is_none());
-        assert!(point_hit(ray(eye, Vec3::ZERO), Vec3::ZERO).is_some());
-        assert!(point_hit(ray(eye, Vec3::ZERO), at).is_none());
     }
 }

@@ -24,7 +24,7 @@ use bevy::transform::TransformSystems;
 use bevy::transform::components::{GlobalTransform, Transform};
 
 use crate::affordance::{Grabbable, Sittable, assign_grips};
-use crate::base_pose::BasePoseSet;
+use crate::base_pose::{BasePoseSet, RigPoseSet};
 use crate::constraint::{
     AnimConstraint, AnimatedWeight, ConstraintOrigin, ConstraintProperty, ConstraintTarget,
     Falloff, ResolvedConstraint, arbitrate, resolve,
@@ -549,6 +549,7 @@ type SolveData = (
     Option<&'static Locomotor>,
     Option<&'static LocalUp>,
     Option<&'static MovePose>,
+    Option<&'static RigPoseSet>,
 );
 
 fn solve_poses(
@@ -558,7 +559,9 @@ fn solve_poses(
     transforms: WorldTransforms,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut solver, mut solved, constraints, locomotor, up, moving) in &mut characters {
+    for (entity, mut solver, mut solved, constraints, locomotor, up, moving, targets) in
+        &mut characters
+    {
         let Some(root) = transforms.get(entity) else {
             continue;
         };
@@ -580,7 +583,7 @@ fn solve_poses(
         let frame = SolveFrame {
             root,
             up,
-            base_poses: &poses,
+            base_poses: targets.map_or(&*poses, |targets| &targets.0),
             constraints: &constraints.0,
             goals: &goals,
             locomotion: output,

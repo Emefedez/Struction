@@ -107,7 +107,52 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum BlenderWorkspace {
+    Uvs,
+    Materials,
+}
+impl BlenderWorkspace {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Uvs => "UV Editing",
+            Self::Materials => "Shading",
+        }
+    }
+}
+
 impl Blender {
+    /// Opens the source UI at its UV or material workspace, with a particular object/material
+    /// selected. Arguments are passed directly to Blender, never through a shell.
+    pub fn open_workspace(
+        &self,
+        source: &Path,
+        workspace: BlenderWorkspace,
+        object: &str,
+        material: &str,
+    ) -> Result<(), BlenderError> {
+        let mut child = Command::new(&self.executable)
+            .arg("--python-expr")
+            .arg(include_str!("../scripts/open_workspace.py"))
+            .arg("--")
+            .arg(absolute(source))
+            .arg(workspace.name())
+            .arg(object)
+            .arg(material)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|source| BlenderError::Spawn {
+                executable: self.executable.clone(),
+                source,
+            })?;
+        thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+
     /// Whether the executable exists (a path, or a name found on `PATH`).
     pub fn is_available(&self) -> bool {
         if self.executable.components().count() > 1 {

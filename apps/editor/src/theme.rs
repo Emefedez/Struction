@@ -14,7 +14,7 @@ pub const PANEL: Color32 = Color32::from_rgb(0x17, 0x1a, 0x1f);
 const SURFACE: Color32 = Color32::from_rgb(0x20, 0x24, 0x2b);
 const HOVER: Color32 = Color32::from_rgb(0x2a, 0x2f, 0x38);
 const PRESSED: Color32 = Color32::from_rgb(0x34, 0x3a, 0x45);
-const BORDER: Color32 = Color32::from_rgb(0x26, 0x2a, 0x31);
+pub const BORDER: Color32 = Color32::from_rgb(0x46, 0x4c, 0x58);
 const TEXT: Color32 = Color32::from_rgb(0xd7, 0xdb, 0xe2);
 pub const MUTED: Color32 = Color32::from_rgb(0x8a, 0x91, 0x9e);
 /// Semantic roles stay consistent across the hierarchy, inspectors and legends.

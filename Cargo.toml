@@ -15,6 +15,7 @@ members = [
     "crates/struction_assets",
     "crates/struction_editor",
     "crates/struction_scene",
+    "crates/struction_language",
     "apps/editor",
 ]
 resolver = "3"

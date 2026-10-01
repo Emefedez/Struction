@@ -45,7 +45,12 @@ struction_core = { workspace = true }
 struction_assets = { workspace = true }
 struction_world = { workspace = true }
 
-struction_scene = { workspace = true }
+struction_scene = { workspace = true, features = ["render"] }
+struction_character = { workspace = true }
+struction_camera = { workspace = true }
+struction_anim = { workspace = true }
+struction_physics = { workspace = true }
+struction_gravity = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

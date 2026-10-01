@@ -2,13 +2,17 @@
 //! `struction_editor::AuthoringProject` so the GUI edits, validates, undoes and plays through the
 //! same operations AI tools use. Mesh sources open in a separate mesh tool window (`tools`).
 //!
-//! `struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision]]
+//! `struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision|poses|uvs|materials]]
 //! [--screenshot <directory>]`: `--mesh` opens a project-relative source in the mesh tool;
 //! `--screenshot` saves `editor.png` (and `mesh-tool.png`) there once everything has drawn, then
 //! quits, for checking the GUI without a person at the screen.
 
 mod game;
+mod play_view;
+mod pose_tool;
 mod programs;
+mod scene_view;
+mod spatial_guides;
 mod state;
 mod theme;
 mod tool_ui;
@@ -27,18 +31,20 @@ use bevy_egui::{EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryE
 use crate::state::{Command, Editor};
 use crate::tools::{Mode, Request, Toolbox};
 
-const USAGE: &str = "struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision]] [--screenshot <directory>] [--blender <executable>] [--headless]";
+const USAGE: &str = "struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision|poses|uvs|materials]] [--screenshot <directory>] [--blender <executable>] [--headless] [--play]";
 
 fn main() {
     let mut editor = Editor::default();
     let (mut mesh, mut mode, mut capture) = (None, Mode::Inspect, None);
     let mut blender = None;
     let mut headless = false;
+    let mut play = false;
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| exit_with_usage());
         match arg.to_str() {
             Some("--headless") => headless = true,
+            Some("--play") => play = true,
             Some("--blender") => blender = Some(std::path::PathBuf::from(value())),
             Some("--mesh") => mesh = Some(value().to_string_lossy().into_owned()),
             Some("--mode") => {
@@ -46,6 +52,9 @@ fn main() {
                     Some("inspect") => Mode::Inspect,
                     Some("lods") => Mode::Lods,
                     Some("collision") => Mode::Collision,
+                    Some("poses") => Mode::Poses,
+                    Some("uvs") => Mode::Uvs,
+                    Some("materials") => Mode::Materials,
                     _ => exit_with_usage(),
                 }
             }
@@ -73,6 +82,7 @@ fn main() {
         }
         return;
     }
+    if play { editor.apply(Command::StartPlay); }
     let mut toolbox = Toolbox::default();
     if let Some(executable) = blender
         && let Err(error) = toolbox.programs.select(executable, false)
@@ -94,19 +104,28 @@ fn main() {
     }
     app.insert_resource(ClearColor(Color::srgb(0.07, 0.075, 0.09)))
         .insert_non_send(editor)
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Struction".into(),
-                resolution: (1440, 900).into(),
-                ..default()
-            }),
-            // The mesh tool asks before closing with unapplied edits; closing the editor quits.
-            close_when_requested: false,
-            exit_condition: ExitCondition::OnPrimaryClosed,
-            ..default()
-        }))
+        .add_plugins(struction_scene::render::EngineAssetsPlugin)
+        .add_plugins(
+            DefaultPlugins
+                .set(bevy::asset::AssetPlugin {
+                    unapproved_path_mode: bevy::asset::UnapprovedPathMode::Allow,
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Struction".into(),
+                        resolution: (1440, 900).into(),
+                        ..default()
+                    }),
+                    // The mesh tool asks before closing with unapplied edits; closing the editor quits.
+                    close_when_requested: false,
+                    exit_condition: ExitCondition::OnPrimaryClosed,
+                    ..default()
+                }),
+        )
         .add_plugins((
             EguiPlugin::default(),
+            struction_scene::render::SceneVisualsPlugin,
             viewport::ViewportPlugin,
             tools::ToolboxPlugin,
         ))
@@ -141,10 +160,13 @@ fn capture_windows(
     mut commands: Commands,
     mut capture: ResMut<Capture>,
     toolbox: Res<Toolbox>,
+    models: Res<struction_scene::render::Models>,
+    assets: Res<AssetServer>,
     primary: Single<Entity, With<bevy::window::PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let ready = toolbox.tool.as_ref().is_none_or(tools::MeshTool::is_shown);
+    let ready =
+        toolbox.tool.as_ref().is_none_or(tools::MeshTool::is_shown) && !models.is_loading(&assets);
     capture.waited += 1;
     if !ready && capture.waited < 1200 {
         return;

@@ -12,23 +12,16 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
-use crate::{Rigs, Shape, engine_assets};
+use crate::{Shape, engine_assets};
 use bevy::asset::io::file::FileAssetReader;
 use bevy::prelude::*;
-use struction_anim::{humanoid, locomotion::LocomotionParams, plugin::RigJoints, rig::Rig};
+use struction_anim::{humanoid, plugin::RigJoints, rig::Rig};
 use struction_assets::{
-    AssetError, COMPILED_EXTENSION, CompileStatus, CompiledModel, SourceWatcher,
-    SourceWatcherPlugin, StructionAssetsPlugin, compile_asset, format::BundleMaterial,
+    AssetError, COMPILED_EXTENSION, CompileSettings, CompileStatus, CompiledModel, SourceWatcher,
+    SourceWatcherPlugin, StructionAssetsPlugin, compile_asset_with, format::BundleMaterial,
 };
 use struction_camera::{PlayerCamera, ViewMode};
-use struction_character::{RigOf, spawn_rig};
-
-/// On a rigged body: the rig drawn for it, and the skeleton it was built from.
-#[derive(Component)]
-pub struct Figure {
-    rig: Entity,
-    skeleton: String,
-}
+use struction_character::RigOf;
 
 /// On a rig: the model it is dressed with, or `None` for simple shapes.
 #[derive(Component, PartialEq)]
@@ -57,11 +50,36 @@ enum Model {
 #[derive(Resource)]
 pub struct Models {
     root: PathBuf,
+    pub settings: CompileSettings,
     engine: PathBuf,
     models: HashMap<String, Model>,
+    pub errors: std::collections::BTreeMap<String, String>,
 }
 
 impl Models {
+    pub fn set_blender(&mut self, blender: struction_assets::Blender) {
+        if self.settings.blender.executable != blender.executable {
+            self.models
+                .retain(|_, model| !matches!(model, Model::Missing));
+            self.errors.clear();
+        }
+        self.settings.blender = blender;
+    }
+
+    pub fn is_loading(&self, assets: &AssetServer) -> bool {
+        self.models.values().any(|model| match model {
+            Model::Compiling { .. } => true,
+            Model::Loaded { handle, .. } => {
+                !assets.is_loaded_with_dependencies(handle.id())
+                    && !matches!(
+                        assets.load_state(handle.id()),
+                        bevy::asset::LoadState::Failed(_)
+                    )
+            }
+            Model::Missing => false,
+        })
+    }
+
     /// The source file of a model path and the file it compiles to.
     fn files(&self, model: &str) -> (PathBuf, PathBuf) {
         let (root, path) = match model.strip_prefix(ENGINE_SOURCE) {
@@ -80,9 +98,11 @@ impl Plugin for FiguresPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((StructionAssetsPlugin, SourceWatcherPlugin))
             .insert_resource(Models {
+                settings: CompileSettings::default(),
                 root: FileAssetReader::get_base_path().join("assets"),
                 engine: engine_assets(),
                 models: HashMap::new(),
+                errors: default(),
             });
     }
 }
@@ -119,56 +139,8 @@ fn model(shape: &Shape) -> Option<Option<&str>> {
     }
 }
 
-/// Gives rigged bodies their skeleton, rebuilt when live reload changes it and removed when the
-/// shape stops being rigged.
-pub(crate) fn attach_rigs(
-    mut commands: Commands,
-    rigs: Res<Rigs>,
-    bodies: Query<(Entity, &Shape, Option<&Figure>), Changed<Shape>>,
-) {
-    for (body, shape, figure) in &bodies {
-        let skeleton = match shape {
-            Shape::Rigged { rig, .. } => Some(rig),
-            _ => None,
-        };
-        if let Some(figure) = figure
-            && skeleton != Some(&figure.skeleton)
-        {
-            commands.entity(figure.rig).despawn();
-            commands.entity(body).remove::<Figure>();
-        } else if figure.is_some() {
-            continue;
-        }
-        let Some(skeleton) = skeleton else {
-            continue;
-        };
-        let Some(built) = rigs.build(skeleton) else {
-            let known: Vec<_> = rigs.names().collect();
-            warn!(
-                "{body}: unknown rig {skeleton:?}, registered: {}",
-                known.join(", ")
-            );
-            continue;
-        };
-        let rig = match spawn_rig(&mut commands, body, built, LocomotionParams::default()) {
-            Ok(rig) => rig,
-            Err(error) => {
-                warn!("{body}: rig {skeleton:?} cannot animate: {error}");
-                continue;
-            }
-        };
-        commands
-            .entity(rig)
-            .insert((Name::new(format!("{skeleton} rig")), Visibility::default()));
-        commands.entity(body).insert(Figure {
-            rig,
-            skeleton: skeleton.clone(),
-        });
-    }
-}
-
 /// Starts compiling the models new shapes name.
-pub(crate) fn request_models(mut models: ResMut<Models>, shapes: Query<&Shape, Changed<Shape>>) {
+pub(crate) fn request_models(mut models: ResMut<Models>, shapes: Query<&Shape>) {
     let models = &mut *models;
     for path in shapes.iter().filter_map(|shape| model(shape).flatten()) {
         if models.models.contains_key(path) {
@@ -177,7 +149,10 @@ pub(crate) fn request_models(mut models: ResMut<Models>, shapes: Query<&Shape, C
         let (source, compiled) = models.files(path);
         let job = {
             let (source, compiled) = (source.clone(), compiled.clone());
-            std::thread::spawn(move || compile_asset(&source, &compiled))
+            let settings = models.settings.clone();
+            std::thread::spawn(move || {
+                compile_asset_with(&source, &compiled, &settings.with_recipe_of(&source)?)
+            })
         };
         models.models.insert(
             path.to_owned(),
@@ -196,6 +171,7 @@ pub(crate) fn finish_compiles(
     mut watcher: ResMut<SourceWatcher>,
     asset_server: Res<AssetServer>,
 ) {
+    let models = &mut *models;
     for (path, model) in &mut models.models {
         let Model::Compiling { job, .. } = model else {
             continue;
@@ -216,13 +192,20 @@ pub(crate) fn finish_compiles(
             Ok(Ok(CompileStatus::UpToDate)) => {}
             Ok(Err(error)) if compiled.is_file() => {
                 warn!("using the last compiled {path}: {error}");
+                models
+                    .errors
+                    .insert(path.clone(), format!("Using cached model: {error}"));
             }
             Ok(Err(error)) => {
                 warn!("no {path}, drawing it with shapes: {error}");
+                models.errors.insert(path.clone(), error.to_string());
                 continue;
             }
             Err(_) => {
                 error!("compiling {path} panicked; drawing it with shapes");
+                models
+                    .errors
+                    .insert(path.clone(), "Model compilation panicked".into());
                 continue;
             }
         }
@@ -459,6 +442,15 @@ fn standard(material: &BundleMaterial) -> StandardMaterial {
         perceptual_roughness: material.roughness,
         emissive: LinearRgba::rgb(r, g, b),
         ..default()
+    }
+}
+
+pub(crate) fn rig_visibility(
+    mut commands: Commands,
+    rigs: Query<Entity, (With<RigOf>, Without<Visibility>)>,
+) {
+    for entity in &rigs {
+        commands.entity(entity).insert(Visibility::default());
     }
 }
 

@@ -1,0 +1,25 @@
+[package]
+name = "struction_language"
+description = "Headless language tools over the shared authoring backend and package metadata."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bevy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+struction_core.workspace = true
+struction_data.workspace = true
+struction_editor.workspace = true
+struction_scene.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "struction-language"
+path = "src/main.rs"

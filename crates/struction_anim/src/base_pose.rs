@@ -3,8 +3,11 @@
 
 use std::collections::BTreeMap;
 
-use bevy::ecs::reflect::ReflectResource;
 use bevy::ecs::resource::Resource;
+use bevy::ecs::{
+    component::Component,
+    reflect::{ReflectComponent, ReflectResource},
+};
 use bevy::math::{EulerRot, Quat, Vec3};
 use bevy::reflect::Reflect;
 use serde::{Deserialize, Serialize};
@@ -18,9 +21,11 @@ use crate::skeleton::Skeleton;
 pub struct JointPose {
     pub joint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[reflect(default)]
     pub translation: Option<Vec3>,
     /// XYZ Euler angles in degrees, friendlier to author than quaternions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[reflect(default)]
     pub euler_deg: Option<Vec3>,
 }
 
@@ -44,6 +49,33 @@ pub struct BasePose {
 #[reflect(Resource)]
 pub struct BasePoseSet {
     pub poses: BTreeMap<String, BasePose>,
+}
+
+/// Sparse per-actor targets. Names are those consumed by the animation solvers (`idle`,
+/// `roll`, `swing_raise`, `swing_strike`, ...); unspecified poses use the shared library.
+#[derive(Component, Clone, Debug, Default, PartialEq, Reflect, Serialize, Deserialize)]
+#[reflect(Component)]
+pub struct PoseTargets {
+    pub poses: BTreeMap<String, BasePose>,
+}
+
+/// Effective library on a rig, rebuilt when its body's targets change.
+#[derive(Component)]
+pub struct RigPoseSet(pub BasePoseSet);
+
+impl PoseTargets {
+    pub fn resolve(
+        &self,
+        defaults: &BasePoseSet,
+        skeleton: &Skeleton,
+    ) -> Result<BasePoseSet, AnimError> {
+        let mut merged = defaults.clone();
+        for (name, pose) in &self.poses {
+            pose.resolve(skeleton)?;
+            merged.poses.insert(name.clone(), pose.clone());
+        }
+        Ok(merged)
+    }
 }
 
 impl BasePoseSet {

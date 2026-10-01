@@ -19,6 +19,7 @@ use crate::tools::{
 pub fn tool_ui(
     mut commands: Commands,
     mut toolbox: ResMut<Toolbox>,
+    mut editor: NonSendMut<crate::state::Editor>,
     mut contexts: Query<&mut EguiContext, Without<PrimaryEguiContext>>,
     mut cameras: Query<&mut Camera>,
     windows: Query<&Window>,
@@ -27,6 +28,7 @@ pub fn tool_ui(
         return Ok(());
     };
     let ctx = context.get_mut().clone();
+    let open_error = toolbox.open_error.clone();
     let Some(tool) = &mut toolbox.tool else {
         return Ok(());
     };
@@ -64,6 +66,7 @@ pub fn tool_ui(
     );
     let panel = Frame::new()
         .fill(theme::PANEL)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
         .inner_margin(Margin::same(12));
     let bottom = egui::Panel::bottom("tool_bar")
         .frame(
@@ -91,12 +94,11 @@ pub fn tool_ui(
             .size_range(280.0..=520.0)
             .frame(panel)
             .show(&mut root, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.label(RichText::new(tool.file_name()).heading());
                 ui.label(RichText::new(&tool.asset).monospace().small().color(theme::MUTED));
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    for mode in [Mode::Inspect, Mode::Lods, Mode::Collision] {
+                ui.horizontal_wrapped(|ui| {
+                    for mode in Mode::ALL {
                         if ui.selectable_label(tool.mode == mode, mode.label()).clicked() {
                             tool.mode = mode;
                         }
@@ -104,6 +106,9 @@ pub fn tool_ui(
                 });
                 ui.separator();
                 let mode = tool.mode;
+                let asset = tool.asset.clone();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                if let Some(error)=&open_error { error_text(ui,error); }
                 match &mut tool.state {
                     ToolState::Opening(_) => {
                         ui.horizontal(|ui| {
@@ -123,10 +128,13 @@ pub fn tool_ui(
                         Mode::Inspect => inspect(ui, ready),
                         Mode::Lods => lods(ui, ready),
                         Mode::Collision => collision(ui, ready),
+                        Mode::Poses => crate::pose_tool::panel(ui, &mut ready.pose, &mut editor, &asset),
+                        Mode::Uvs => uv_panel(ui, ready, &asset, &mut requests),
+                        Mode::Materials => material_panel(ui, ready, &asset, &mut requests),
                     },
                 }
                 if let Some(ready) = tool.ready_mut()
-                    && mode != Mode::Inspect
+                    && matches!(mode,Mode::Lods|Mode::Collision|Mode::Uvs)
                 {
                     ui.add_space(10.0);
                     apply_row(ui, ready, mode);
@@ -150,12 +158,16 @@ pub fn tool_ui(
     let view = Rect::new(left, 0.0, full.max.x, full.max.y - bottom);
     let (camera, window) = tool.view_entities();
     if let (Ok(mut camera), Ok(window)) = (cameras.get_mut(camera), windows.get(window)) {
+        camera.is_active = tool.mode != Mode::Uvs;
         tool.view = Some(place_view(
             &mut camera,
             window,
             view,
             ctx.pixels_per_point(),
         ));
+    }
+    if tool.mode == Mode::Uvs {
+        uv_view(&ctx, view, tool.ready());
     }
     caption(&ctx, tool.mode, tool.ready(), egui::pos2(left + 12.0, 10.0));
 
@@ -194,6 +206,10 @@ pub fn tool_ui(
             Some(Some(apply)) => {
                 let applied = !apply
                     || tool.ready_mut().is_none_or(|ready| {
+                        if let Err(error) = ready.pose.apply(&mut editor) {
+                            ready.error = Some(error);
+                            return false;
+                        }
                         ready.apply("Apply on close");
                         ready.error.is_none() && !ready.is_dirty()
                     });
@@ -519,6 +535,7 @@ fn apply_row(ui: &mut Ui, ready: &mut Ready, mode: Mode) {
         if apply.clicked() {
             let label = match mode {
                 Mode::Lods => "LOD settings",
+                Mode::Uvs => "UV settings",
                 _ => "Collision settings",
             };
             ready.apply(label);
@@ -544,6 +561,9 @@ fn caption(ctx: &egui::Context, mode: Mode, ready: Option<&Ready>, at: egui::Pos
         return;
     };
     let text = match mode {
+        Mode::Poses => "State target pose · edit joint angles in the sidebar".into(),
+        Mode::Uvs => "UV layout · selected mesh".into(),
+        Mode::Materials => "Material slots · select a part to edit in Blender".into(),
         Mode::Inspect => "Drag to orbit · middle-drag to pan · wheel to zoom".to_owned(),
         Mode::Lods => {
             let level = ready.map_or(1, |ready| ready.view.lod);
@@ -666,6 +686,212 @@ fn error_text(ui: &mut Ui, text: &str) {
         RichText::new(text)
             .small()
             .color(ui.visuals().error_fg_color),
+    );
+}
+
+fn mesh_choice(ui: &mut Ui, ready: &mut Ready) {
+    let Some(preview) = &ready.preview else {
+        return;
+    };
+    ready.mesh_index = ready
+        .mesh_index
+        .min(preview.bundle.meshes.len().saturating_sub(1));
+    let label = preview
+        .bundle
+        .meshes
+        .get(ready.mesh_index)
+        .map_or("No meshes", |mesh| mesh.name.as_str());
+    egui::ComboBox::from_label("Part")
+        .selected_text(label)
+        .show_ui(ui, |ui| {
+            for (index, mesh) in preview.bundle.meshes.iter().enumerate() {
+                ui.selectable_value(&mut ready.mesh_index, index, &mesh.name);
+            }
+        });
+}
+
+fn handoff(
+    ui: &mut Ui,
+    ready: &Ready,
+    asset: &str,
+    workspace: struction_assets::blender::BlenderWorkspace,
+    requests: &mut Vec<Request>,
+) {
+    if ui
+        .button(format!("Open {} in Blender…", workspace.name()))
+        .clicked()
+    {
+        let bundle = ready.preview.as_ref().map(|p| &p.bundle);
+        let object = bundle
+            .and_then(|b| {
+                b.nodes
+                    .iter()
+                    .find(|node| node.meshes.contains(&(ready.mesh_index as u32)))
+            })
+            .map(|node| node.name.clone())
+            .unwrap_or_default();
+        let material = bundle
+            .and_then(|b| b.meshes.get(ready.mesh_index))
+            .and_then(|mesh| mesh.material.clone())
+            .unwrap_or_default();
+        requests.push(Request::BlenderWorkspace {
+            asset: asset.into(),
+            workspace,
+            object,
+            material,
+        });
+    }
+    hint(
+        ui,
+        "Save in Blender, then Refresh here to reimport. For glTF, export back to the same source path.",
+    );
+}
+
+fn uv_panel(ui: &mut Ui, ready: &mut Ready, asset: &str, requests: &mut Vec<Request>) {
+    mesh_choice(ui, ready);
+    ui.label(theme::section("UV preparation"));
+    let mut draft = ready.draft.clone();
+    ui.checkbox(
+        &mut draft.generate_uvs,
+        "Generate missing UVs (Smart UV Project)",
+    );
+    ready.set_draft(draft);
+    hint(
+        ui,
+        "Existing UVs are preserved. Apply stores the preparation recipe and compiled result; the source model stays editable.",
+    );
+    ui.separator();
+    handoff(
+        ui,
+        ready,
+        asset,
+        struction_assets::blender::BlenderWorkspace::Uvs,
+        requests,
+    );
+    hint(
+        ui,
+        "For seams, packing or replacing existing UVs, Blender opens the selected part in Edit Mode in UV Editing.",
+    );
+}
+
+fn material_panel(ui: &mut Ui, ready: &mut Ready, asset: &str, requests: &mut Vec<Request>) {
+    mesh_choice(ui, ready);
+    if let Some(preview) = &ready.preview
+        && let Some(mesh) = preview.bundle.meshes.get(ready.mesh_index)
+    {
+        ui.label(theme::section("Material slot"));
+        ui.label(mesh.material.as_deref().unwrap_or("No material assigned"));
+        if let Some(material) = preview
+            .bundle
+            .materials
+            .iter()
+            .find(|m| Some(&m.name) == mesh.material.as_ref())
+        {
+            ui.label(format!(
+                "Metallic {:.2} · roughness {:.2}",
+                material.metallic, material.roughness
+            ));
+            let color = Color32::from_rgba_unmultiplied(
+                (material.base_color[0] * 255.0) as u8,
+                (material.base_color[1] * 255.0) as u8,
+                (material.base_color[2] * 255.0) as u8,
+                255,
+            );
+            ui.colored_label(color, "■ Base color");
+        }
+    }
+    ui.separator();
+    handoff(
+        ui,
+        ready,
+        asset,
+        struction_assets::blender::BlenderWorkspace::Materials,
+        requests,
+    );
+    hint(
+        ui,
+        "Blender opens Shading with this object and material slot active. Edit its material or texture nodes there.",
+    );
+}
+
+fn uv_view(ctx: &egui::Context, view: Rect, ready: Option<&Ready>) {
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(view.min.x, view.min.y),
+        egui::pos2(view.max.x, view.max.y),
+    );
+    let painter = ctx
+        .layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            "uv_canvas".into(),
+        ))
+        .with_clip_rect(rect);
+    painter.rect_filled(rect, 0.0, theme::BASE);
+    let size = (rect.width().min(rect.height()) - 70.0).max(10.0);
+    let square = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
+    for x in 0..10 {
+        for y in 0..10 {
+            let cell = egui::Rect::from_min_size(
+                square.min + egui::vec2(x as f32, y as f32) * size / 10.0,
+                egui::vec2(size / 10.0, size / 10.0),
+            );
+            painter.rect_filled(
+                cell,
+                0.0,
+                if (x + y) % 2 == 0 {
+                    Color32::from_gray(38)
+                } else {
+                    Color32::from_gray(48)
+                },
+            );
+        }
+    }
+    painter.rect_stroke(
+        square,
+        0.0,
+        egui::Stroke::new(1.0, theme::BORDER),
+        egui::StrokeKind::Inside,
+    );
+    let Some(ready) = ready else {
+        return;
+    };
+    let Some(mesh) = ready
+        .preview
+        .as_ref()
+        .and_then(|p| p.bundle.meshes.get(ready.mesh_index))
+        .and_then(|m| m.lods.first())
+    else {
+        return;
+    };
+    let point = |index: u32| {
+        mesh.uvs
+            .get(index as usize)
+            .map(|uv| egui::pos2(square.min.x + uv[0] * size, square.max.y - uv[1] * size))
+    };
+    for triangle in mesh.indices.as_chunks::<3>().0 {
+        if let (Some(a), Some(b), Some(c)) =
+            (point(triangle[0]), point(triangle[1]), point(triangle[2]))
+        {
+            painter.add(egui::Shape::closed_line(
+                vec![a, b, c],
+                egui::Stroke::new(0.8, theme::WARD),
+            ));
+        }
+    }
+    if mesh.uvs.is_empty() {
+        painter.text(
+            square.center(),
+            egui::Align2::CENTER_CENTER,
+            "No UV coordinates",
+            egui::FontId::proportional(16.0),
+            theme::MUTED,
+        );
+    }
+    painter.text(
+        square.left_bottom() + egui::vec2(0.0, 6.0),
+        egui::Align2::LEFT_TOP,
+        "0,0                                      UV tile 0–1",
+        egui::FontId::monospace(11.0),
+        theme::MUTED,
     );
 }
 

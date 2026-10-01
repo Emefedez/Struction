@@ -7,7 +7,8 @@ mod figures;
 mod looks;
 mod sight_fade;
 
-pub use figures::{Dressed, Figure, Models, Piece};
+pub use crate::Figure;
+pub use figures::{Dressed, Models, Piece};
 pub use looks::{WaterSurface, shape_mesh};
 pub use sight_fade::{FadeMaterial, FadesWith, SightFade, SightUniform, fade_material};
 
@@ -36,29 +37,46 @@ pub enum SceneRenderSystems {
     View,
 }
 
-pub struct SceneRenderPlugin;
+/// Geometry and model drawing without physics, input, camera behavior or animation stepping.
+/// A viewer may supply transforms and solved joint poses from another world.
+pub struct SceneVisualsPlugin;
 
-impl Plugin for SceneRenderPlugin {
+impl Plugin for SceneVisualsPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<crate::SceneRigPlugin>() {
+            app.add_plugins(crate::SceneRigPlugin);
+        }
         app.add_plugins((figures::FiguresPlugin, sight_fade::SightFadePlugin))
             .configure_sets(
                 Update,
-                (
-                    SceneRenderSystems::Dress.before(CameraSystems::Follow),
-                    SceneRenderSystems::View.after(CameraSystems::Follow),
-                ),
+                SceneRenderSystems::Dress.after(crate::SceneRigSystems),
             )
             .add_systems(
                 Update,
                 (
+                    figures::rig_visibility,
                     looks::dress_looks,
-                    figures::attach_rigs,
                     figures::request_models,
                     figures::finish_compiles,
                     figures::dress_figures,
                 )
                     .chain()
                     .in_set(SceneRenderSystems::Dress),
+            );
+    }
+}
+
+/// Gameplay presentation adds camera-dependent fading and first-person hiding to the visuals.
+pub struct SceneRenderPlugin;
+impl Plugin for SceneRenderPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(SceneVisualsPlugin)
+            .configure_sets(
+                Update,
+                (
+                    SceneRenderSystems::Dress.before(CameraSystems::Follow),
+                    SceneRenderSystems::View.after(CameraSystems::Follow),
+                ),
             )
             .add_systems(
                 Update,

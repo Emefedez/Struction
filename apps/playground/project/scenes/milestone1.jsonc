@@ -52,7 +52,31 @@
       "zone": "Playground",
       "position": [0, 4, -20],
       "spawns": {
-        "planet": { "definition": "terrains/planet" }
+        "planet": {
+          "definition": "terrains/planet",
+          "offset": [3.1380462646484375, 0.0, -2.643138885498047],
+          "overrides": {
+            "components": {
+              "GravityField": {
+                "kind": {
+                  "Radial": {
+                    "strength": 24.0
+                  }
+                },
+                "volume": {
+                  "Sphere": {
+                    "radius": 5.0
+                  }
+                }
+              },
+              "Shape": {
+                "Sphere": {
+                  "radius": 4.0
+                }
+              }
+            }
+          }
+        }
       }
     },
     "start": {

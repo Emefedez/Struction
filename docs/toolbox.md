@@ -236,3 +236,18 @@ Existing workspace dependencies stay pinned as documented.
 - [FFmpeg audio filters](https://ffmpeg.org/ffmpeg-filters.html) and
   [Audacity](https://www.audacityteam.org/): processing operations and the full
   audio editor.
+
+## October 1 editor pass (MOON)
+
+The model tool now has pinned asset identity and mode tabs, a permanent Toolbox launcher,
+and distinct panel borders. Collision/LOD preparation remains the shared `PrepSession`
+workflow. UVs and Materials are additional modes of the same window: UV layout inspection,
+missing-UV preparation, and object/material-specific handoffs to Blender's UV Editing and
+Shading workspaces. Poses previews named targets with their runtime state/constraint
+relationship, edits joint angles, and applies per-definition `PoseTargets` through the
+headless authoring API and project undo. See [authoring.md](authoring.md#model-tools-and-state-targets).
+
+The current renderer imports material factors only. Full texture painting/import, custom
+collision vertex editing and interactive UV seam/island editing remain Blender workflows;
+the editor opens the selected part in the appropriate workspace instead of pretending to
+implement those operations. No new tool window is nested inside the model tool.

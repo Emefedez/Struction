@@ -137,3 +137,59 @@ cargo fmt --all --check
 ```
 
 Tests exercise the full inspect/edit/validate/preview/undo/play loop, inherited fields, grants, source locations, rotated placement frames, stable identity across moves, grouped history, stale revisions, external invalidation, disabled entities, empty/invalid projects and JSONL error recovery. Asset readiness was also checked with all 23 `struction_assets` tests, including actual headless Blender import/export.
+
+## Scene presentation and Play controls
+
+MOON separated `SceneVisualsPlugin` (geometry, materials, model compilation and rig dressing)
+from the gameplay-only camera fading in `SceneRenderPlugin`. Both applications use the
+same visuals. `SceneRigPlugin` builds and retires skeletons without requiring a GPU. The
+editor mirrors authored shapes, looks and transforms into its render world; in Play it
+copies the isolated simulation's solved joint poses and player-camera transform. It does
+not run a second physics world or solve animation twice. Component changes rebuild only
+affected visuals; transforms and poses update independently. Mesh bounds drive picking
+and selection outlines, including broad floors and the individual pieces of a rig.
+
+Play uses the same character and camera plugins as the playground. Click the viewport to
+capture controls: WASD/arrows move, mouse looks, Space jumps, Shift rolls, F/left click
+attacks, V changes view and the wheel zooms. Escape releases the pointer. Pausing, losing
+window focus or leaving the viewport tab releases held and pending commands. Stop returns
+to the unchanged authored world. Projects without `PlayerControlled` can simulate but
+have no player to steer; the viewport states that explicitly.
+
+The headless equivalent is `play_input` with an `input` object (`movement: [x, forward]`,
+`look: [yaw, pitch]`, `jump_held`, `jump_pressed`, `roll_pressed`, `attack_pressed`,
+`toggle_view_pressed`, `zoom`). Held movement persists until replaced; button edges, look
+and zoom accumulate until the next simulation update and are consumed once. Use
+`release_play_input` to clear queued/held input, then `step_play` as usual. Factories opt in
+with `PlayInputPlugin`. Neither operation changes sources or history.
+
+Spatial guides show gravity influence boundaries and arrows sampled from the actual
+field function (purple). Infinite fields get a local symbol and an explicit label instead
+of an invented boundary. Camera volumes are cyan, with a vector camera icon and their
+fixed/follow constraints, weight and priority. Fixed cameras link to their world position.
+Toggle Spatial guides to hide them; gameplay hides authoring guides automatically.
+
+## Model tools and state targets
+
+The permanent **Toolbox** menu lists model sources and opens Inspect, LODs, Collision,
+Poses, UVs or Materials. Asset name, source path and mode tabs remain pinned while the
+controls scroll. All modes share one model-tool window; there is no nested tool launcher.
+Collision presets and detail/decomposition controls preview before Apply; recipe undo
+stays in the tool. The UV mode shows a selected part's UV triangles over a checker tile,
+can generate missing coordinates through the existing preparation recipe, and opens the
+selected object in Blender's **UV Editing** workspace for seams/repacking/re-unwrapping.
+
+**Poses** selects a definition using that model, then a named target and joint. XYZ angles
+are absolute local joint rotations in degrees. The model previews the target; labels
+identify Rolling's `roll`, Attacking's `swing_raise`/`swing_strike`, and other solver targets.
+Apply writes sparse `PoseTargets` on that definition through normal validated source edits
+and project undo. Engine definitions get project overrides. Runtime rigs merge those
+poses with the default library when targets change; simulation movement logic is unchanged.
+The preview displays the target itself, not a recording of the procedural transition.
+
+**Materials** identifies each mesh part and material slot and opens Blender **Shading**
+with that object and slot active. The configured Blender executable is used for these
+handoffs, scene model compilation and mesh preparation on all platforms. Save in Blender
+and Refresh the tool to reimport. For glTF, export back to the same source path. The current
+`.smesh` format carries material factors, not texture images; texture-node changes remain
+in the source and will need texture support in the asset format to appear in the runtime.

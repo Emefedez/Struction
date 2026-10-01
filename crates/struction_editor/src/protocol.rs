@@ -17,7 +17,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Bounds one request's work, so a typo cannot hang the session.
 const MAX_STEP_TICKS: usize = 10_000;
 
-const COMMANDS: [&str; 26] = [
+const COMMANDS: [&str; 28] = [
     "master_hierarchy",
     "definition_hierarchy",
     "set_master",
@@ -42,6 +42,8 @@ const COMMANDS: [&str; 26] = [
     "refresh",
     "create_definition",
     "start_play",
+    "play_input",
+    "release_play_input",
     "step_play",
     "stop_play",
 ];
@@ -120,6 +122,10 @@ pub enum Command {
         path: String,
         parent: String,
     },
+    PlayInput {
+        input: crate::PlayInput,
+    },
+    ReleasePlayInput {},
     StartPlay {},
     StepPlay {
         ticks: usize,
@@ -256,6 +262,14 @@ fn apply(project: &mut AuthoringProject, command: Command) -> Result<Value, Sess
         }
         Command::CreateDefinition { path, parent } => {
             project.create_definition(&path, &parent)?;
+            Value::Null
+        }
+        Command::PlayInput { input } => {
+            project.play_input(input)?;
+            Value::Null
+        }
+        Command::ReleasePlayInput {} => {
+            project.release_play_input();
             Value::Null
         }
         Command::StartPlay {} => {

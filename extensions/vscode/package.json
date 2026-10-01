@@ -1,0 +1,49 @@
+{
+  "name": "struction",
+  "displayName": "Struction",
+  "description": "Engine and package aware authoring for Struction JSONC definitions and scenes.",
+  "version": "0.1.0",
+  "publisher": "struction",
+  "engines": { "vscode": "^1.96.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:jsonc", "onLanguage:json"],
+  "main": "./out/src/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false, "description": "The language host executes the game's registered Rust packages." },
+    "virtualWorkspaces": { "supported": false }
+  },
+  "contributes": {
+    "commands": [
+      { "command": "struction.restart", "title": "Struction: Restart Language Host" },
+      { "command": "struction.validate", "title": "Struction: Validate Project" },
+      { "command": "struction.inspect", "title": "Struction: Inspect Definition" }
+    ],
+    "configuration": {
+      "title": "Struction",
+      "properties": {
+        "struction.projectRoot": { "type": "string", "default": "", "scope": "resource", "description": "Project data directory, relative to the workspace folder or absolute. Empty discovers project/ or apps/playground/project/." },
+        "struction.hostPath": { "type": "string", "default": "struction-language", "scope": "resource", "description": "Language host executable, absolute or on PATH. Relative paths containing a separator resolve from the workspace folder." },
+        "struction.hostArgs": { "type": "array", "items": { "type": "string" }, "default": [], "scope": "resource", "description": "Arguments before the project directory. No shell is used. Custom game hosts implement describe/analyze with the game's own registrations." },
+        "struction.validationDelay": { "type": "number", "default": 300, "minimum": 0, "maximum": 5000, "scope": "resource", "description": "Delay in milliseconds before analyzing changed buffers." }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "npm run compile && node --test out/test/*.test.js",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package --allow-missing-repository"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1",
+    "vscode-json-languageservice": "^5.6.0",
+    "vscode-languageserver-textdocument": "^1.0.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.96.0",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.9.0"
+  }
+}

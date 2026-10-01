@@ -53,7 +53,11 @@ pub fn editor_ui(
     mut drafts: Local<Drafts>,
     mut editor: NonSendMut<Editor>,
     mut toolbox: ResMut<Toolbox>,
+    models: Res<struction_scene::render::Models>,
     mut typing: ResMut<Typing>,
+    mut guides: ResMut<crate::spatial_guides::GuideSettings>,
+    control: Res<crate::play_view::PlayControl>,
+    camera_transform: Single<&GlobalTransform, With<SceneCamera>>,
     mut camera: Single<&mut Camera, (With<SceneCamera>, Without<EguiContext>)>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
@@ -89,6 +93,7 @@ pub fn editor_ui(
 
     let panel = Frame::new()
         .fill(theme::PANEL)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
         .inner_margin(Margin::same(12));
     let bottom = egui::Panel::bottom("problems")
         .resizable(true)
@@ -100,6 +105,9 @@ pub fn editor_ui(
         .frame(panel)
         .show(&mut root, |ui| {
             problems(ui, &editor, &mut commands);
+            for (path, error) in &models.errors {
+                ui.colored_label(theme::AXES[0], format!("Model {path}: {error}"));
+            }
             ui.allocate_rect(ui.available_rect_before_wrap(), Sense::hover());
         })
         .response
@@ -122,7 +130,10 @@ pub fn editor_ui(
         if drafts.compact_tab != 2 {
             let size = root.available_size();
             panel.show(&mut root, |ui| {
-                ui.set_min_size(size - egui::vec2(24.0, 24.0));
+                ui.set_min_size((size - egui::vec2(24.0, 24.0)).max(egui::Vec2::ZERO));
+                if drafts.compact_tab == 1 {
+                    inspector_header(ui, &editor, &mut toolbox);
+                }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     if drafts.compact_tab == 0 {
                         hierarchy(ui, &editor, &mut drafts, &mut commands);
@@ -160,6 +171,7 @@ pub fn editor_ui(
             .show(&mut root, |ui| {
                 ui.label(theme::section("Inspector"));
                 ui.add_space(4.0);
+                inspector_header(ui, &editor, &mut toolbox);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     inspector(ui, &mut editor, &mut toolbox, &mut commands);
                 });
@@ -195,7 +207,25 @@ pub fn editor_ui(
         ..default()
     });
 
+    if camera.is_active {
+        let free = egui::Rect::from_min_max(
+            egui::pos2(left, top),
+            ctx.viewport_rect().max - egui::vec2(right, bottom),
+        );
+        viewport_overlay(
+            ctx,
+            free,
+            &editor,
+            &control,
+            &mut guides,
+            &camera,
+            &camera_transform,
+        );
+    }
     for command in commands {
+        if compact && matches!(&command, Command::StartPlay | Command::TogglePause) {
+            drafts.compact_tab = 2;
+        }
         if compact && matches!(&command, Command::Select(Some(_))) {
             drafts.compact_tab = 1;
         }
@@ -243,6 +273,31 @@ fn top_bar(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut V
         );
         ui.label(RichText::new("●").color(theme::ACCENT).small());
         ui.add_space(12.0);
+        ui.menu_button("Toolbox", |ui| {
+            ui.set_min_width(250.0);
+            ui.label(theme::section("Model tools").color(theme::ASSET));
+            if toolbox.assets.is_empty() {
+                hint(ui, "Open a project to see its model sources.");
+            }
+            for asset in toolbox.assets.clone() {
+                ui.menu_button(asset.rsplit('/').next().unwrap_or(&asset), |ui| {
+                    ui.label(RichText::new(&asset).small().color(theme::MUTED));
+                    for mode in Mode::ALL {
+                        if ui.button(mode.label()).clicked() {
+                            toolbox.requests.push(Request::Open {
+                                asset: asset.clone(),
+                                mode,
+                            });
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            ui.separator();
+            if ui.button("Rescan assets").clicked() {
+                toolbox.rescan();
+            }
+        });
         ui.menu_button("Programs…", |ui| {
             ui.set_min_width(360.0);
             ui.label(RichText::new("Blender executable").strong());
@@ -762,11 +817,36 @@ fn assets(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut Ve
     });
 }
 
+fn inspector_header(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox) {
+    let Some(selected) = &editor.selected else {
+        return;
+    };
+    let (path, color) = match selected {
+        Selected::Asset(path) => (path, theme::ASSET),
+        Selected::Entity(path) => (path, theme::ACTOR),
+        Selected::Definition(path) => (path, theme::DEFINITION),
+    };
+    ui.colored_label(
+        color,
+        RichText::new(path.rsplit('/').next().unwrap_or(path)).heading(),
+    );
+    ui.label(RichText::new(path).small().monospace().color(theme::MUTED));
+    if let Selected::Asset(asset) = selected {
+        ui.horizontal_wrapped(|ui| {
+            for mode in Mode::ALL {
+                if ui.small_button(mode.label()).clicked() {
+                    toolbox.requests.push(Request::Open {
+                        asset: asset.clone(),
+                        mode,
+                    });
+                }
+            }
+        });
+    }
+    ui.separator();
+}
+
 fn asset_inspector(ui: &mut Ui, asset: &str, editor: &Editor, toolbox: &mut Toolbox) {
-    let name = asset.rsplit('/').next().unwrap_or(asset);
-    ui.heading(name);
-    ui.label(RichText::new(asset).monospace().small().color(theme::MUTED));
-    ui.add_space(6.0);
     let Some(source) = editor
         .root
         .as_ref()
@@ -1561,4 +1641,94 @@ fn diagnostic_row(
         }
         ui.label(&diagnostic.message);
     });
+}
+
+fn viewport_overlay(
+    ctx: &egui::Context,
+    free: egui::Rect,
+    editor: &Editor,
+    control: &crate::play_view::PlayControl,
+    guides: &mut crate::spatial_guides::GuideSettings,
+    camera: &Camera,
+    transform: &GlobalTransform,
+) {
+    egui::Area::new("viewport_help".into()).fixed_pos(free.min + egui::vec2(10.0,8.0)).show(ctx, |ui| {
+        Frame::new().fill(theme::BASE.gamma_multiply(0.94)).stroke(egui::Stroke::new(1.0,theme::BORDER)).inner_margin(8).show(ui, |ui| {
+            ui.set_max_width((free.width()-40.0).max(100.0));
+            if editor.playing() {
+                let hint = if crate::play_view::camera_transform(editor).is_none() { "No PlayerControlled entity in this scene" }
+                    else if control.captured { "WASD · mouse look · Space jump · Shift roll · F / click attack · V view · Esc release" }
+                    else { "Click the view to control the player · Esc releases the mouse" };
+                ui.label(RichText::new(hint).small().color(theme::ACTOR));
+            } else {
+                ui.checkbox(&mut guides.visible,"Spatial guides");
+                ui.label(RichText::new("Right-drag orbit · middle-drag pan · F focus").small().color(theme::MUTED));
+            }
+        });
+    });
+    if !guides.visible || editor.playing() {
+        return;
+    }
+    let Some(world) = crate::scene_view::source_world(editor) else {
+        return;
+    };
+    let painter = ctx
+        .layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            "guide_labels".into(),
+        ))
+        .with_clip_rect(free);
+    for entry in editor.entities.iter().filter(|e| !e.disabled) {
+        let Some(position) = entry.position else {
+            continue;
+        };
+        let Ok(point) = camera.world_to_viewport(transform, position) else {
+            continue;
+        };
+        let at = egui::pos2(point.x, point.y);
+        if !free.contains(at) {
+            continue;
+        }
+        if let Some(zone) = world.get::<struction_physics::CameraZone>(entry.entity) {
+            let color = theme::ACTOR;
+            let rect = egui::Rect::from_center_size(at, egui::vec2(20.0, 14.0));
+            painter.rect(
+                rect,
+                2.0,
+                theme::BASE,
+                egui::Stroke::new(1.5, color),
+                egui::StrokeKind::Inside,
+            );
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    at + egui::vec2(10.0, -3.0),
+                    at + egui::vec2(17.0, -7.0),
+                    at + egui::vec2(17.0, 7.0),
+                    at + egui::vec2(10.0, 3.0),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+            painter.text(
+                at + egui::vec2(20.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                crate::spatial_guides::camera_label(zone),
+                egui::FontId::proportional(11.0),
+                color,
+            );
+        } else if let Some(field) = world.get::<struction_gravity::GravityField>(entry.entity) {
+            let text = if matches!(field.volume, struction_gravity::GravityVolume::Infinite) {
+                "↓ Gravity · infinite"
+            } else {
+                "↓ Gravity"
+            };
+            painter.text(
+                at,
+                egui::Align2::CENTER_CENTER,
+                text,
+                egui::FontId::proportional(11.0),
+                theme::DEFINITION,
+            );
+        }
+    }
 }

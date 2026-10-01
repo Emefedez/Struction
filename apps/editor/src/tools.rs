@@ -40,22 +40,45 @@ pub enum Mode {
     Inspect,
     Lods,
     Collision,
+    Poses,
+    Uvs,
+    Materials,
 }
 
 impl Mode {
+    pub const ALL: [Self; 6] = [
+        Self::Inspect,
+        Self::Lods,
+        Self::Collision,
+        Self::Poses,
+        Self::Uvs,
+        Self::Materials,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Self::Inspect => "Inspect",
             Self::Lods => "LODs",
             Self::Collision => "Collision",
+            Self::Poses => "Poses",
+            Self::Uvs => "UVs",
+            Self::Materials => "Materials",
         }
     }
 }
 
 pub enum Request {
-    Open { asset: String, mode: Mode },
+    Open {
+        asset: String,
+        mode: Mode,
+    },
     OpenExternally(String),
     OpenSource(String),
+    BlenderWorkspace {
+        asset: String,
+        workspace: struction_assets::blender::BlenderWorkspace,
+        object: String,
+        material: String,
+    },
 }
 
 #[derive(Resource, Default)]
@@ -121,6 +144,8 @@ pub struct Ready {
     pub error: Option<String>,
     pub status: Option<String>,
     pub view: ViewOptions,
+    pub pose: crate::pose_tool::PoseDraft,
+    pub mesh_index: usize,
     /// Bumped with each new preview, so the 3D view rebuilds.
     revision: u64,
 }
@@ -157,6 +182,7 @@ struct Shown {
     revision: u64,
     mode: Mode,
     view: ViewOptions,
+    pose: crate::pose_tool::PoseDraft,
 }
 
 impl Ready {
@@ -172,6 +198,8 @@ impl Ready {
             error: None,
             status: None,
             view: ViewOptions::default(),
+            pose: default(),
+            mesh_index: 0,
             revision: 0,
         }
     }
@@ -334,7 +362,8 @@ impl MeshTool {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.ready().is_some_and(Ready::is_dirty)
+        self.ready()
+            .is_some_and(|ready| ready.is_dirty() || ready.pose.dirty())
     }
 
     /// The 3D view shows a preview, or the tool failed to open.
@@ -494,6 +523,20 @@ fn handle_requests(mut commands: Commands, mut toolbox: ResMut<Toolbox>, editor:
             continue;
         };
         match request {
+            Request::BlenderWorkspace {
+                asset,
+                workspace,
+                object,
+                material,
+            } => {
+                let source = asset_source(&root, &asset);
+                toolbox.open_error = toolbox
+                    .programs
+                    .blender
+                    .open_workspace(&source, workspace, &object, &material)
+                    .err()
+                    .map(|e| e.to_string());
+            }
             Request::OpenSource(file) => {
                 let result = toolbox.programs.open_in().open(&root.join(file));
                 toolbox.open_error = result.err().map(|error| error.to_string());
@@ -812,6 +855,7 @@ fn part_color(index: usize) -> Color {
 fn show_preview(
     mut commands: Commands,
     mut toolbox: ResMut<Toolbox>,
+    editor: NonSend<Editor>,
     shown: Query<Entity, With<ToolPreview>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -833,6 +877,7 @@ fn show_preview(
         revision: ready.revision,
         mode,
         view: ready.view,
+        pose: ready.pose.clone(),
     };
     if tool.shown.as_ref() == Some(&want) {
         return;
@@ -841,7 +886,31 @@ fn show_preview(
         commands.entity(entity).despawn();
     }
     let bundle = &preview.bundle;
-    let placements = placements(bundle);
+    let placements = if mode == Mode::Poses {
+        ready
+            .pose
+            .rig(&editor)
+            .map(|rig| {
+                let transforms = ready.pose.transforms(&rig);
+                bundle
+                    .nodes
+                    .iter()
+                    .flat_map(|node| {
+                        let joint = rig
+                            .skeleton
+                            .joint_id(node.name.split('.').next().unwrap_or(&node.name))
+                            .ok();
+                        let transforms = &transforms;
+                        node.meshes.iter().filter_map(move |&mesh| {
+                            joint.map(|joint| (mesh as usize, transforms[joint]))
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| placements(bundle))
+    } else {
+        placements(bundle)
+    };
     let layer = RenderLayers::layer(TOOL_LAYER);
     let mut spawn = |mesh: Mesh, look: Look, transform: Transform| {
         commands.spawn((
@@ -891,7 +960,7 @@ fn show_preview(
                 look.alpha = true;
             }
             spawn(lod_mesh(chosen), look, placed);
-            if view.wireframe && mode != Mode::Collision {
+            if view.wireframe && !matches!(mode, Mode::Collision | Mode::Poses | Mode::Materials) {
                 let triangles = chosen.indices.as_chunks::<3>().0.iter().copied();
                 spawn(
                     wire_mesh(&chosen.positions, triangles),

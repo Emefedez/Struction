@@ -179,6 +179,23 @@ impl AuthoringProject {
             .map(Diagnostic::from)
             .collect()
     }
+    /// Validates complete unsaved buffers through the same checks as edits, without changing
+    /// sources, history, the preview or play state. Paths are relative to the project root.
+    pub fn validate_sources(
+        &self,
+        sources: &BTreeMap<String, String>,
+    ) -> Result<Vec<Diagnostic>, SessionError> {
+        for file in sources.keys() {
+            self.session.path_of(file)?;
+        }
+        Ok(validate(self.preview.world(), sources)
+            .err()
+            .unwrap_or_default()
+            .iter()
+            .map(Diagnostic::from)
+            .collect())
+    }
+
     pub fn schema(&self) -> Value {
         let types = self.preview.world().resource::<AppTypeRegistry>().read();
         self.preview
@@ -434,6 +451,49 @@ impl AuthoringProject {
         self.session.set_playing(true);
         Ok(())
     }
+    /// Queue input for the isolated simulation. Callers may submit faster than its tick rate.
+    pub fn play_input(&mut self, input: crate::PlayInput) -> Result<(), SessionError> {
+        if input
+            .movement
+            .iter()
+            .chain(&input.look)
+            .chain([&input.zoom])
+            .any(|v| !v.is_finite())
+        {
+            return Err(SessionError::InvalidOperation(
+                "play input must contain finite numbers".into(),
+            ));
+        }
+        let world = self
+            .play
+            .as_mut()
+            .ok_or_else(|| SessionError::InvalidOperation("play mode is not running".into()))?
+            .world_mut();
+        let mut pending = world
+            .get_resource_mut::<crate::play::PendingInput>()
+            .ok_or_else(|| {
+                SessionError::InvalidOperation(
+                    "game factory does not install PlayInputPlugin".into(),
+                )
+            })?;
+        pending.push(input);
+        Ok(())
+    }
+
+    /// Release held and unconsumed input when focus is lost or playback is paused.
+    pub fn release_play_input(&mut self) {
+        if let Some(app) = &mut self.play {
+            let world = app.world_mut();
+            if let Some(mut pending) = world.get_resource_mut::<crate::play::PendingInput>() {
+                *pending = default();
+            }
+            let mut players = world.query_filtered::<&mut struction_character::CharacterIntent, With<struction_character::PlayerControlled>>();
+            for mut intent in players.iter_mut(world) {
+                *intent = default();
+            }
+        }
+    }
+
     pub fn step_play(&mut self, ticks: usize) -> Result<(), SessionError> {
         let app = self
             .play

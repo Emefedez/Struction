@@ -1,0 +1,8 @@
+// The project's changes to the engine definition characters/player; the rest comes from it.
+{
+  "components": {
+    "Roll": {
+      "recovery": 0.0
+    }
+  }
+}

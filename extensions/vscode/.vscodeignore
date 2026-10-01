@@ -1,0 +1,11 @@
+src/**
+test/**
+out/test/**
+.vscode/**
+node_modules/@types/**
+node_modules/typescript/**
+node_modules/@vscode/vsce/**
+tsconfig.json
+package-lock.json
+**/*.map
+**/*.ts

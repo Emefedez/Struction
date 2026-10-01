@@ -5541,10 +5541,15 @@ dependencies = [
  "bevy_egui",
  "rfd",
  "serde_json",
+ "struction_anim",
  "struction_assets",
+ "struction_camera",
+ "struction_character",
  "struction_core",
  "struction_data",
  "struction_editor",
+ "struction_gravity",
+ "struction_physics",
  "struction_scene",
  "struction_world",
  "tempfile",
@@ -5676,6 +5681,8 @@ dependencies = [
  "bevy",
  "serde",
  "serde_json",
+ "struction_camera",
+ "struction_character",
  "struction_core",
  "struction_data",
  "struction_world",
@@ -5688,6 +5695,20 @@ name = "struction_gravity"
 version = "0.1.0"
 dependencies = [
  "bevy",
+]
+
+[[package]]
+name = "struction_language"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "serde",
+ "serde_json",
+ "struction_core",
+ "struction_data",
+ "struction_editor",
+ "struction_scene",
+ "tempfile",
 ]
 
 [[package]]

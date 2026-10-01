@@ -25,6 +25,9 @@ use struction_data::DataPlugin;
 use struction_physics::avian3d::prelude::*;
 use struction_world::{LiveReloadPlugin, LiveReloaded, WorldPlugin, WorldSet};
 
+pub mod rigs;
+pub use rigs::{Figure, SceneRigPlugin, SceneRigSystems};
+
 #[cfg(feature = "render")]
 pub mod render;
 
@@ -197,7 +200,8 @@ impl Plugin for ScenePlugin {
         .register_type::<RigidBody>()
         .register_type::<ColliderDensity>()
         .register_type::<Shape>()
-        .register_type::<Look>();
+        .register_type::<Look>()
+        .register_type::<struction_anim::base_pose::PoseTargets>();
     }
 }
 
