@@ -230,18 +230,24 @@ impl CharacterMove {
         running: Option<CharacterCondition>,
     ) -> bool {
         conditions.iter().any(|&condition| {
-            !(running.is_some()
-                && (Some(condition) == running || condition == CharacterCondition::Recovering))
-                && match condition {
-                    CharacterCondition::Grounded => state.grounded && !state.swimming,
-                    CharacterCondition::Airborne => !state.grounded && !state.swimming,
-                    CharacterCondition::Swimming => state.swimming,
-                    CharacterCondition::Rolling | CharacterCondition::Attacking => {
-                        self.active.contains(&condition)
-                    }
-                    CharacterCondition::Recovering => self.recovery > 0.0,
-                }
+            let ignored = running.is_some_and(|running| {
+                condition == running || condition == CharacterCondition::Recovering
+            });
+            !ignored && self.holds(state, condition)
         })
+    }
+
+    /// Whether `condition` holds now.
+    pub fn holds(&self, state: &CharacterState, condition: CharacterCondition) -> bool {
+        match condition {
+            CharacterCondition::Grounded => state.grounded && !state.swimming,
+            CharacterCondition::Airborne => !state.grounded && !state.swimming,
+            CharacterCondition::Swimming => state.swimming,
+            CharacterCondition::Rolling | CharacterCondition::Attacking => {
+                self.active.contains(&condition)
+            }
+            CharacterCondition::Recovering => self.recovery > 0.0,
+        }
     }
 }
 
