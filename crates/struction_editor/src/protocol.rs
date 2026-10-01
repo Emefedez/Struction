@@ -17,7 +17,11 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Bounds one request's work, so a typo cannot hang the session.
 const MAX_STEP_TICKS: usize = 10_000;
 
-const COMMANDS: [&str; 20] = [
+const COMMANDS: [&str; 24] = [
+    "master_hierarchy",
+    "definition_hierarchy",
+    "set_master",
+    "create_spawn",
     "describe",
     "validate",
     "schema",
@@ -50,6 +54,24 @@ pub struct Request {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    MasterHierarchy {
+        #[serde(default)]
+        playing: bool,
+    },
+    DefinitionHierarchy {},
+    SetMaster {
+        path: String,
+        master: Option<String>,
+    },
+    CreateSpawn {
+        spawner: String,
+        name: String,
+        definition: String,
+        #[serde(default)]
+        master: Option<String>,
+        #[serde(default)]
+        offset: [f32; 3],
+    },
     Describe {},
     Validate {},
     Schema {},
@@ -153,6 +175,22 @@ pub fn execute(project: &mut AuthoringProject, request: Request) -> Response {
 
 fn apply(project: &mut AuthoringProject, command: Command) -> Result<Value, SessionError> {
     Ok(match command {
+        Command::MasterHierarchy { playing } => json!(project.master_hierarchy(playing)?),
+        Command::DefinitionHierarchy {} => json!(project.definition_hierarchy()),
+        Command::SetMaster { path, master } => json!(project.set_master(&path, master.as_deref())?),
+        Command::CreateSpawn {
+            spawner,
+            name,
+            definition,
+            master,
+            offset,
+        } => json!(project.create_spawn(
+            &spawner,
+            &name,
+            &definition,
+            master.as_deref(),
+            Vec3::from_array(offset)
+        )?),
         Command::Describe {} => json!({
             "protocol_version": PROTOCOL_VERSION,
             "commands": COMMANDS,

@@ -1,7 +1,7 @@
 //! Game-aware authoring: validation, an authored preview and a separate simulation app.
 //! The host supplies the game's plugin/component/action registration once through a factory.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use bevy::ecs::entity_disabling::Disabled;
@@ -89,6 +89,30 @@ fn validate(world: &World, sources: &BTreeMap<String, String>) -> Result<(), Vec
     errors.extend(store.check_references(&types, actions));
     let scenes = SceneCatalog::load_with_sources(store.root(), &store, &types, sources);
     errors.extend(scenes.errors().iter().cloned());
+    let spawns: BTreeMap<_, _> = scenes
+        .spawners()
+        .flat_map(|s| &s.spawns)
+        .map(|s| (s.path.as_str(), s))
+        .collect();
+    for spawn in spawns.values() {
+        let mut seen = BTreeSet::new();
+        let mut at = Some(spawn.path.as_str());
+        while let Some(path) = at {
+            if !seen.insert(path) {
+                errors.push(DataError::at(
+                    ErrorKind::InvalidValue {
+                        ty: "masterIs".into(),
+                        message: format!("master relationship cycle through {path}"),
+                    },
+                    &spawn.source,
+                ));
+                break;
+            }
+            at = spawns
+                .get(path)
+                .and_then(|s| s.master_is.as_ref().map(|p| p.as_str()));
+        }
+    }
     // Scene overrides can carry grants/reactions as well as ordinary components.
     for spawner in scenes.spawners() {
         for spawn in &spawner.spawns {
@@ -124,6 +148,9 @@ impl AuthoringProject {
             file: "project root".into(),
             source,
         })?;
+        if !root.is_dir() {
+            return Err(SessionError::InvalidOperation("open the project directory containing definitions and scenes/, not an individual source file".into()));
+        }
         let preview = build(&root, &factory)?;
         Ok(Self {
             session: EditSession::new(root),
@@ -164,20 +191,65 @@ impl AuthoringProject {
             .resource::<ActionRegistry>()
             .descriptors()
     }
+    /// Includes broken source definitions so authoring clients can still find and repair them.
     pub fn definitions(&self) -> Vec<String> {
-        self.preview
+        fn sources(root: &Path, directory: &Path, paths: &mut BTreeSet<String>) {
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir()
+                    && !name.starts_with('.')
+                    && !matches!(name.as_ref(), "target" | "presets" | "scenes")
+                {
+                    sources(root, &entry.path(), paths);
+                } else if kind.is_file()
+                    && name == "entity.jsonc"
+                    && let Ok(path) = directory.strip_prefix(root)
+                    && !path.as_os_str().is_empty()
+                {
+                    paths.insert(path.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        let mut paths = self
+            .preview
             .world()
             .resource::<DefinitionStore>()
             .definitions()
             .map(str::to_owned)
-            .collect()
+            .collect();
+        sources(self.session.root(), self.session.root(), &mut paths);
+        paths.into_iter().collect()
     }
     pub fn inspect_definition(&self, path: &str) -> Result<DefinitionInspection, SessionError> {
         let world = self.preview.world();
         let resolved = world
             .resource::<DefinitionStore>()
             .get(path)
-            .ok_or_else(|| invalid(ErrorKind::MissingDefinition(path.into())))?;
+            .ok_or_else(|| {
+                let store = world.resource::<DefinitionStore>();
+                let file = format!("{path}/entity.jsonc");
+                let errors: Vec<_> = store
+                    .errors()
+                    .into_iter()
+                    .filter(|e| {
+                        e.location
+                            .as_ref()
+                            .is_some_and(|at| at.file.as_ref() == file)
+                    })
+                    .collect();
+                if errors.is_empty() {
+                    invalid(ErrorKind::MissingDefinition(path.into()))
+                } else {
+                    SessionError::Validation(errors)
+                }
+            })?;
         let types = world.resource::<AppTypeRegistry>().read();
         let components = resolved
             .components
@@ -465,7 +537,7 @@ pub struct EntityEntry {
     pub rotation: Option<Quat>,
     pub scale: Option<Vec3>,
     pub disabled: bool,
-    /// Authored path of the master, when it has one.
+    /// Authored path or stable ID of the master, using the same key as entity inspection.
     pub master: Option<String>,
 }
 
@@ -516,10 +588,12 @@ impl EntityEntry {
             rotation: transform.map(|t| t.rotation),
             scale: transform.map(|t| t.scale),
             disabled: world.get::<Disabled>(entity).is_some(),
-            master: world
-                .get::<MasterIs>(entity)
-                .and_then(|m| world.get::<EntityPath>(m.0))
-                .map(ToString::to_string),
+            master: world.get::<MasterIs>(entity).and_then(|m| {
+                world
+                    .get::<EntityPath>(m.0)
+                    .map(ToString::to_string)
+                    .or_else(|| world.get::<StableId>(m.0).map(ToString::to_string))
+            }),
         }
     }
 

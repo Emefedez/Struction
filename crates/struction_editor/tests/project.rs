@@ -261,6 +261,18 @@ fn an_invalid_project_can_open_for_inspection_and_repair() {
     )
     .unwrap();
     let mut project = AuthoringProject::open(dir.path(), factory).unwrap();
+    assert!(project.definitions().contains(&"guards/ogre".to_owned()));
+    assert!(matches!(
+        project.inspect_definition("guards/ogre"),
+        Err(SessionError::Validation(_))
+    ));
+    let tree = project.definition_hierarchy();
+    assert!(
+        tree[0]
+            .children
+            .iter()
+            .any(|node| node.key == "guards/ogre")
+    );
     assert!(!project.validate().is_empty());
     assert!(project.start_play().is_err());
     project
@@ -417,4 +429,120 @@ fn hierarchy_reports_authored_sources_and_disabled_play_entities() {
     let after = project.inspect_entity("Court/guards/ogre", true).unwrap();
     assert!(after.entity.disabled);
     assert_eq!(after.components[Health::type_path()]["current"], 49.5);
+}
+
+#[test]
+fn master_tree_creation_and_reparenting_are_undoable() {
+    let dir = fixture();
+    let original = std::fs::read_to_string(dir.path().join(SCENE)).unwrap();
+    let mut project = AuthoringProject::open(dir.path(), factory).unwrap();
+    let tree = project.master_hierarchy(false).unwrap();
+    assert_eq!(tree.len(), 1);
+    assert_eq!(tree[0].key, "Court/guards/boss");
+    assert_eq!(tree[0].children[0].key, "Court/guards/ogre");
+    let definitions = project.definition_hierarchy();
+    assert_eq!(definitions[0].key, "Actor");
+    assert_eq!(definitions[0].children.len(), 2);
+
+    project
+        .create_spawn(
+            "Court/guards",
+            "new_guard",
+            "guards/ogre",
+            Some("Court/guards/boss"),
+            Vec3::X,
+        )
+        .unwrap();
+    assert_eq!(
+        project.master_hierarchy(false).unwrap()[0].children.len(),
+        2
+    );
+    let created = std::fs::read_to_string(dir.path().join(SCENE)).unwrap();
+    project
+        .set_master("Court/guards/new_guard", Some("Court/guards/ogre"))
+        .unwrap();
+    let tree = project.master_hierarchy(false).unwrap();
+    assert_eq!(
+        tree[0].children[0].children[0].key,
+        "Court/guards/new_guard"
+    );
+    project.undo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(SCENE)).unwrap(),
+        created
+    );
+    project.undo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(SCENE)).unwrap(),
+        original
+    );
+    project.redo().unwrap();
+    assert_eq!(
+        project.master_hierarchy(false).unwrap()[0].children.len(),
+        2
+    );
+    project.set_master("Court/guards/new_guard", None).unwrap();
+    assert_eq!(project.master_hierarchy(false).unwrap().len(), 2);
+}
+
+#[test]
+fn invalid_relationship_edits_do_not_write_or_record_history() {
+    let dir = fixture();
+    let mut project = AuthoringProject::open(dir.path(), factory).unwrap();
+    let original = std::fs::read_to_string(dir.path().join(SCENE)).unwrap();
+    assert!(
+        project
+            .edit(set(
+                SCENE,
+                &["spawnerList", "guards", "spawns", "boss", "masterIs"],
+                json!("Court/guards/ogre")
+            ))
+            .is_err()
+    );
+    for (path, master) in [
+        ("Court/guards/boss", "Court/guards/ogre"),
+        ("Court/guards/boss", "Court/guards/boss"),
+        ("Court/guards/ogre", "missing"),
+    ] {
+        assert!(project.set_master(path, Some(master)).is_err());
+    }
+    for (spawner, name, definition) in [
+        ("Court/guards", "ogre", "guards/ogre"),
+        ("Court/guards", "new", "missing"),
+        ("Court/guards", "bad/name", "guards/ogre"),
+        ("missing", "new", "guards/ogre"),
+    ] {
+        assert!(
+            project
+                .create_spawn(spawner, name, definition, None, Vec3::ZERO)
+                .is_err()
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(SCENE)).unwrap(),
+        original
+    );
+    assert!(!project.session().history().can_undo());
+    project.start_play().unwrap();
+    assert!(matches!(
+        project.set_master("Court/guards/ogre", None),
+        Err(SessionError::Playing)
+    ));
+}
+
+#[test]
+fn protocol_exposes_relationship_authoring() {
+    use struction_editor::protocol::{Request, execute};
+    let dir = fixture();
+    let mut project = AuthoringProject::open(dir.path(), factory).unwrap();
+    for command in [
+        json!({"op":"master_hierarchy"}),
+        json!({"op":"definition_hierarchy"}),
+        json!({"op":"create_spawn", "spawner":"Court/guards", "name":"new", "definition":"guards/ogre", "master":"Court/guards/boss"}),
+        json!({"op":"set_master", "path":"Court/guards/new", "master":null}),
+    ] {
+        let request: Request = serde_json::from_value(json!({"id":1,"command":command})).unwrap();
+        let response = execute(&mut project, request);
+        assert!(response.ok, "{response:?}");
+    }
 }

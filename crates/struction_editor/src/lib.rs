@@ -1,6 +1,8 @@
 //! Headless authoring operations shared by the editor and automation tools.
 
+pub mod hierarchy;
 pub mod history;
+pub use hierarchy::HierarchyNode;
 pub mod project;
 pub mod protocol;
 pub mod session;

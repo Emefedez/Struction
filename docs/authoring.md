@@ -43,11 +43,15 @@ For read-modify-write clients, pass the opaque `revision` returned by `read` in 
 | `describe` | — | Protocol version, command names and step limit |
 | `schema` | — | Definition JSON Schema using the host's registered component types |
 | `actions` | — | Registered action names, documentation, typed parameters, defaults and required components |
-| `definitions` | — | Loaded definition paths |
+| `definitions` | — | Definition paths, including broken sources that need repair |
 | `inspect_definition` | `path` | Lineage, resolved authored data and reflected components including defaults |
 | `read` | `file` | Exact source text and revision token |
 | `validate` | — | Current source diagnostics, including external edits |
 | `entities` | Optional `playing` | Paths, definition, identity, placement, source location, disabled state and master path |
+| `master_hierarchy` | Optional `playing` | Instance tree by `masterIs`; roots have no master in the tree |
+| `definition_hierarchy` | — | Definition tree by `descendsFrom`, including broken source entries |
+| `set_master` | `path`, `master` (path or `null`) | Reparent or release a named spawn; validated and undoable |
+| `create_spawn` | `spawner`, `name`, `definition`, optional `master`, `offset` | Add a named spawn in an existing spawner; offset is local; undo restores the scene exactly |
 | `inspect_entity` | `target`, optional `playing` | Reflected component values; uninspectable components are reported explicitly |
 | `edit` | `edit` | Validates a `set` or `remove` before writing; returns affected files |
 | `move_spawn` | `path`, `position`, optional `group` | World-space translation converted into an authored spawn offset |
@@ -62,7 +66,7 @@ For read-modify-write clients, pass the opaque `revision` returned by `read` in 
 
 An `edit` is `{ "op": "set", "file": "...", "path": [...], "value": ..., "label": "...", "group": "optional drag key", "revision": "optional token" }`, or `{ "op": "remove", "file": "...", "path": [...], "label": "...", "revision": "optional token" }`. Only entity, preset and scene JSONC sources are accepted by the project API. Reserved `presets` and `scenes` directories cannot contain definition scaffolds.
 
-Authored entities are addressed by their paths; runtime-created entities can be inspected by `StableId`. ECS entity numbers are diagnostic strings, not persistent addresses. Preview rebuilds recreate ECS entities, so GUI selections must retain authored paths. Source provenance on spawners and named spawns supplies the file and structured field path for instance overrides. `master` is a gameplay relation, separate from the authored hierarchy.
+Authored entities are addressed by their paths; runtime-created entities can be inspected by `StableId`. ECS entity numbers are diagnostic strings, not persistent addresses. Preview rebuilds recreate ECS entities, so GUI selections must retain authored paths. Source provenance on spawners and named spawns supplies the file and structured field path for instance overrides. `master` is a gameplay relation, separate from the placement hierarchy. The authored field remains `masterIs`: the actor containing it is the ward, and its value identifies the master. `master_hierarchy` nests wards under masters; `definition_hierarchy` shows type inheritance separately. Self-parenting and relationship cycles fail validation.
 
 ## Embed in a game or GUI
 
