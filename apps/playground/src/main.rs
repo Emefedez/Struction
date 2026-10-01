@@ -1,17 +1,16 @@
-//! Native physics playground with a procedurally animated player.
+//! Native physics playground: the README scene, authored as data in `project/` and drawn with
+//! the engine's scene vocabulary (`struction_scene`). This host adds the window, lights, HUD,
+//! cursor handling and the smoke-test script.
 
-mod camera_occlusion;
-mod figures;
-use struction_playground::scene;
-
-use camera_occlusion::{FadeMaterial, FadesWith, fade_material};
 #[cfg(test)]
 mod planet_tests;
-use scene::{Finish, Look, ScenePlugin, Shape};
+#[cfg(test)]
+mod scene_tests;
+
+use std::path::{Path, PathBuf};
 
 use bevy::{
     app::AppExit,
-    light::NotShadowCaster,
     prelude::*,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
@@ -19,14 +18,22 @@ use struction_anim::plugin::Locomotor;
 use struction_camera::{CameraSystems, PlayerCamera, PlayerCameraPlugin, ViewMode};
 use struction_character::{
     Attacking, CharacterAnimationPlugin, CharacterLook, CharacterMove, CharacterState,
-    InputActions, InputMap, InputSystems, PlayerControlled, RigOf, Rolling,
+    InputActions, InputMap, InputSystems, PlayerControlled, Rolling,
 };
 use struction_debug::{DebugTracePlugin, TraceAppExt, TraceWriter};
 use struction_gravity::{GravityInfluences, LocalUp};
 use struction_physics::{
-    CameraOcclusion, CameraTarget, InCameraZones, PhysicsPlugin, Submersion, Volume, VolumeShape,
-    avian3d::prelude::*,
+    CameraOcclusion, CameraTarget, InCameraZones, PhysicsPlugin, Submersion, avian3d::prelude::*,
 };
+use struction_scene::{
+    ScenePlugin,
+    render::{SceneRenderPlugin, SceneRenderSystems},
+};
+
+/// The playground's own project, next to its sources.
+pub fn default_project() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("project")
+}
 
 #[derive(Resource)]
 struct PlaygroundOptions {
@@ -55,7 +62,7 @@ enum PlaygroundSystems {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut smoke = false;
     let mut trace = None;
-    let mut project = scene::default_project();
+    let mut project = default_project();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -124,9 +131,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         struction_character::CharacterPlugins,
         CharacterAnimationPlugin,
         PlayerCameraPlugin,
-        camera_occlusion::SightFadePlugin,
         ScenePlugin { root: project },
-        figures::FiguresPlugin,
+        SceneRenderPlugin,
     ))
     .configure_sets(
         PreUpdate,
@@ -150,35 +156,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .configure_sets(
         Update,
-        CameraSystems::Follow.in_set(PlaygroundSystems::Camera),
+        (
+            SceneRenderSystems::Dress.in_set(PlaygroundSystems::Dress),
+            CameraSystems::Follow.in_set(PlaygroundSystems::Camera),
+            SceneRenderSystems::View
+                .after(PlaygroundSystems::Camera)
+                .before(PlaygroundSystems::Hud),
+        ),
     )
     .add_systems(Startup, setup)
     .add_systems(PreUpdate, cursor_controls.in_set(PlaygroundSystems::Cursor))
     .add_systems(PreUpdate, scripted_input.in_set(PlaygroundSystems::Script))
-    .add_systems(
-        Update,
-        (
-            attach_camera,
-            dress_looks,
-            figures::attach_rigs,
-            figures::request_models,
-            figures::finish_compiles,
-            figures::dress_figures,
-        )
-            .chain()
-            .in_set(PlaygroundSystems::Dress),
-    )
-    .add_systems(
-        Update,
-        (hide_rig_in_first_person, count_footfalls).in_set(PlaygroundSystems::Camera),
-    )
+    .add_systems(Update, attach_camera.in_set(PlaygroundSystems::Dress))
+    .add_systems(Update, count_footfalls.in_set(PlaygroundSystems::Camera))
     .add_systems(Update, update_hud.in_set(PlaygroundSystems::Hud))
     .add_systems(Update, exit_control.in_set(PlaygroundSystems::Exit))
     .run();
     Ok(())
 }
 
-/// The scene itself is data (see `scene`); this adds what only the rendered host needs.
+/// The scene itself is data; this adds what only the rendered host needs.
 fn setup(mut commands: Commands) {
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.68, 0.78, 1.0),
@@ -194,106 +191,6 @@ fn setup(mut commands: Commands) {
         Transform::from_xyz(8.0, 16.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     spawn_hud(&mut commands);
-}
-
-fn matte(color: Color) -> StandardMaterial {
-    StandardMaterial {
-        base_color: color,
-        perceptual_roughness: 0.88,
-        ..default()
-    }
-}
-
-type Dressed<'a> = (
-    Entity,
-    &'a Look,
-    Option<&'a Shape>,
-    Option<&'a Volume>,
-    Option<&'a WaterSurface>,
-);
-
-type Redrawn = (
-    With<Look>,
-    Or<(Changed<Look>, Changed<Shape>, Changed<Volume>)>,
-);
-
-/// The surface drawn for a water volume, replaced when live reload changes the volume's look.
-#[derive(Component)]
-struct WaterSurface(Entity);
-
-/// Gives authored entities their mesh and material from their `Shape` and `Look`, again whenever
-/// live reload edits either.
-fn dress_looks(
-    mut commands: Commands,
-    looks: Query<Dressed, Redrawn>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut fading: ResMut<Assets<FadeMaterial>>,
-) {
-    for (entity, look, shape, volume, surface) in &looks {
-        if let Some(surface) = surface {
-            commands.entity(surface.0).despawn();
-        }
-        commands.entity(entity).remove::<(
-            WaterSurface,
-            Mesh3d,
-            MeshMaterial3d<StandardMaterial>,
-            MeshMaterial3d<FadeMaterial>,
-        )>();
-        let [red, green, blue] = look.color;
-        let color = Color::srgba(red, green, blue, look.opacity);
-        if look.finish == Finish::Water {
-            let Some(VolumeShape::Box { half_extents }) = volume.map(|v| v.shape) else {
-                warn!("a water look needs a box volume; {entity} is not drawn");
-                continue;
-            };
-            // A closed transparent box overlaps the pool floor and blends its own unsorted faces.
-            let size = half_extents.xz() * 2.0;
-            let surface = commands
-                .spawn((
-                    Name::new("Water surface"),
-                    Transform::from_xyz(0.0, half_extents.y, 0.0),
-                    Mesh3d(meshes.add(Plane3d::default().mesh().size(size.x, size.y))),
-                    NotShadowCaster,
-                    // A swimmer below the surface stays visible through it.
-                    FadesWith(entity),
-                    MeshMaterial3d(fade_material(
-                        &mut fading,
-                        StandardMaterial {
-                            base_color: color,
-                            alpha_mode: AlphaMode::Blend,
-                            perceptual_roughness: 0.24,
-                            cull_mode: None,
-                            double_sided: true,
-                            ..default()
-                        },
-                    )),
-                    ChildOf(entity),
-                ))
-                .id();
-            commands
-                .entity(entity)
-                .insert((Visibility::default(), WaterSurface(surface)));
-            continue;
-        }
-        // Humanoids are drawn by their rig (see `figures`).
-        let Some(mesh) = shape.and_then(Shape::mesh) else {
-            if shape.is_none() {
-                warn!("{entity} has a look but no shape to draw");
-            }
-            continue;
-        };
-        let mesh = Mesh3d(meshes.add(mesh));
-        let mut entity = commands.entity(entity);
-        match look.finish {
-            // Ground that can hide the player gets a cut-out along the camera's line of sight.
-            Finish::Ground => entity.insert((
-                mesh,
-                MeshMaterial3d(fade_material(&mut fading, matte(color))),
-            )),
-            _ => entity.insert((mesh, MeshMaterial3d(materials.add(matte(color))))),
-        };
-    }
 }
 
 /// The player comes from scene data, so its camera is attached once it spawns; camera zones then
@@ -375,23 +272,6 @@ fn scripted_input(
     if seconds >= 4.5 && !options.attack_sent {
         actions.attack.pressed = true;
         options.attack_sent = true;
-    }
-}
-
-/// The first-person camera sits inside the head, so the player's own rig is not drawn.
-fn hide_rig_in_first_person(
-    cameras: Query<&PlayerCamera>,
-    mut rigs: Query<(&RigOf, &mut Visibility)>,
-) {
-    for camera in &cameras {
-        for (rig, mut visibility) in &mut rigs {
-            if rig.0 == camera.target {
-                visibility.set_if_neq(match camera.view {
-                    ViewMode::FirstPerson => Visibility::Hidden,
-                    ViewMode::ThirdPerson => Visibility::Inherited,
-                });
-            }
-        }
     }
 }
 
@@ -480,7 +360,7 @@ mod tests {
             InputActionsPlugin,
             PlayerCameraPlugin,
             ScenePlugin {
-                root: scene::default_project(),
+                root: default_project(),
             },
         ));
         app.add_systems(Update, attach_camera);
@@ -500,44 +380,5 @@ mod tests {
         assert_eq!(camera.view, ViewMode::ThirdPerson);
         let distance = transform.translation.distance(focus);
         assert!((1.0..12.0).contains(&distance), "camera {distance} m away");
-    }
-
-    #[test]
-    fn a_reloaded_water_look_is_redrawn_once() {
-        let mut app = App::new();
-        app.init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<StandardMaterial>>()
-            .init_resource::<Assets<FadeMaterial>>()
-            .add_systems(Update, dress_looks);
-        let pool = app
-            .world_mut()
-            .spawn((
-                Look {
-                    finish: Finish::Water,
-                    ..default()
-                },
-                Volume {
-                    shape: VolumeShape::Box {
-                        half_extents: Vec3::ONE,
-                    },
-                },
-            ))
-            .id();
-        app.update();
-        // What live reload does to an edited field.
-        app.world_mut().get_mut::<Look>(pool).unwrap().color = [0.1, 0.2, 0.3];
-        app.update();
-
-        let mut surfaces = app
-            .world_mut()
-            .query_filtered::<&MeshMaterial3d<FadeMaterial>, With<FadesWith>>();
-        let surfaces: Vec<_> = surfaces.iter(app.world()).collect();
-        assert_eq!(surfaces.len(), 1);
-        let material = app
-            .world()
-            .resource::<Assets<FadeMaterial>>()
-            .get(&surfaces[0].0)
-            .unwrap();
-        assert_eq!(material.base.base_color, Color::srgba(0.1, 0.2, 0.3, 1.0));
     }
 }

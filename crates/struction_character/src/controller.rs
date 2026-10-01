@@ -259,6 +259,7 @@ impl Plugin for CharacterControllerPlugin {
             .register_type::<CharacterLook>()
             .register_type::<CharacterState>()
             .register_type::<CharacterMove>()
+            .register_type::<PlayerControlled>()
             .register_type::<CharacterCondition>()
             .register_type::<Vec<CharacterCondition>>()
             .register_extensor(

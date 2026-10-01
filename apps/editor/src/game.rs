@@ -1,4 +1,5 @@
-//! Shared playground registrations, plus the small authoring example’s Health behavior.
+//! Every engine package (`struction_scene::authoring_app`), plus the small authoring example’s
+//! Health behavior.
 use std::path::Path;
 
 use bevy::prelude::*;
@@ -12,7 +13,7 @@ struct Health {
 }
 
 pub fn factory(root: &Path) -> App {
-    let mut app = struction_playground::factory(root);
+    let mut app = struction_scene::authoring_app(root);
     app.register_type::<Health>()
         .add_systems(FixedUpdate, regenerate.in_set(CoreSet::Invoke));
     app

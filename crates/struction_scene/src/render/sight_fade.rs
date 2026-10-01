@@ -14,7 +14,6 @@ use bevy::{
 use struction_gravity::LocalUp;
 use struction_physics::{CameraOcclusion, avian3d::prelude::*, camera_obstructions};
 
-use crate::PlaygroundSystems;
 use struction_character::PlayerControlled;
 
 pub type FadeMaterial = ExtendedMaterial<StandardMaterial, SightFade>;
@@ -36,7 +35,7 @@ pub struct SightUniform {
 
 impl MaterialExtension for SightFade {
     fn fragment_shader() -> ShaderRef {
-        "embedded://struction_playground/sight_fade.wgsl".into()
+        "embedded://struction_scene/render/sight_fade.wgsl".into()
     }
 }
 
@@ -56,25 +55,19 @@ pub fn fade_material(
 
 /// Alpha modes of opaque materials switched to blending while they fade.
 #[derive(Resource, Default)]
-struct RestingAlphaModes(HashMap<AssetId<FadeMaterial>, AlphaMode>);
+pub(crate) struct RestingAlphaModes(HashMap<AssetId<FadeMaterial>, AlphaMode>);
 
-pub struct SightFadePlugin;
+pub(crate) struct SightFadePlugin;
 
 impl Plugin for SightFadePlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "sight_fade.wgsl");
         app.add_plugins(MaterialPlugin::<FadeMaterial>::default())
-            .init_resource::<RestingAlphaModes>()
-            .add_systems(
-                Update,
-                fade_sight_lines
-                    .after(PlaygroundSystems::Camera)
-                    .before(PlaygroundSystems::Hud),
-            );
+            .init_resource::<RestingAlphaModes>();
     }
 }
 
-fn fade_sight_lines(
+pub(crate) fn fade_sight_lines(
     camera: Query<(&Transform, &CameraOcclusion), With<Camera3d>>,
     player: Query<(Entity, &Transform, &LocalUp), With<PlayerControlled>>,
     spatial: SpatialQuery,

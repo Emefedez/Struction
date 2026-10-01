@@ -1,0 +1,40 @@
+[package]
+name = "struction_scene"
+description = "Scene vocabulary (shapes, looks, humanoid figures) and project loading; drawing behind the render feature."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Draw shapes and looks, dress humanoids with their models, fade surfaces hiding the player.
+# Rendering apps enable it; tools and tests stay headless without it.
+render = [
+    "dep:struction_anim",
+    "dep:struction_assets",
+    "dep:struction_camera",
+    "dep:struction_gravity",
+    "bevy/bevy_camera",
+    "bevy/bevy_color",
+    "bevy/bevy_image",
+    "bevy/bevy_light",
+    "bevy/bevy_material",
+    "bevy/bevy_mesh",
+    "bevy/bevy_pbr",
+    "bevy/bevy_render",
+    "bevy/bevy_shader",
+]
+
+[dependencies]
+bevy = { workspace = true }
+struction_core = { workspace = true }
+struction_data = { workspace = true }
+struction_world = { workspace = true }
+struction_physics = { workspace = true }
+struction_character = { workspace = true }
+struction_anim = { workspace = true, optional = true }
+struction_assets = { workspace = true, optional = true }
+struction_camera = { workspace = true, optional = true }
+struction_gravity = { workspace = true, optional = true }

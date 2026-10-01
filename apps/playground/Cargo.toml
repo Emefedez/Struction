@@ -48,6 +48,7 @@ struction_core = { workspace = true }
 struction_data = { workspace = true }
 struction_world = { workspace = true }
 struction_assets = { workspace = true }
+struction_scene = { workspace = true, features = ["render"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
