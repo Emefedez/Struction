@@ -6,8 +6,9 @@ use struction_core::{ActionAppExt, ActionCall, ActionMeta, ExtensorAppExt, Exten
 use struction_gravity::LocalUp;
 
 use crate::{
-    CharacterCondition, CharacterController, CharacterIntent, CharacterLook, CharacterMove,
-    CharacterState, CharacterSystems, controller::transport,
+    CancelInto, CharacterCondition, CharacterController, CharacterIntent, CharacterLook,
+    CharacterMove, CharacterState, CharacterSystems,
+    controller::{cancel_opened, transport},
 };
 
 /// Roll tuning; its presence is the capability.
@@ -23,6 +24,8 @@ pub struct Roll {
     /// A roll neither starts nor continues while any of these holds. Without `Airborne`, a
     /// roll started on the ground carries on through the air as a dash.
     pub blocked_while: Vec<CharacterCondition>,
+    /// Actions that may cut it short, and from how many seconds in. Empty: it always runs out.
+    pub cancel_into: Vec<CancelInto>,
 }
 
 impl Default for Roll {
@@ -31,7 +34,13 @@ impl Default for Roll {
             duration: 0.65,
             peak_speed: 10.0,
             recovery: 0.2,
-            blocked_while: vec![CharacterCondition::Airborne, CharacterCondition::Swimming],
+            blocked_while: vec![
+                CharacterCondition::Airborne,
+                CharacterCondition::Swimming,
+                CharacterCondition::Attacking,
+                CharacterCondition::Recovering,
+            ],
+            cancel_into: Vec::new(),
         }
     }
 }
@@ -81,6 +90,8 @@ impl Rolling {
     }
 }
 
+const ROLLING: Option<CharacterCondition> = Some(CharacterCondition::Rolling);
+
 /// Registers the `dodge` extensor, its `dodge/roll` action and the roll simulation.
 /// Reactions to `dodge/roll` observe the request, not successful entry or completion.
 pub struct DodgePlugin;
@@ -102,7 +113,26 @@ impl Plugin for DodgePlugin {
                     .requires::<Roll>(),
                 request_roll,
             )
-            .add_systems(FixedPostUpdate, roll.in_set(CharacterSystems::Moves));
+            .add_systems(
+                FixedPostUpdate,
+                (
+                    cancel_roll.in_set(CharacterSystems::Cancel),
+                    roll.in_set(CharacterSystems::Moves),
+                ),
+            );
+    }
+}
+
+/// Ends rolls an asked-for action may cut short, without recovery.
+fn cancel_roll(
+    mut commands: Commands,
+    mut characters: Query<(Entity, &CharacterIntent, &Rolling, &mut CharacterMove)>,
+) {
+    for (entity, intent, rolling, mut moving) in &mut characters {
+        if cancel_opened(intent, &rolling.tuning.cancel_into, rolling.elapsed) {
+            moving.end(CharacterCondition::Rolling, 0.0);
+            commands.entity(entity).remove::<Rolling>();
+        }
     }
 }
 
@@ -132,16 +162,17 @@ pub(crate) fn roll(mut commands: Commands, time: Res<Time>, mut characters: Quer
         let requested = core::mem::take(&mut intent.roll_requested);
         let mut active = match rolling {
             Some(rolling)
-                if rolling.phase() >= 1.0 || tuning.is_none_or(|t| state.any(&t.blocked_while)) =>
+                if rolling.phase() >= 1.0
+                    || tuning.is_none_or(|t| moving.blocked(state, &t.blocked_while, ROLLING)) =>
             {
-                moving.end(rolling.tuning.recovery);
+                moving.end(CharacterCondition::Rolling, rolling.tuning.recovery);
                 commands.entity(entity).remove::<Rolling>();
                 continue;
             }
             Some(rolling) => rolling,
             None => {
-                let Some(tuning) = tuning
-                    .filter(|t| requested && moving.can_start() && !state.any(&t.blocked_while))
+                let Some(tuning) =
+                    tuning.filter(|t| requested && !moving.blocked(state, &t.blocked_while, None))
                 else {
                     continue;
                 };
@@ -151,7 +182,7 @@ pub(crate) fn roll(mut commands: Commands, time: Res<Time>, mut characters: Quer
                 }
                 let forward = look.heading(up);
                 let direction = intent.wish(forward, up).try_normalize().unwrap_or(forward);
-                moving.busy = true;
+                moving.start(CharacterCondition::Rolling);
                 // A roll moves from the tick it starts.
                 let mut first = Rolling {
                     elapsed: 0.0,

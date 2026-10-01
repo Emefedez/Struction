@@ -807,7 +807,8 @@ fn editing_a_library_definition_creates_a_project_override() {
     assert!(override_source.contains(r#""-armor""#), "{override_source}");
     assert!(armor_of(&project, "Creature").is_none());
 
-    // A failed edit of a library definition leaves no override behind, and the library is untouched.
+    // A failed or empty edit of a library definition leaves no override behind, and the library
+    // is untouched.
     std::fs::remove_file(dir.path().join("Creature/entity.jsonc")).unwrap();
     project.refresh().unwrap();
     assert!(
@@ -818,6 +819,15 @@ fn editing_a_library_definition_creates_a_project_override() {
                 json!("lots")
             ))
             .is_err()
+    );
+    assert!(!dir.path().join("Creature/entity.jsonc").exists());
+    // The library already names armor: nothing to add, so no override either.
+    assert!(
+        project
+            .add_extensor("Creature", "armor")
+            .unwrap()
+            .files
+            .is_empty()
     );
     assert!(!dir.path().join("Creature/entity.jsonc").exists());
     assert_eq!(

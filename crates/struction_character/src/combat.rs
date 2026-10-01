@@ -12,8 +12,10 @@ use struction_core::{
 use struction_gravity::LocalUp;
 
 use crate::{
-    CharacterCondition, CharacterController, CharacterIntent, CharacterLook, CharacterMove,
-    CharacterState, CharacterSystems, controller::transport, dodge,
+    CancelInto, CharacterCondition, CharacterController, CharacterIntent, CharacterLook,
+    CharacterMove, CharacterState, CharacterSystems,
+    controller::{cancel_opened, transport},
+    dodge,
 };
 
 /// Melee tuning; its presence is the capability.
@@ -32,6 +34,8 @@ pub struct Attack {
     pub recovery: f32,
     /// A swing neither starts nor continues while any of these holds.
     pub blocked_while: Vec<CharacterCondition>,
+    /// Actions that may cut it short, and from how many seconds in. Empty: it always runs out.
+    pub cancel_into: Vec<CancelInto>,
 }
 
 impl Default for Attack {
@@ -42,7 +46,12 @@ impl Default for Attack {
             radius: 0.6,
             knockback: 4.0,
             recovery: 0.15,
-            blocked_while: vec![CharacterCondition::Swimming],
+            blocked_while: vec![
+                CharacterCondition::Swimming,
+                CharacterCondition::Rolling,
+                CharacterCondition::Recovering,
+            ],
+            cancel_into: Vec::new(),
         }
     }
 }
@@ -91,6 +100,8 @@ impl Attacking {
     }
 }
 
+const ATTACKING: Option<CharacterCondition> = Some(CharacterCondition::Attacking);
+
 /// Registers the `combat` extensor, the `combat/attack` and `combat/hit` actions and the swing
 /// simulation. Hits land through the action queue, so they need `struction_core::CorePlugin`.
 pub struct CombatPlugin;
@@ -121,10 +132,26 @@ impl Plugin for CombatPlugin {
             )
             .add_systems(
                 FixedPostUpdate,
-                attack
-                    .in_set(CharacterSystems::Moves)
-                    .after(dodge::roll),
+                (
+                    cancel_attack.in_set(CharacterSystems::Cancel),
+                    attack
+                        .in_set(CharacterSystems::Moves)
+                        .after(dodge::roll),
+                ),
             );
+    }
+}
+
+/// Ends swings an asked-for action may cut short, without recovery.
+fn cancel_attack(
+    mut commands: Commands,
+    mut characters: Query<(Entity, &CharacterIntent, &Attacking, &mut CharacterMove)>,
+) {
+    for (entity, intent, swing, mut moving) in &mut characters {
+        if cancel_opened(intent, &swing.tuning.cancel_into, swing.elapsed) {
+            moving.end(CharacterCondition::Attacking, 0.0);
+            commands.entity(entity).remove::<Attacking>();
+        }
     }
 }
 
@@ -189,16 +216,18 @@ fn attack(
         let requested = core::mem::take(&mut intent.attack_requested);
         let mut swing = match attacking {
             Some(swing)
-                if swing.phase() >= 1.0 || tuning.is_none_or(|t| state.any(&t.blocked_while)) =>
+                if swing.phase() >= 1.0
+                    || tuning
+                        .is_none_or(|t| moving.blocked(state, &t.blocked_while, ATTACKING)) =>
             {
-                moving.end(swing.tuning.recovery);
+                moving.end(CharacterCondition::Attacking, swing.tuning.recovery);
                 commands.entity(entity).remove::<Attacking>();
                 continue;
             }
             Some(swing) => swing.clone(),
             None => {
-                let Some(tuning) = tuning
-                    .filter(|t| requested && moving.can_start() && !state.any(&t.blocked_while))
+                let Some(tuning) =
+                    tuning.filter(|t| requested && !moving.blocked(state, &t.blocked_while, None))
                 else {
                     continue;
                 };
@@ -207,7 +236,7 @@ fn attack(
                     continue;
                 }
                 let forward = look.heading(up);
-                moving.busy = true;
+                moving.start(CharacterCondition::Attacking);
                 Attacking {
                     elapsed: 0.0,
                     direction: intent.wish(forward, up).try_normalize().unwrap_or(forward),

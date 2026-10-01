@@ -98,6 +98,16 @@ impl AuthoringProject {
         let store = self.preview().resource::<DefinitionStore>();
         known(store, extensor)?;
         let resolved = definition(store, path)?;
+        if resolved
+            .extensors
+            .iter()
+            .any(|e| e.name == extensor && e.is_named())
+        {
+            return Ok(Applied {
+                label: format!("Add extensor {extensor}"),
+                files: vec![],
+            });
+        }
         let parent_names = resolved.lineage.first().is_some_and(|parent| {
             store.get(parent).is_some_and(|p| {
                 p.extensors

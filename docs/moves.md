@@ -13,7 +13,7 @@ Both are opt-in. A component they own is refused unless the definition, an ances
 an override names its extensor. Naming one without the component adds it with default tuning:
 
 ```jsonc
-// characters/player
+// A project character
 {
   "descendsFrom": "Actor",
   "extensors": ["dodge", "combat"],
@@ -25,28 +25,44 @@ an override names its extensor. Naming one without the component adds it with de
 }
 ```
 
-`Actor` names neither, so the sentry NPC descending from it walks but cannot roll or swing.
-Games add the packages they use: `DodgePlugin` and `CombatPlugin` from `struction_character`
-(the playground's `ScenePlugin` does this).
+The engine's `Actor` names neither, so its `characters/sentry` walks but cannot roll or swing;
+`characters/player` names both and spells out their refusal conditions. Games add the packages
+they use: `DodgePlugin` and `CombatPlugin` from `struction_character` (`struction_scene`'s
+`ScenePlugin` adds every engine package).
 
 ## Tuning
 
-`Roll { duration: 0.65, peak_speed: 10, recovery: 0.2, blocked_while: ["Airborne", "Swimming"] }`.
+`Roll { duration: 0.65, peak_speed: 10, recovery: 0.2, blocked_while: ["Airborne", "Swimming", "Attacking", "Recovering"], cancel_into: [] }`.
 Duration includes tucking and getting up. Speed follows a sine curve, so the defaults cover about
 4.14 m on unobstructed flat ground. Walls can shorten it. Movement ignores surface traction while
 rolling. The upright capsule keeps its shape, so the tuck does not fit under lower ceilings.
 There are no immunity frames or stamina costs.
 
-`Attack { duration: 0.5, reach: 1, radius: 0.6, knockback: 4, recovery: 0.15, blocked_while: ["Swimming"] }`.
+`Attack { duration: 0.5, reach: 1, radius: 0.6, knockback: 4, recovery: 0.15, blocked_while: ["Swimming", "Rolling", "Recovering"], cancel_into: [] }`.
 The strike lands once, when the swing passes its strike phase (`struction_anim::moves::SWING_STRIKE`,
 45% of the duration). It hits every solid body overlapping a sphere of `radius` centered `reach`
 ahead of the body's center, excluding the attacker and sensor volumes. The character keeps
 walking while swinging and faces the strike.
 
+## Refusing and cancelling
+
+Two lists per move, both plain data, answer different questions.
+
 `blocked_while` lists the `CharacterCondition`s in which the move neither starts nor continues:
-`Grounded`, `Airborne` (jumping or falling) or `Swimming`. Becoming true mid-move cancels it,
-for example on leaving the ground mid-roll. Removing `Airborne` from a roll lets a roll started
-on the ground carry on through the air as a dash.
+`Grounded`, `Airborne` (jumping or falling), `Swimming`, `Rolling`, `Attacking`, or `Recovering`
+(the `recovery` seconds after a move ends; it only refuses starting, never cuts a move short). A
+move ignores its own condition. Becoming true mid-move cancels it, for example on leaving the
+ground mid-roll. The defaults keep one move at a time with a short recovery between them, but
+that is authored: removing `Rolling` from `Attack` lets a character swing mid-roll, and removing
+`Airborne` from `Roll` lets a roll started on the ground carry on through the air as a dash.
+Jumps have the same list on the controller, `CharacterController.jump_blocked_while`
+(`["Rolling", "Attacking"]`), besides needing ground and not swimming.
+
+`cancel_into` (empty by default) opens cancel windows: `[{ "action": "Jump", "after": 0.3 }]` on
+a roll lets a jump end it from 0.3 s in; `[{ "action": "Roll", "after": 0.1 }]` on an attack is an
+attack cancel into a roll. Actions are `Jump`, `Roll` and `Attack`. A cancelled move ends without
+recovery, in the `Cancel` stage before any move starts, so the action happens in the same tick,
+still subject to its own `blocked_while`. Requests outside a window are refused as usual.
 
 `validate()` on either component reports the invalid field: durations must be finite and
 positive, everything else finite and nonnegative. Invalid tuning refuses the move and logs why.
@@ -54,17 +70,19 @@ Generic JSONC loading validates types, not these ranges.
 
 ## Simulation
 
-The controller runs in three ordered `FixedPostUpdate` stages: `Sense` (ground probe, leaving
-the ground, swimming, recovery countdown), `Moves` (extensors), then `Control` (walking,
-swimming, jumping, orientation). Moves hold the character through the shared `CharacterMove`:
+The controller runs in four ordered `FixedPostUpdate` stages: `Sense` (ground probe, leaving
+the ground, swimming, recovery countdown), `Cancel` (cancel windows), `Moves` (extensors), then
+`Control` (walking, swimming, jumping, orientation). Moves hold the character through the shared
+`CharacterMove`:
 
-- `busy` while a move runs; only one runs at a time, and the controller refuses jumps;
-- `velocity` the move drives this tick instead of walking or swimming (the roll does; the
-  swing does not);
-- `facing`, the heading the move holds while the character faces its movement;
-- `recovery`, the seconds before the next move may start, set when a move ends or is cancelled.
+- `active`, the running moves as conditions (`Rolling`, `Attacking`);
+- `velocity` a move drives this tick instead of walking or swimming (the roll does; the swing
+  does not);
+- `facing`, the heading a move holds while the character faces its movement;
+- `recovery`, the seconds of `Recovering`, set when a move ends (not when it is cancelled).
 
-The roll runs before the swing, so a roll and an attack pressed on the same tick roll. Presses
+The roll runs before the swing, so with the default lists a roll and an attack pressed on the
+same tick roll. Presses
 latch into `CharacterIntent::roll_requested`/`attack_requested` and are consumed even when
 refused; holding the key does not repeat. AI and headless tools write the same intent or invoke
 the actions. Reactions to `dodge/roll` and `combat/attack` observe the request, not success.

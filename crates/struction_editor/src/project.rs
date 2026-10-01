@@ -335,28 +335,25 @@ impl AuthoringProject {
         Ok(Some(file))
     }
 
-    /// Refreshes after an applied edit; removes an override file created for an edit that failed.
+    /// Refreshes after an applied edit. An override file created for an edit that failed or
+    /// changed nothing is removed again, so only real changes leave one.
     pub(crate) fn finish_override(
         &mut self,
         created: Option<String>,
         applied: Result<Applied, SessionError>,
     ) -> Result<Applied, SessionError> {
-        match applied {
-            Ok(applied) => {
-                if !applied.files.is_empty() || created.is_some() {
-                    self.refresh()?;
-                }
-                Ok(applied)
-            }
-            Err(error) => {
-                if let Some(file) = created
-                    && let Ok(path) = self.session.path_of(&file)
-                {
-                    let _ = std::fs::remove_file(path);
-                }
-                Err(error)
-            }
+        let wrote = applied.as_ref().is_ok_and(|a| !a.files.is_empty());
+        if !wrote
+            && let Some(file) = created
+            && let Ok(path) = self.session.path_of(&file)
+        {
+            let _ = std::fs::remove_file(path);
         }
+        let applied = applied?;
+        if wrote {
+            self.refresh()?;
+        }
+        Ok(applied)
     }
     pub fn undo(&mut self) -> Result<Option<Applied>, SessionError> {
         let world = self.preview.world();

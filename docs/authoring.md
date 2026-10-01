@@ -102,9 +102,9 @@ Without an argument the editor asks for a project directory. The UI is egui (`be
 - **Narrow windows**: Scene, Inspector and Viewport become tabs; selecting an object opens its inspector. Problems stays across the bottom and toolbar controls wrap.
 - **Top bar**: Undo/Redo (Ctrl+Z, Ctrl+Shift+Z), Refresh (also on window focus, for outside edits), Play/Pause/Step/Stop (Ctrl+P). Play steps the separate play world by the game's fixed timestep; the panels then inspect that world read-only.
 
-The editor shares `apps/playground/src/scene.rs` through the playground library’s unstarted headless factory, and also registers the small example’s `Health` behavior. Physics, gravity, character components and game actions are therefore available to preview, validation and isolated play. New game registrations belong in that shared module. Instances render as markers rather than their meshes, and rotation/scale are read-only, like the backend.
+The editor builds projects with `struction_scene::authoring_app`: every engine package headless, over the engine's base definitions, plus the small example's `Health` behavior. Physics, gravity, character components, moves and game actions are therefore available to preview, validation and isolated play. Engine definitions are listed with the project's and are read-only: the inspector says so, and the first edit (or extensor change) creates the project's override file at the same path, removed again if the edit is rejected. Instances render as markers rather than their meshes, and rotation/scale are read-only, like the backend.
 
-The playground’s Assets panel reads its sibling `apps/playground/assets` directory, so the character’s `models/blood_knight.blend` is discoverable. Other projects keep their project-relative asset layout. `--mesh` paths are relative to the asset directory shown by this layout.
+The Assets panel reads a project's sibling `assets/` directory when it has one; the engine's models live in `crates/struction_scene/content/assets`. `--mesh` paths are relative to the asset directory shown by this layout.
 
 ## Choosing Blender
 

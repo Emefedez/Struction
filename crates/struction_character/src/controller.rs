@@ -61,6 +61,8 @@ pub struct CharacterController {
     /// How fast the heading turns toward movement when [`CharacterIntent::face_movement`] is
     /// set (radians/s).
     pub turn_speed: f32,
+    /// Jumps are refused while any of these holds, besides needing ground and not swimming.
+    pub jump_blocked_while: Vec<CharacterCondition>,
 }
 
 impl Default for CharacterController {
@@ -77,6 +79,7 @@ impl Default for CharacterController {
             max_slope: 50.0_f32.to_radians(),
             align_rate: 12.0,
             turn_speed: 12.0,
+            jump_blocked_while: vec![CharacterCondition::Rolling, CharacterCondition::Attacking],
         }
     }
 }
@@ -107,7 +110,40 @@ pub struct CharacterIntent {
     pub face_movement: bool,
 }
 
+/// What a character can be asked to do that may cut a running move short.
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CharacterAction {
+    Jump,
+    Roll,
+    Attack,
+}
+
+/// A move's cancel window: from `after` seconds into it, asking for `action` ends the move
+/// without recovery, so the action starts in the same tick (still subject to its own
+/// `blocked_while`).
+#[derive(Reflect, Clone, Copy, Debug, PartialEq)]
+pub struct CancelInto {
+    pub action: CharacterAction,
+    pub after: f32,
+}
+
+/// Whether an asked-for action opens one of a running move's cancel windows.
+pub fn cancel_opened(intent: &CharacterIntent, windows: &[CancelInto], elapsed: f32) -> bool {
+    windows
+        .iter()
+        .any(|window| intent.requests(window.action) && elapsed >= window.after)
+}
+
 impl CharacterIntent {
+    /// Whether `action` was asked for and not yet consumed.
+    pub fn requests(&self, action: CharacterAction) -> bool {
+        match action {
+            CharacterAction::Jump => self.jump_requested,
+            CharacterAction::Roll => self.roll_requested,
+            CharacterAction::Attack => self.attack_requested,
+        }
+    }
+
     /// The asked-for movement in world space, tangent to `up`, relative to `forward` unless the
     /// intent carries its own movement frame. Length at most 1.
     pub fn wish(&self, forward: Vec3, up: Vec3) -> Vec3 {
@@ -155,34 +191,57 @@ pub fn transport(direction: Vec3, from_up: Vec3, to_up: Vec3) -> Vec3 {
     (turned - to_up * turned.dot(to_up)).normalize_or(to_up.any_orthonormal_vector())
 }
 
-/// The timed move holding a character, such as a roll or an attack. One runs at a time, and the
-/// next waits until `recovery` runs out. The extensor running a move writes this in
-/// [`CharacterSystems::Moves`]; the controller then leaves velocity and heading to the move and
-/// refuses jumps.
-#[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq)]
+/// The timed moves holding a character, such as a roll or an attack. The extensor running a move
+/// writes this in [`CharacterSystems::Moves`]; the controller then leaves velocity and heading to
+/// the move. Which moves may overlap, and how long after one another, is authored data: each
+/// move's `blocked_while` conditions, such as `Attacking` or `Recovering`.
+#[derive(Component, Reflect, Clone, Debug, Default, PartialEq)]
 #[reflect(Component)]
 pub struct CharacterMove {
-    /// A move holds the character until it calls [`Self::end`].
-    pub busy: bool,
-    /// Velocity the move drives this tick instead of walking or swimming; cleared every tick.
+    /// The running moves, as their conditions (`Rolling`, `Attacking`).
+    pub active: Vec<CharacterCondition>,
+    /// Velocity a move drives this tick instead of walking or swimming; cleared every tick.
     pub velocity: Option<Vec3>,
-    /// Heading the move holds while the character faces its movement; cleared every tick.
+    /// Heading a move holds while the character faces its movement; cleared every tick.
     pub facing: Option<Vec3>,
-    /// Seconds before the next move can start.
+    /// Seconds left of `Recovering`, which follows the end of a move.
     pub recovery: f32,
 }
 
 impl CharacterMove {
-    pub fn can_start(&self) -> bool {
-        !self.busy && self.recovery <= 0.0
+    pub fn start(&mut self, condition: CharacterCondition) {
+        if !self.active.contains(&condition) {
+            self.active.push(condition);
+        }
     }
 
-    /// Releases the character and starts the wait before the next move.
-    pub fn end(&mut self, recovery: f32) {
-        *self = Self {
-            recovery,
-            ..default()
-        };
+    /// Ends a move and starts recovering from it.
+    pub fn end(&mut self, condition: CharacterCondition, recovery: f32) {
+        self.active.retain(|&active| active != condition);
+        self.recovery = self.recovery.max(recovery);
+    }
+
+    /// Whether any of `conditions` holds, such as a move's `blocked_while`. For a move already
+    /// `running`, its own condition and `Recovering` (which only refuses starting) are ignored.
+    pub fn blocked(
+        &self,
+        state: &CharacterState,
+        conditions: &[CharacterCondition],
+        running: Option<CharacterCondition>,
+    ) -> bool {
+        conditions.iter().any(|&condition| {
+            !(running.is_some()
+                && (Some(condition) == running || condition == CharacterCondition::Recovering))
+                && match condition {
+                    CharacterCondition::Grounded => state.grounded && !state.swimming,
+                    CharacterCondition::Airborne => !state.grounded && !state.swimming,
+                    CharacterCondition::Swimming => state.swimming,
+                    CharacterCondition::Rolling | CharacterCondition::Attacking => {
+                        self.active.contains(&condition)
+                    }
+                    CharacterCondition::Recovering => self.recovery > 0.0,
+                }
+        })
     }
 }
 
@@ -210,23 +269,9 @@ impl Default for CharacterState {
     }
 }
 
-impl CharacterState {
-    pub fn is(&self, condition: CharacterCondition) -> bool {
-        match condition {
-            CharacterCondition::Grounded => self.grounded && !self.swimming,
-            CharacterCondition::Airborne => !self.grounded && !self.swimming,
-            CharacterCondition::Swimming => self.swimming,
-        }
-    }
-
-    /// Whether any of `conditions` holds, such as a move's `blocked_while`.
-    pub fn any(&self, conditions: &[CharacterCondition]) -> bool {
-        conditions.iter().any(|&condition| self.is(condition))
-    }
-}
-
-/// A state of the character that moves can be refused in: authored as a move's `blocked_while`
-/// list, which stops the move from starting and cancels it when one holds.
+/// A state of the character that actions can be refused in: authored as `blocked_while` lists
+/// (a move's, which stop it from starting and cancel it when one holds, or the controller's
+/// `jump_blocked_while`).
 #[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CharacterCondition {
     /// On walkable ground, not swimming.
@@ -234,12 +279,19 @@ pub enum CharacterCondition {
     /// Jumping or falling: neither on walkable ground nor swimming.
     Airborne,
     Swimming,
+    Rolling,
+    Attacking,
+    /// After a move ended, for its `recovery` seconds. Refuses starting a move, never cuts one
+    /// short.
+    Recovering,
 }
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CharacterSystems {
     /// Measures ground and water for this tick and counts down move recovery.
     Sense,
+    /// Running moves whose cancel window an asked-for action opens end, before anything starts.
+    Cancel,
     /// Extensors start, run and end timed moves (rolls, attacks) through [`CharacterMove`].
     Moves,
     /// Turns intents into velocity, jumps, and orientation for the next physics step.
@@ -262,6 +314,9 @@ impl Plugin for CharacterControllerPlugin {
             .register_type::<PlayerControlled>()
             .register_type::<CharacterCondition>()
             .register_type::<Vec<CharacterCondition>>()
+            .register_type::<CharacterAction>()
+            .register_type::<CancelInto>()
+            .register_type::<Vec<CancelInto>>()
             .register_extensor(
                 ExtensorMeta::inferred("character")
                     .doc("A capsule that walks, jumps and swims under local gravity")
@@ -273,6 +328,7 @@ impl Plugin for CharacterControllerPlugin {
                 FixedPostUpdate,
                 (
                     CharacterSystems::Sense,
+                    CharacterSystems::Cancel,
                     CharacterSystems::Moves,
                     CharacterSystems::Control,
                 )
@@ -442,7 +498,7 @@ fn control_characters(
         if intent.face_movement {
             if let Some(facing) = facing {
                 look.forward = facing;
-            } else if !moving.busy
+            } else if moving.active.is_empty()
                 && let Some(direction) = wish.try_normalize()
             {
                 look.forward = turn_toward(forward, direction, up, controller.turn_speed * dt);
@@ -471,7 +527,7 @@ fn control_characters(
         }
 
         if core::mem::take(&mut intent.jump_requested)
-            && !moving.busy
+            && !moving.blocked(&state, &controller.jump_blocked_while, None)
             && state.grounded
             && !swimming
         {

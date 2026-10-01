@@ -27,8 +27,9 @@ pub use dodge::{DodgePlugin, Roll, Rolling};
 
 pub use animation::{CharacterAnimationPlugin, RigOf, spawn_rig};
 pub use controller::{
-    CharacterCondition, CharacterController, CharacterControllerPlugin, CharacterIntent,
-    CharacterLook, CharacterMove, CharacterState, CharacterSystems, transport,
+    CancelInto, CharacterAction, CharacterCondition, CharacterController,
+    CharacterControllerPlugin, CharacterIntent, CharacterLook, CharacterMove, CharacterState,
+    CharacterSystems, cancel_opened, transport,
 };
 pub use input::{
     Binding, ButtonAction, InputActions, InputActionsPlugin, InputMap, InputSystems,
@@ -37,10 +38,10 @@ pub use input::{
 
 pub mod prelude {
     pub use crate::{
-        Attack, Attacking, Binding, ButtonAction, CharacterCondition, CharacterController,
-        CharacterIntent, CharacterLook, CharacterMove, CharacterPlugins, CharacterState,
-        CharacterSystems, CombatPlugin, DodgePlugin, InputActions, InputMap, PlayerControlled,
-        Roll, Rolling,
+        Attack, Attacking, Binding, ButtonAction, CancelInto, CharacterAction, CharacterCondition,
+        CharacterController, CharacterIntent, CharacterLook, CharacterMove, CharacterPlugins,
+        CharacterState, CharacterSystems, CombatPlugin, DodgePlugin, InputActions, InputMap,
+        PlayerControlled, Roll, Rolling,
     };
 }
 

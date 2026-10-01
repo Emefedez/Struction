@@ -1,10 +1,14 @@
 // The player, wearing the Blender-made blood knight. `dodge` and `combat` supply `Roll` and
-// `Attack` with their default tuning; give either here to change it.
+// `Attack`; the tuning below only spells out their default `blocked_while` conditions, the states
+// in which each is refused (`Recovering` only refuses starting).
 {
   "descendsFrom": "Actor",
   "extensors": ["dodge", "combat"],
   "components": {
     "PlayerControlled": {},
-    "Shape": { "Rigged": { "rig": "humanoid", "model": "engine://models/blood_knight.blend" } }
+    "Shape": { "Rigged": { "rig": "humanoid", "model": "engine://models/blood_knight.blend" } },
+    "CharacterController": { "jump_blocked_while": ["Rolling", "Attacking"] },
+    "Roll": { "blocked_while": ["Airborne", "Swimming", "Attacking", "Recovering"] },
+    "Attack": { "blocked_while": ["Swimming", "Rolling", "Recovering"] }
   }
 }
