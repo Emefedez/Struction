@@ -770,7 +770,7 @@ fn asset_inspector(ui: &mut Ui, asset: &str, editor: &Editor, toolbox: &mut Tool
     let Some(source) = editor
         .root
         .as_ref()
-        .map(|root| tools::asset_root(root).join(asset))
+        .map(|root| tools::asset_source(root, asset))
     else {
         return;
     };
