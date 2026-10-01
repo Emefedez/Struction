@@ -44,7 +44,9 @@ For read-modify-write clients, pass the opaque `revision` returned by `read` in 
 | `schema` | — | Definition JSON Schema using the host's registered component types |
 | `actions` | — | Registered action names, documentation, typed parameters, defaults and required components |
 | `definitions` | — | Definition paths, including broken sources that need repair |
-| `inspect_definition` | `path` | Lineage, resolved authored data and reflected components including defaults |
+| `inspect_definition` | `path` | Lineage, resolved authored data and reflected components including defaults, plus extensors: those in use with their reason (`named_by`, `owns`, `required_by`) and supplied components, dropped ones, suggested ones and the rest available |
+| `add_extensor` | `path`, `extensor` | Name an extensor in the definition's own source (or remove its own `"-name"` drop); validated and undoable |
+| `remove_extensor` | `path`, `extensor` | Take an extensor and the definition's own components of it out, dropping it with `"-name"` when inherited; refused while another extensor in use builds on it |
 | `read` | `file` | Exact source text and revision token |
 | `validate` | — | Current source diagnostics, including external edits |
 | `entities` | Optional `playing` | Paths, definition, identity, placement, source location, disabled state and master path |
@@ -94,7 +96,7 @@ Without an argument the editor asks for a project directory. The UI is egui (`be
 
 - **Scene**: switch between **Masters & wards** (`masterIs`) and **Placement** (zones, spawners, named spawns). Definitions form a separate inheritance tree (`descendsFrom`). **New actor (instance)** chooses a definition, placement spawner and optional master from the hierarchy; the created actor appears beneath its master and can be undone. New definitions descend from the selected definition; the parent is shown explicitly.
 - **Colors**: blue instances, gold masters, green wards, purple definitions and peach assets; role labels and indentation carry the same meaning. Source problems are red, rejected operations amber, and locally authored fields have amber dots.
-- **Inspector**: an entity's definition, source `file:line`, StableId, master selector and placement; its authored components are edited as scene `overrides` on the spawn. A definition shows its lineage and resolved components; edits write its own file. Amber dots mark values set in that source; ↺ removes them to inherit again. Drags on a number form one undo group.
+- **Inspector**: an entity's definition, source `file:line`, StableId, master selector and placement; its authored components are edited as scene `overrides` on the spawn. A definition shows its lineage, its **Extensors** (in use and why, dropped ones with Restore, suggestions as `+` buttons and an **Add extensor…** menu, each calling `add_extensor`/`remove_extensor`) and resolved components; edits write its own file. Amber dots mark values set in that source; ↺ removes them to inherit again. Drags on a number form one undo group.
 - **Viewport**: instances as capsules, zones and spawners as gizmos. Click selects; dragging a named spawn moves it on the ground (Shift: height) through `move_spawn`, one undo step per drag. Right-drag orbits, middle-drag pans, the wheel zooms, F frames the selection.
 - **Problems**: `validate` diagnostics and the last rejected operation without duplicating identical diagnostics. Broken definitions stay listed and show their original source with an **Open source in editor…** action; definition locations select their definition.
 - **Narrow windows**: Scene, Inspector and Viewport become tabs; selecting an object opens its inspector. Problems stays across the bottom and toolbar controls wrap.
