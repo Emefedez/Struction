@@ -27,6 +27,8 @@ pub struct OwnedComponent {
     pub type_id: TypeId,
     /// The name definitions write, such as `Roll`.
     pub name: &'static str,
+    /// The full path, which definitions may write instead.
+    pub type_path: &'static str,
     /// Added with its default when a definition names the extensor without giving it.
     pub supplied: bool,
 }
@@ -82,6 +84,7 @@ impl ExtensorMeta {
         self.components.push(OwnedComponent {
             type_id: TypeId::of::<C>(),
             name: C::short_type_path(),
+            type_path: C::type_path(),
             supplied,
         });
         self

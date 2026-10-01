@@ -10,7 +10,7 @@ use struction_core::{Definition, DefinitionPath};
 
 use crate::build::ComponentValue;
 use crate::error::{DataError, ErrorKind};
-use crate::extensors::{ExtensorUse, Named};
+use crate::extensors::{DroppedExtensor, ExtensorUse, Named};
 use crate::source::{Member, Node, NodeValue, Span};
 
 /// Sections in canonical file order: identity and `descendsFrom`, extensors, transform,
@@ -212,10 +212,13 @@ pub struct Resolved {
     pub lineage: Vec<String>,
     /// Extensors in use: named ones first, then those inferred from components or requirements.
     pub extensors: Vec<ExtensorUse>,
+    /// Extensors named by an ancestor or preset that a later layer dropped with `"-name"`.
+    pub dropped: Vec<DroppedExtensor>,
     pub components: Vec<ComponentValue>,
     pub(crate) body: Node,
     /// The `extensors` entries as written, which instances extend with their overrides.
     pub(crate) named: Vec<Named>,
+    pub(crate) dropped_entries: Vec<Named>,
     value: Value,
 }
 
@@ -223,7 +226,7 @@ impl Resolved {
     pub(crate) fn new(
         id: String,
         lineage: Vec<String>,
-        (named, extensors): (Vec<Named>, Vec<ExtensorUse>),
+        (named, dropped, extensors): (Vec<Named>, Vec<Named>, Vec<ExtensorUse>),
         components: Vec<ComponentValue>,
         body: Node,
     ) -> Self {
@@ -232,9 +235,17 @@ impl Resolved {
             id,
             lineage,
             extensors,
+            dropped: dropped
+                .iter()
+                .map(|d| DroppedExtensor {
+                    name: d.name.clone(),
+                    by: d.by.clone(),
+                })
+                .collect(),
             components,
             body,
             named,
+            dropped_entries: dropped,
             value,
         }
     }
@@ -254,6 +265,7 @@ impl Resolved {
     pub fn same_data(&self, other: &Resolved) -> bool {
         self.lineage == other.lineage
             && self.extensors == other.extensors
+            && self.dropped == other.dropped
             && self.value == other.value
     }
 

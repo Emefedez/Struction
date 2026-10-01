@@ -35,7 +35,7 @@ mod typeinfo;
 pub use build::ComponentValue;
 pub use definition::{CANONICAL_ORDER, DEFAULT_EXTRA_SECTIONS, Resolved};
 pub use error::{DataError, ErrorKind, Location};
-pub use extensors::{ExtensorReason, ExtensorUse};
+pub use extensors::{DroppedExtensor, ExtensorReason, ExtensorUse, Suggestion};
 pub use plugin::{DataPlugin, DefinitionsChanged, reload_definition_file};
 pub use relations::{grants_from_node, reactions_from_node};
 pub use source::{Node, NodeValue, parse_jsonc};

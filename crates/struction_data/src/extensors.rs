@@ -10,6 +10,7 @@ use bevy::reflect::std_traits::ReflectDefault;
 use struction_core::{ExtensorRegistry, Participation};
 
 use crate::build::ComponentValue;
+use crate::definition::Resolved;
 use crate::error::{DataError, ErrorKind};
 use crate::source::{Node, Span};
 
@@ -41,6 +42,54 @@ pub struct ExtensorUse {
     pub components: Vec<String>,
     /// Those of `components` it added with their defaults because the definition left them out.
     pub supplied: Vec<String>,
+}
+
+/// An extensor an ancestor or preset named that a later layer dropped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DroppedExtensor {
+    pub name: String,
+    /// The definition, preset or override that wrote `"-name"`.
+    pub by: String,
+}
+
+/// An opt-in extensor a definition does not use but could: every extensor it builds on is in
+/// use. Only a suggestion; nothing is added until the author names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Suggestion {
+    pub name: String,
+    pub doc: String,
+    /// The extensors in use it builds on.
+    pub because: Vec<String>,
+    /// Components naming it would add with their defaults.
+    pub supplies: Vec<String>,
+}
+
+impl Resolved {
+    /// Opt-in extensors whose requirements this definition meets, except those it dropped.
+    pub fn suggested_extensors(&self, extensors: &ExtensorRegistry) -> Vec<Suggestion> {
+        let in_use = |name: &str| self.extensors.iter().any(|u| u.name == name);
+        extensors
+            .iter()
+            .filter(|meta| {
+                meta.participation == Participation::OptIn
+                    && !meta.requires.is_empty()
+                    && !in_use(&meta.name)
+                    && !self.dropped.iter().any(|d| d.name == meta.name)
+                    && meta.requires.iter().all(|r| in_use(r))
+            })
+            .map(|meta| Suggestion {
+                name: meta.name.clone(),
+                doc: meta.doc.clone(),
+                because: meta.requires.clone(),
+                supplies: meta
+                    .components
+                    .iter()
+                    .filter(|c| c.supplied)
+                    .map(|c| c.name.to_owned())
+                    .collect(),
+            })
+            .collect()
+    }
 }
 
 impl ExtensorUse {

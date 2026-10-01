@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use common::*;
 use struction_core::{ExtensorMeta, ExtensorRegistry};
-use struction_data::{DefinitionStore, ExtensorReason, ExtensorUse, parse_jsonc};
+use struction_data::{
+    DefinitionStore, DroppedExtensor, ExtensorReason, ExtensorUse, Suggestion, parse_jsonc,
+};
 
 /// `Health` belongs to the inferred `living` package; `Flammable` to the opt-in `fire`, which
 /// supplies it and builds on `living`, which builds on `physics`.
@@ -234,4 +236,90 @@ fn the_schema_offers_registered_extensors() {
             .any(|item| item["const"] == "fire" && item["description"] == "Burns"),
         "{items}"
     );
+}
+
+#[test]
+fn a_descendant_drops_an_inherited_extensor_with_its_components() {
+    let store = load(&[
+        ("presets/burning.jsonc", r#"{ "extensors": ["fire"] }"#),
+        (
+            "Crate/entity.jsonc",
+            r#"{ "extensors": ["loot", "fire"], "components": { "Health": {}, "Loot": { "items": ["coin"] }, "Flammable": { "ignition_temperature": 90 } } }"#,
+        ),
+        (
+            "crates/wet/entity.jsonc",
+            r#"{ "descendsFrom": "Crate", "extensors": ["-fire"] }"#,
+        ),
+        (
+            "crates/relit/entity.jsonc",
+            r#"{ "descendsFrom": "crates/wet", "presets": ["burning"] }"#,
+        ),
+    ]);
+    assert_eq!(errors(&store), Vec::<String>::new());
+    let wet = store.get("crates/wet").unwrap();
+    assert!(wet.component::<Flammable>().is_none());
+    assert!(wet.component::<Loot>().is_some());
+    assert!(wet.extensors.iter().all(|e| e.name != "fire"));
+    assert_eq!(
+        wet.dropped,
+        [DroppedExtensor {
+            name: "fire".into(),
+            by: "crates/wet".into()
+        }]
+    );
+    // Naming it again later brings it back with its defaults, not the dropped tuning.
+    let relit = store.get("crates/relit").unwrap();
+    assert_eq!(relit.component::<Flammable>(), Some(&Flammable::default()));
+    assert!(relit.dropped.is_empty());
+}
+
+#[test]
+fn dropping_an_unknown_extensor_is_reported() {
+    let store = load(&[("A/entity.jsonc", "{\n  \"extensors\": [\"-fly\"]\n}")]);
+    assert_eq!(
+        errors(&store),
+        ["A/entity.jsonc:2: unknown extensor \"fly\", registered: fire, living, loot, physics"]
+    );
+}
+
+#[test]
+fn opt_in_extensors_whose_requirements_are_met_are_suggested() {
+    let store = load(&[
+        (
+            "Rock/entity.jsonc",
+            r#"{ "components": { "Surface": {} } }"#,
+        ),
+        (
+            "Actor/entity.jsonc",
+            r#"{ "components": { "Health": {} } }"#,
+        ),
+        (
+            "actors/torch/entity.jsonc",
+            r#"{ "descendsFrom": "Actor", "extensors": ["fire"] }"#,
+        ),
+        (
+            "actors/damp/entity.jsonc",
+            r#"{ "descendsFrom": "actors/torch", "extensors": ["-fire"] }"#,
+        ),
+    ]);
+    assert_eq!(errors(&store), Vec::<String>::new());
+    let suggested = |id: &str| {
+        store
+            .get(id)
+            .unwrap()
+            .suggested_extensors(store.extensors())
+    };
+    assert_eq!(
+        suggested("Actor"),
+        [Suggestion {
+            name: "fire".into(),
+            doc: "Burns".into(),
+            because: vec!["living".into()],
+            supplies: vec!["Flammable".into()],
+        }]
+    );
+    // Nothing to build on, already used, or deliberately dropped.
+    assert!(suggested("Rock").is_empty());
+    assert!(suggested("actors/torch").is_empty());
+    assert!(suggested("actors/damp").is_empty());
 }

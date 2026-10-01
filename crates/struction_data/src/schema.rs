@@ -101,7 +101,15 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
         let names: Vec<_> = options
             .extensors
             .iter()
-            .map(|(name, doc)| json!({ "const": name, "description": doc }))
+            .flat_map(|(name, doc)| {
+                [
+                    json!({ "const": name, "description": doc }),
+                    json!({
+                        "const": format!("-{name}"),
+                        "description": format!("Drop the inherited {name} extensor and its components"),
+                    }),
+                ]
+            })
             .collect();
         json!({ "oneOf": names })
     };

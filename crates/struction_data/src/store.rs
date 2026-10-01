@@ -21,7 +21,7 @@ use crate::definition::{
 };
 use crate::error::{DataError, ErrorKind, Location};
 use crate::extensors::{self, Named};
-use crate::source::{Node, Span, parse_jsonc};
+use crate::source::{Node, NodeValue, Span, parse_jsonc};
 
 const ENTITY_FILE: &str = "entity.jsonc";
 
@@ -72,6 +72,8 @@ struct Merged {
     body: Node,
     lineage: Vec<String>,
     extensors: Vec<Named>,
+    /// `"-name"` entries that removed an extensor named earlier in the merge.
+    dropped: Vec<Named>,
 }
 
 #[derive(Resource)]
@@ -459,6 +461,7 @@ impl DefinitionStore {
             body: base.body.clone(),
             lineage: base.lineage.clone(),
             extensors: base.named.clone(),
+            dropped: base.dropped_entries.clone(),
         };
         if let Some(overrides) = overrides {
             let layer = parse_layer(overrides.clone(), LayerKind::Override, &self.extra_sections)
@@ -489,7 +492,7 @@ impl DefinitionStore {
         Ok(Resolved::new(
             id.into(),
             merged.lineage,
-            (merged.extensors, uses),
+            (merged.extensors, merged.dropped, uses),
             components,
             merged.body,
         ))
@@ -522,6 +525,7 @@ impl<'a> Resolver<'a> {
             body: merged.body.clone(),
             lineage: merged.lineage.clone(),
             extensors: merged.extensors.clone(),
+            dropped: merged.dropped.clone(),
         };
         self.store.finish(id, merged, registry)
     }
@@ -547,6 +551,7 @@ impl<'a> Resolver<'a> {
                     body: Node::empty_object(span),
                     lineage: Vec::new(),
                     extensors: Vec::new(),
+                    dropped: Vec::new(),
                 });
             }
             return Err(DataError::new(
@@ -575,6 +580,7 @@ impl<'a> Resolver<'a> {
                     body: parent_merged.body.clone(),
                     lineage,
                     extensors: parent_merged.extensors.clone(),
+                    dropped: parent_merged.dropped.clone(),
                 }
             }
             None => {
@@ -588,6 +594,7 @@ impl<'a> Resolver<'a> {
                     body: Node::empty_object(layer.root_span.clone()),
                     lineage: Vec::new(),
                     extensors: Vec::new(),
+                    dropped: Vec::new(),
                 }
             }
         };
@@ -597,7 +604,9 @@ impl<'a> Resolver<'a> {
     }
 
     /// Merges the layer's presets, then its own data, over `merged`: inherited < presets < own.
-    /// Extensors accumulate; `by` is who named the layer's own.
+    /// Extensors accumulate; `by` is who named the layer's own. A `"-name"` entry drops an
+    /// extensor named so far, with the components it owns, before the layer's own components
+    /// merge in.
     fn apply_layer(
         &mut self,
         merged: &mut Merged,
@@ -607,17 +616,56 @@ impl<'a> Resolver<'a> {
     ) -> Result<(), DataError> {
         for (name, span) in &layer.presets {
             let preset = self.preset(name, span, preset_stack)?;
+            for entry in &preset.dropped {
+                self.drop_extensor(merged, entry.clone())?;
+            }
             merged.body.merge(preset.body.clone());
+            merged
+                .dropped
+                .retain(|d| !preset.extensors.iter().any(|n| n.name == d.name));
             merged.extensors.extend(preset.extensors.iter().cloned());
         }
-        merged.body.merge(layer.body.clone());
-        merged
-            .extensors
-            .extend(layer.extensors.iter().map(|(name, span)| Named {
-                name: name.clone(),
+        for (name, span) in &layer.extensors {
+            let entry = Named {
+                name: name.strip_prefix('-').unwrap_or(name).to_owned(),
                 span: span.clone(),
                 by: by.into(),
-            }));
+            };
+            if name.starts_with('-') {
+                self.drop_extensor(merged, entry)?;
+            } else {
+                merged.dropped.retain(|d| d.name != entry.name);
+                merged.extensors.push(entry);
+            }
+        }
+        merged.body.merge(layer.body.clone());
+        Ok(())
+    }
+
+    fn drop_extensor(&self, merged: &mut Merged, entry: Named) -> Result<(), DataError> {
+        let Some(meta) = self.store.extensors.get(&entry.name) else {
+            return Err(DataError::at(
+                ErrorKind::UnknownExtensor {
+                    name: entry.name,
+                    known: self.store.extensors.names().map(str::to_owned).collect(),
+                },
+                &entry.span,
+            ));
+        };
+        merged.extensors.retain(|n| n.name != entry.name);
+        if let NodeValue::Object(members) = &mut merged.body.value
+            && let Some(components) = members.iter_mut().find(|m| m.key == "components")
+            && let NodeValue::Object(items) = &mut components.value.value
+        {
+            items.retain(|item| {
+                !meta
+                    .components
+                    .iter()
+                    .any(|c| item.key == c.name || item.key == c.type_path)
+            });
+        }
+        merged.dropped.retain(|d| d.name != entry.name);
+        merged.dropped.push(entry);
         Ok(())
     }
 
@@ -647,6 +695,7 @@ impl<'a> Resolver<'a> {
             body: Node::empty_object(layer.root_span.clone()),
             lineage: Vec::new(),
             extensors: Vec::new(),
+            dropped: Vec::new(),
         };
         let by = format!("preset {name}");
         let result = self
