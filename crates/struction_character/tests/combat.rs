@@ -5,7 +5,12 @@ use struction_core::{ActionArgs, ActionInvocation, ActionQueue, CorePlugin};
 use struction_physics::{prelude::*, testing::*};
 
 fn scene() -> (App, Entity) {
-    let mut app = headless_app_with((CharacterPlugins, CorePlugin::default()));
+    let mut app = headless_app_with((
+        CharacterPlugins,
+        DodgePlugin,
+        CombatPlugin,
+        CorePlugin::default(),
+    ));
     app.world_mut()
         .spawn(GravityField::scene(Vec3::NEG_Y * 9.81));
     app.world_mut().spawn((

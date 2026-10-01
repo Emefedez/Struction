@@ -39,12 +39,13 @@ pub mod prelude {
     pub use crate::{
         Attack, Attacking, Binding, ButtonAction, CharacterCondition, CharacterController,
         CharacterIntent, CharacterLook, CharacterMove, CharacterPlugins, CharacterState,
-        CharacterSystems, InputActions, InputMap, PlayerControlled, Roll, Rolling,
+        CharacterSystems, CombatPlugin, DodgePlugin, InputActions, InputMap, PlayerControlled,
+        Roll, Rolling,
     };
 }
 
-/// Input mapping, the controller and the `dodge` and `combat` extensors, which only affect
-/// characters that opt into them. Add [`struction_physics::PhysicsPlugin`] separately.
+/// Input mapping and the controller. Add [`struction_physics::PhysicsPlugin`] separately, and
+/// the move packages a game's definitions use ([`DodgePlugin`], [`CombatPlugin`]).
 pub struct CharacterPlugins;
 
 impl PluginGroup for CharacterPlugins {
@@ -52,7 +53,5 @@ impl PluginGroup for CharacterPlugins {
         PluginGroupBuilder::start::<Self>()
             .add(InputActionsPlugin)
             .add(CharacterControllerPlugin)
-            .add(DodgePlugin)
-            .add(CombatPlugin)
     }
 }

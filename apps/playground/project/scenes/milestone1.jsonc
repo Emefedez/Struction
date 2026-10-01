@@ -1,5 +1,6 @@
 // The README's Milestone 1 validation scene: floors with different surfaces, a pushable cube, a
-// water pool with a floating cube, an overhead camera zone and a small gravity planet.
+// water pool with a floating cube, an overhead camera zone, a small gravity planet and a knight
+// standing guard.
 {
   "zones": { "Playground": { "position": [0, 0, 0] } },
   "spawnerList": {
@@ -58,7 +59,15 @@
       "zone": "Playground",
       "position": [0, 0, 8],
       "spawns": {
-        "player": { "definition": "Player", "offset": [0, 0.9, 0] }
+        "player": { "definition": "characters/player", "offset": [0, 0.9, 0] }
+      }
+    },
+    // Beside the pushable cube.
+    "guard": {
+      "zone": "Playground",
+      "position": [-3, 0.9, 3],
+      "spawns": {
+        "sentry": { "definition": "characters/sentry" }
       }
     }
   }

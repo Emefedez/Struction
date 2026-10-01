@@ -1,0 +1,10 @@
+// The player, wearing the Blender-made blood knight. `dodge` and `combat` supply `Roll` and
+// `Attack` with their default tuning; give either here to change it.
+{
+  "descendsFrom": "Actor",
+  "extensors": ["dodge", "combat"],
+  "components": {
+    "PlayerControlled": {},
+    "Shape": { "Humanoid": { "model": "models/blood_knight.blend" } }
+  }
+}

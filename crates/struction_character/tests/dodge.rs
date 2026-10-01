@@ -7,7 +7,7 @@ use struction_core::{ActionArgs, ActionInvocation, ActionQueue, CorePlugin};
 use struction_physics::{prelude::*, testing::*};
 
 fn scene() -> (App, Entity, Entity) {
-    let mut app = headless_app_with((CharacterPlugins, CorePlugin::default()));
+    let mut app = headless_app_with((CharacterPlugins, DodgePlugin, CorePlugin::default()));
     app.world_mut()
         .spawn(GravityField::scene(Vec3::NEG_Y * 9.81));
     let floor = app
@@ -205,7 +205,7 @@ fn water_cancels_and_rejects_rolls() {
 
 #[test]
 fn roll_follows_planet_curvature() {
-    let mut app = headless_app_with(CharacterPlugins);
+    let mut app = headless_app_with((CharacterPlugins, DodgePlugin));
     let radius = 6.0;
     app.world_mut().spawn((
         RigidBody::Static,

@@ -15,7 +15,12 @@ use struction_physics::{prelude::*, testing::*};
 const FEET: f32 = 0.8;
 
 fn app() -> App {
-    let mut app = headless_app_with((CharacterPlugins, CharacterAnimationPlugin));
+    let mut app = headless_app_with((
+        CharacterPlugins,
+        DodgePlugin,
+        CombatPlugin,
+        CharacterAnimationPlugin,
+    ));
     app.init_resource::<ButtonInput<KeyCode>>()
         .init_resource::<ButtonInput<MouseButton>>()
         .insert_resource(AccumulatedMouseMotion::default());

@@ -395,12 +395,25 @@ impl Builder<'_> {
                                 self.build(&field_member.value, field_info)?,
                             );
                         }
-                        // Reflection cannot fill a variant partially, so require every field.
-                        let missing: Vec<String> = si
-                            .iter()
-                            .filter(|f| !fields.iter().any(|m| m.key == f.name()))
-                            .map(|f| f.name().to_owned())
-                            .collect();
+                        // Reflection cannot fill a variant partially, so require every field
+                        // but the optional ones, which are `None` when left out.
+                        let mut missing = Vec::new();
+                        for field in si.iter() {
+                            if fields.iter().any(|m| m.key == field.name()) {
+                                continue;
+                            }
+                            let field_info =
+                                self.info_of(*field.ty(), field.type_info(), &payload.span)?;
+                            if is_option(field_info) {
+                                let none = Node {
+                                    span: payload.span.clone(),
+                                    value: NodeValue::Null,
+                                };
+                                out.insert_boxed(field.name(), self.build(&none, field_info)?);
+                            } else {
+                                missing.push(field.name().to_owned());
+                            }
+                        }
                         if !missing.is_empty() {
                             return fail(
                                 ErrorKind::MissingField {

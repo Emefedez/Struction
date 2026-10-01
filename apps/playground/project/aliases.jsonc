@@ -1,7 +1,9 @@
-// Preserve saved definition paths after separating case-colliding directories on macOS.
+// Preserve saved definition paths after renames: case-colliding directories separated for macOS,
+// and the player moved under `characters/`.
 {
   "aliases": {
     "ground": "terrain",
-    "gravity": "fields"
+    "gravity": "fields",
+    "Player": "characters/player"
   }
 }

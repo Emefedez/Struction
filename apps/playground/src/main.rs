@@ -1,13 +1,13 @@
 //! Native physics playground with a procedurally animated player.
 
 mod camera_occlusion;
-mod knight;
+mod figures;
 mod scene;
 
 use camera_occlusion::{FadeMaterial, FadesWith, fade_material};
 #[cfg(test)]
 mod planet_tests;
-use scene::{Finish, Humanoid, Look, Player, ScenePlugin, Shape};
+use scene::{Finish, Look, ScenePlugin, Shape};
 
 use bevy::{
     app::AppExit,
@@ -15,21 +15,16 @@ use bevy::{
     prelude::*,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
-use struction_anim::{
-    humanoid,
-    locomotion::LocomotionParams,
-    plugin::{Locomotor, RigJoints},
-    rig::Rig,
-};
+use struction_anim::plugin::Locomotor;
 use struction_camera::{CameraSystems, PlayerCamera, PlayerCameraPlugin, ViewMode};
 use struction_character::{
-    CharacterAnimationPlugin, CharacterLook, CharacterState, InputActions, InputMap, InputSystems,
-    RigOf, RollRecovery, Rolling, spawn_rig,
+    Attacking, CharacterAnimationPlugin, CharacterLook, CharacterMove, CharacterState,
+    InputActions, InputMap, InputSystems, PlayerControlled, RigOf, Rolling,
 };
 use struction_debug::{DebugTracePlugin, TraceAppExt, TraceWriter};
 use struction_gravity::{GravityInfluences, LocalUp};
 use struction_physics::{
-    CameraOcclusion, InCameraZones, PhysicsPlugin, Submersion, Volume, VolumeShape,
+    CameraOcclusion, CameraTarget, InCameraZones, PhysicsPlugin, Submersion, Volume, VolumeShape,
     avian3d::prelude::*,
 };
 
@@ -38,6 +33,7 @@ struct PlaygroundOptions {
     smoke: bool,
     jump_sent: bool,
     roll_sent: bool,
+    attack_sent: bool,
     cursor_grabbed: bool,
     escape_released_cursor: bool,
     footfalls: u32,
@@ -98,7 +94,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .trace_component::<CharacterState>()
             .trace_component::<CharacterLook>()
             .trace_component::<Rolling>()
-            .trace_component::<RollRecovery>()
+            .trace_component::<Attacking>()
+            .trace_component::<CharacterMove>()
             .trace_component::<struction_character::CharacterIntent>()
             .trace_component::<LocalUp>()
             .trace_component::<GravityInfluences>()
@@ -109,6 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         smoke,
         jump_sent: false,
         roll_sent: false,
+        attack_sent: false,
         cursor_grabbed: false,
         escape_released_cursor: false,
         footfalls: 0,
@@ -128,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PlayerCameraPlugin,
         camera_occlusion::SightFadePlugin,
         ScenePlugin { root: project },
-        knight::KnightPlugin,
+        figures::FiguresPlugin,
     ))
     .configure_sets(
         PreUpdate,
@@ -160,11 +158,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .add_systems(
         Update,
         (
-            attach_rigs,
             attach_camera,
             dress_looks,
-            knight::dress_knights,
-            dress_rigs.run_if(knight::uses_shapes),
+            figures::attach_rigs,
+            figures::request_models,
+            figures::finish_compiles,
+            figures::dress_figures,
         )
             .chain()
             .in_set(PlaygroundSystems::Dress),
@@ -203,10 +202,6 @@ fn matte(color: Color) -> StandardMaterial {
         perceptual_roughness: 0.88,
         ..default()
     }
-}
-
-fn material(materials: &mut Assets<StandardMaterial>, color: Color) -> Handle<StandardMaterial> {
-    materials.add(matte(color))
 }
 
 type Dressed<'a> = (
@@ -281,11 +276,14 @@ fn dress_looks(
                 .insert((Visibility::default(), WaterSurface(surface)));
             continue;
         }
-        let Some(shape) = shape else {
-            warn!("{entity} has a look but no shape to draw");
+        // Humanoids are drawn by their rig (see `figures`).
+        let Some(mesh) = shape.and_then(Shape::mesh) else {
+            if shape.is_none() {
+                warn!("{entity} has a look but no shape to draw");
+            }
             continue;
         };
-        let mesh = Mesh3d(meshes.add(shape.mesh()));
+        let mesh = Mesh3d(meshes.add(mesh));
         let mut entity = commands.entity(entity);
         match look.finish {
             // Ground that can hide the player gets a cut-out along the camera's line of sight.
@@ -293,121 +291,22 @@ fn dress_looks(
                 mesh,
                 MeshMaterial3d(fade_material(&mut fading, matte(color))),
             )),
-            _ => entity.insert((mesh, MeshMaterial3d(material(&mut materials, color)))),
+            _ => entity.insert((mesh, MeshMaterial3d(materials.add(matte(color))))),
         };
     }
 }
 
-/// The capsule is only the physics body; a humanoid is drawn as the rig that follows it.
-fn attach_rigs(mut commands: Commands, bodies: Query<Entity, Added<Humanoid>>) {
-    for body in &bodies {
-        let rig = spawn_rig(
-            &mut commands,
-            body,
-            humanoid::rig(),
-            LocomotionParams::default(),
-        )
-        .expect("the built-in humanoid is a valid rig");
-        commands
-            .entity(rig)
-            .insert((Name::new("Humanoid rig"), Visibility::default()));
-    }
-}
-
-/// The player comes from scene data, so its camera is attached once it spawns.
-fn attach_camera(mut commands: Commands, players: Query<Entity, Added<Player>>) {
+/// The player comes from scene data, so its camera is attached once it spawns; camera zones then
+/// reframe the view around it.
+fn attach_camera(mut commands: Commands, players: Query<Entity, Added<PlayerControlled>>) {
     for player in &players {
+        commands.entity(player).insert(CameraTarget);
         commands.spawn((
             Name::new("Player camera"),
             Camera3d::default(),
             CameraOcclusion::default(),
             PlayerCamera::new(player),
         ));
-    }
-}
-
-/// Without the blood knight, gives rigs a body made of simple shapes attached to their joint
-/// entities.
-fn dress_rigs(
-    mut commands: Commands,
-    rigs: Query<(Entity, &Rig, &RigJoints), Without<knight::Dressed>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    for (rig_entity, rig, joints) in &rigs {
-        commands.entity(rig_entity).insert(knight::Dressed);
-        let skin = material(&mut materials, Color::srgb(0.96, 0.86, 0.44));
-        let dark = material(&mut materials, Color::srgb(0.30, 0.27, 0.34));
-        let defs = rig.skeleton.joints();
-        for (def, &joint) in defs.iter().zip(&joints.0) {
-            commands.entity(joint).insert(Visibility::default());
-            let name = def.name.as_str();
-            let decoration = if name == "head" {
-                Some((
-                    meshes.add(Sphere::new(0.11)),
-                    skin.clone(),
-                    Transform::from_xyz(0.0, 0.08, 0.0),
-                ))
-            } else if name.starts_with("hand") {
-                Some((
-                    meshes.add(Sphere::new(0.04)),
-                    skin.clone(),
-                    Transform::from_xyz(0.0, -0.03, 0.0),
-                ))
-            } else if name.starts_with("foot") {
-                // Toes point forward (-Z) from the ankle, with the sole on the ground.
-                Some((
-                    meshes.add(Cuboid::new(0.09, humanoid::ANKLE_HEIGHT, 0.24)),
-                    dark.clone(),
-                    Transform::from_xyz(0.0, -humanoid::ANKLE_HEIGHT * 0.5, -0.06),
-                ))
-            } else {
-                None
-            };
-            if let Some((mesh, material, transform)) = decoration {
-                commands.spawn((
-                    Mesh3d(mesh),
-                    MeshMaterial3d(material),
-                    transform,
-                    ChildOf(joint),
-                ));
-            }
-
-            // A limb segment from the parent joint to this one, owned by the parent so it turns
-            // with it.
-            let Some(parent) = def.parent.filter(|&p| p != rig.root) else {
-                continue;
-            };
-            let offset = def.rest.translation;
-            let length = offset.length();
-            let radius = segment_radius(&defs[parent].name);
-            if length < 1e-3 || radius == 0.0 {
-                continue;
-            }
-            let legs = ["thigh", "shin"]
-                .iter()
-                .any(|l| defs[parent].name.starts_with(l));
-            commands.spawn((
-                Mesh3d(meshes.add(Capsule3d::new(radius, (length - radius).max(0.01)))),
-                MeshMaterial3d(if legs { dark.clone() } else { skin.clone() }),
-                Transform::from_translation(offset * 0.5)
-                    .with_rotation(Quat::from_rotation_arc(Vec3::Y, offset / length)),
-                ChildOf(joints.0[parent]),
-            ));
-        }
-    }
-}
-
-/// Thickness of the segment that starts at a joint; zero draws nothing.
-fn segment_radius(parent: &str) -> f32 {
-    match parent.split('_').next().unwrap_or(parent) {
-        "hips" => 0.09,
-        "spine" | "chest" => 0.11,
-        "neck" => 0.05,
-        "upper" | "thigh" => 0.06,
-        "forearm" | "shin" => 0.045,
-        "fingers" | "thumb" | "hand" => 0.012,
-        _ => 0.0,
     }
 }
 
@@ -473,6 +372,10 @@ fn scripted_input(
         actions.roll.pressed = true;
         options.roll_sent = true;
     }
+    if seconds >= 4.5 && !options.attack_sent {
+        actions.attack.pressed = true;
+        options.attack_sent = true;
+    }
 }
 
 /// The first-person camera sits inside the head, so the player's own rig is not drawn.
@@ -496,22 +399,22 @@ fn count_footfalls(rigs: Query<&Locomotor>, mut options: ResMut<PlaygroundOption
     options.footfalls += rigs.iter().map(|l| l.state.output().footfalls).sum::<u32>();
 }
 
+type Reported<'a> = (
+    &'a CharacterState,
+    &'a Submersion,
+    &'a InCameraZones,
+    Has<Rolling>,
+    Has<Attacking>,
+);
+
 fn update_hud(
-    player: Query<
-        (
-            &CharacterState,
-            &Submersion,
-            &InCameraZones,
-            Option<&Rolling>,
-        ),
-        With<Player>,
-    >,
+    player: Query<Reported, With<PlayerControlled>>,
     camera: Query<&PlayerCamera>,
     mut hud: Query<&mut Text, With<Hud>>,
     time: Res<Time>,
     options: Res<PlaygroundOptions>,
 ) {
-    let (Ok((state, submersion, zones, rolling)), Ok(mut text)) =
+    let (Ok((state, submersion, zones, rolling, attacking)), Ok(mut text)) =
         (player.single(), hud.single_mut())
     else {
         return;
@@ -526,13 +429,18 @@ fn update_hud(
     } else {
         0.0
     };
+    let doing = match (rolling, attacking) {
+        (true, _) => "rolling",
+        (_, true) => "attacking",
+        _ => "-",
+    };
     **text = format!(
-        "STRUCTION / PLAYGROUND\nWASD move  |  Space jump / swim  |  Left Shift roll  |  M mouse look [{}]\nV or wheel: third / first person  |  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Rolling: {}   Camera: {}   Steps: {}   FPS: {:.0}\nBlue tile: slippery   |   Orange cube: push   |   Right: water   |   Ahead: gravity planet",
+        "STRUCTION / PLAYGROUND\nWASD move  |  Space jump / swim  |  Left Shift roll  |  Left click or F attack  |  M mouse look [{}]\nV or wheel: third / first person  |  Esc release / quit\nGrounded: {}   Swimming: {} ({:.0}%)   Move: {}   Camera: {}   Steps: {}   FPS: {:.0}\nBlue tile: slippery   |   Orange cube: push or hit   |   Left: a knight on guard   |   Right: water   |   Ahead: gravity planet",
         if options.cursor_grabbed { "on" } else { "off" },
         state.grounded,
         state.swimming,
         submersion.0 * 100.0,
-        rolling.is_some(),
+        doing,
         view,
         options.footfalls,
         fps
@@ -543,7 +451,7 @@ fn exit_control(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     options: Res<PlaygroundOptions>,
-    player: Query<&Position, With<Player>>,
+    player: Query<&Position, With<PlayerControlled>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if options.smoke && time.elapsed_secs() >= 10.0 {
@@ -581,7 +489,7 @@ mod tests {
 
         let mut players = app
             .world_mut()
-            .query_filtered::<(Entity, &Transform), With<Player>>();
+            .query_filtered::<(Entity, &Transform), With<PlayerControlled>>();
         let (player, body) = players.single(app.world()).expect("one player");
         let focus = body.translation;
         let mut cameras = app.world_mut().query::<(&PlayerCamera, &Transform)>();

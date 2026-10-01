@@ -14,7 +14,8 @@ use bevy::{
 use struction_gravity::LocalUp;
 use struction_physics::{CameraOcclusion, avian3d::prelude::*, camera_obstructions};
 
-use crate::{Player, PlaygroundSystems};
+use crate::PlaygroundSystems;
+use struction_character::PlayerControlled;
 
 pub type FadeMaterial = ExtendedMaterial<StandardMaterial, SightFade>;
 
@@ -75,7 +76,7 @@ impl Plugin for SightFadePlugin {
 
 fn fade_sight_lines(
     camera: Query<(&Transform, &CameraOcclusion), With<Camera3d>>,
-    player: Query<(Entity, &Transform, &LocalUp), With<Player>>,
+    player: Query<(Entity, &Transform, &LocalUp), With<PlayerControlled>>,
     spatial: SpatialQuery,
     surfaces: Query<(Entity, &MeshMaterial3d<FadeMaterial>, Option<&FadesWith>)>,
     mut materials: ResMut<Assets<FadeMaterial>>,
@@ -174,8 +175,11 @@ mod tests {
     }
 
     fn spawn_viewers(app: &mut App, camera: Vec3) -> Entity {
-        app.world_mut()
-            .spawn((Player, Transform::from_xyz(0.0, 0.0, 5.0), LocalUp(Dir3::Z)));
+        app.world_mut().spawn((
+            PlayerControlled,
+            Transform::from_xyz(0.0, 0.0, 5.0),
+            LocalUp(Dir3::Z),
+        ));
         app.world_mut()
             .spawn((
                 Camera3d::default(),

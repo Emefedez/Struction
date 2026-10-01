@@ -21,9 +21,17 @@ struct Kitchen {
     nested: Option<Faction>,
 }
 
+#[derive(Component, Reflect, Debug, PartialEq)]
+#[reflect(Component)]
+enum Sign {
+    Blank,
+    Labeled { text: String, color: Option<Vec3> },
+}
+
 fn load(components: &str) -> (Result<(), Vec<String>>, DefinitionStore) {
     let mut registry = registry();
     registry.register::<Kitchen>();
+    registry.register::<Sign>();
     let body = format!("{{ \"descendsFrom\": \"Actor\", \"components\": {{ {components} }} }}");
     let dir = write_project(&[("a/entity.jsonc", &body)]);
     let mut store = DefinitionStore::new(dir.path());
@@ -66,6 +74,25 @@ fn enums_in_all_three_variant_shapes() {
         store.get("a").unwrap().component::<Shape>(),
         Some(&Shape::Point)
     );
+}
+
+#[test]
+fn optional_variant_fields_may_be_left_out() {
+    let (result, store) = load(r#""Sign": { "Labeled": { "text": "exit" } }"#);
+    result.unwrap();
+    assert_eq!(
+        store.get("a").unwrap().component::<Sign>(),
+        Some(&Sign::Labeled {
+            text: "exit".into(),
+            color: None
+        })
+    );
+    let (result, _) = load(r#""Sign": { "Labeled": { "color": [1, 0, 0] } }"#);
+    assert_eq!(
+        result.unwrap_err(),
+        ["a/entity.jsonc:1: missing field text in Sign::Labeled"]
+    );
+    assert!(load(r#""Sign": "Blank""#).0.is_ok());
 }
 
 #[test]

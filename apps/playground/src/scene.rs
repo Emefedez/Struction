@@ -1,8 +1,9 @@
 //! The playground scene is data: definitions and `scenes/milestone1.jsonc` under `project/`,
 //! loaded by `struction_data` and spawned by `struction_world`. This module registers the
-//! components the data uses and gives the authoring ones effect: a [`Shape`] becomes a collider
-//! here, and the rendered host turns [`Look`] and [`Humanoid`] into meshes and a rig. Saved edits
-//! to the project apply to the running scene through `struction_world`'s live reload.
+//! components and extensors the data uses and gives the authoring ones effect: a [`Shape`]
+//! becomes a collider here, and the rendered host turns it and its [`Look`] into meshes, or into
+//! an animated rig dressed with a model. Saved edits to the project apply to the running scene
+//! through `struction_world`'s live reload.
 
 use std::path::{Path, PathBuf};
 
@@ -20,28 +21,43 @@ pub fn default_project() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("project")
 }
 
-/// Geometry of an authored entity in meters: its collider when it has a `RigidBody`, and its mesh
-/// in the rendered host.
-#[derive(Component, Reflect, Clone, Copy, Debug, PartialEq)]
+/// What an authored entity looks like, in meters. Boxes and spheres are also its collider when
+/// it has a `RigidBody`; the rendered host draws them with its [`Look`].
+#[derive(Component, Reflect, Clone, Debug, PartialEq)]
 #[reflect(Component)]
 #[component(on_insert = insert_shape_collider)]
 pub enum Shape {
-    Box { size: Vec3 },
-    Sphere { radius: f32 },
+    Box {
+        size: Vec3,
+    },
+    Sphere {
+        radius: f32,
+    },
+    /// A procedurally animated humanoid rig following the entity's character body (which brings
+    /// its own collider). `model` is a source under `assets/` (such as a `.blend`) whose pieces,
+    /// named `<joint>.<piece>`, ride on the rig's joints; without one, the rig is drawn with
+    /// simple shapes.
+    Humanoid {
+        model: Option<String>,
+    },
 }
 
 impl Shape {
-    pub fn collider(self) -> Collider {
-        match self {
-            Self::Box { size } => Collider::cuboid(size.x, size.y, size.z),
-            Self::Sphere { radius } => Collider::sphere(radius),
+    pub fn collider(&self) -> Option<Collider> {
+        match *self {
+            Self::Box { size } => Some(Collider::cuboid(size.x, size.y, size.z)),
+            Self::Sphere { radius } => Some(Collider::sphere(radius)),
+            Self::Humanoid { .. } => None,
         }
     }
 
-    pub fn mesh(self) -> Mesh {
-        match self {
-            Self::Box { size } => Cuboid::from_size(size).into(),
-            Self::Sphere { radius } => Sphere::new(radius).mesh().ico(5).expect("valid sphere"),
+    pub fn mesh(&self) -> Option<Mesh> {
+        match *self {
+            Self::Box { size } => Some(Cuboid::from_size(size).into()),
+            Self::Sphere { radius } => {
+                Some(Sphere::new(radius).mesh().ico(5).expect("valid sphere"))
+            }
+            Self::Humanoid { .. } => None,
         }
     }
 }
@@ -54,8 +70,10 @@ fn refresh_shape_colliders(
     shapes: Query<(Entity, Ref<Shape>), ChangedShape>,
 ) {
     for (entity, shape) in &shapes {
-        if !shape.is_added() {
-            commands.entity(entity).insert(shape.collider());
+        if !shape.is_added()
+            && let Some(collider) = shape.collider()
+        {
+            commands.entity(entity).insert(collider);
         }
     }
 }
@@ -80,8 +98,10 @@ fn insert_shape_collider(mut world: DeferredWorld, context: HookContext) {
         let Ok(mut entity) = world.get_entity_mut(context.entity) else {
             return;
         };
-        if let (Some(&shape), true) = (entity.get::<Shape>(), entity.contains::<RigidBody>()) {
-            entity.insert(shape.collider());
+        if entity.contains::<RigidBody>()
+            && let Some(collider) = entity.get::<Shape>().and_then(Shape::collider)
+        {
+            entity.insert(collider);
         }
     });
 }
@@ -117,18 +137,8 @@ pub enum Finish {
     Water,
 }
 
-/// The entity the camera follows and the HUD reports on.
-#[derive(Component, Reflect, Clone, Copy, Debug, Default)]
-#[reflect(Component, Default)]
-pub struct Player;
-
-/// The body is drawn as a procedurally animated humanoid rig.
-#[derive(Component, Reflect, Clone, Copy, Debug, Default)]
-#[reflect(Component, Default)]
-pub struct Humanoid;
-
-/// Loads the project at `root` and spawns its scenes. Needs the physics, gravity and character
-/// plugins for the components the data uses.
+/// Loads the project at `root` and spawns its scenes, with the move packages its characters
+/// opt into (`dodge`, `combat`). Needs the physics and character controller plugins.
 pub struct ScenePlugin {
     pub root: PathBuf,
 }
@@ -137,7 +147,8 @@ impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             CorePlugin::default(),
-            struction_character::RollActionsPlugin,
+            struction_character::DodgePlugin,
+            struction_character::CombatPlugin,
             DataPlugin::new(&self.root),
             WorldPlugin::default(),
             LiveReloadPlugin::default(),
@@ -148,9 +159,7 @@ impl Plugin for ScenePlugin {
         .register_type::<RigidBody>()
         .register_type::<ColliderDensity>()
         .register_type::<Shape>()
-        .register_type::<Look>()
-        .register_type::<Player>()
-        .register_type::<Humanoid>();
+        .register_type::<Look>();
     }
 }
 
@@ -210,6 +219,7 @@ mod tests {
         assert_eq!(aliases.resolve("gravity/scene"), "fields/scene");
         assert_eq!(aliases.resolve("Ground"), "Ground");
         assert_eq!(aliases.resolve("Gravity"), "Gravity");
+        assert_eq!(aliases.resolve("Player"), "characters/player");
     }
 
     #[test]
@@ -277,21 +287,19 @@ mod tests {
 
     #[test]
     fn authored_player_can_roll_through_the_registered_action() {
-        use struction_character::{RollAbility, Rolling};
+        use struction_character::{Roll, Rolling};
         use struction_core::{ActionArgs, ActionInvocation, ActionQueue};
 
         let mut app = scene_app();
         step(&mut app, 60);
         let player = entity(&mut app, "Playground/start/player");
-        assert_eq!(
-            app.world().get::<RollAbility>(player),
-            Some(&RollAbility::default())
-        );
+        // Supplied by the `dodge` extensor the player names.
+        assert_eq!(app.world().get::<Roll>(player), Some(&Roll::default()));
         let start = app.world().get::<Position>(player).unwrap().0;
         app.world_mut()
             .resource_mut::<ActionQueue>()
             .invoke(ActionInvocation::new(
-                "character/roll",
+                "dodge/roll",
                 player,
                 ActionArgs::new(),
             ));
@@ -299,6 +307,69 @@ mod tests {
         assert!(app.world().get::<Rolling>(player).is_some());
         let at = app.world().get::<Position>(player).unwrap().0;
         assert!(start.z - at.z > 2.0, "{start} -> {at}");
+    }
+
+    #[test]
+    fn actors_share_the_humanoid_shape_and_opt_into_moves() {
+        use struction_character::{Attack, Roll};
+        use struction_data::{DefinitionStore, ExtensorReason};
+
+        let mut app = scene_app();
+        let model = Shape::Humanoid {
+            model: Some("models/blood_knight.blend".into()),
+        };
+        let player = entity(&mut app, "Playground/start/player");
+        let sentry = entity(&mut app, "Playground/guard/sentry");
+        let world = app.world();
+        assert_eq!(world.get::<Shape>(player), Some(&model));
+        assert_eq!(world.get::<Shape>(sentry), Some(&model));
+        assert!(world.get::<CharacterController>(sentry).is_some());
+        // The sentry names no extensors, so it can neither roll nor attack.
+        assert!(world.get::<Roll>(sentry).is_none());
+        assert!(world.get::<Attack>(sentry).is_none());
+        assert!(world.get::<Attack>(player).is_some());
+
+        let store = world.resource::<DefinitionStore>();
+        let explain = |id: &str| -> Vec<(String, ExtensorReason)> {
+            store
+                .get(id)
+                .unwrap()
+                .extensors
+                .iter()
+                .map(|e| (e.name.clone(), e.reason.clone()))
+                .collect()
+        };
+        let named = ExtensorReason::Named {
+            by: "characters/player".into(),
+        };
+        assert_eq!(
+            explain("characters/player"),
+            [
+                ("dodge".into(), named.clone()),
+                ("combat".into(), named),
+                (
+                    "character".into(),
+                    ExtensorReason::Owns("CharacterController".into())
+                ),
+                (
+                    "physics".into(),
+                    ExtensorReason::RequiredBy("character".into())
+                ),
+            ]
+        );
+        assert_eq!(
+            explain("characters/sentry"),
+            [
+                (
+                    "character".into(),
+                    ExtensorReason::Owns("CharacterController".into())
+                ),
+                (
+                    "physics".into(),
+                    ExtensorReason::RequiredBy("character".into())
+                ),
+            ]
+        );
     }
 
     fn copy(from: &Path, to: &Path) {

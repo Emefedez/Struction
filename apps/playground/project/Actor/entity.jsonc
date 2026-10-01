@@ -1,0 +1,9 @@
+// Anything that walks: a character capsule drawn as a procedurally animated humanoid rig. Actors
+// can do nothing beyond moving until a descendant names the extensors for it. `CharacterController`
+// fields tune movement (speeds, jump height, slopes).
+{
+  "components": {
+    "CharacterController": {},
+    "Shape": { "Humanoid": {} }
+  }
+}
