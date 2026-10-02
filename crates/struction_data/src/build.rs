@@ -49,6 +49,60 @@ fn mismatch<T>(expected: impl Into<String>, node: &Node) -> Result<T, DataError>
     )
 }
 
+// JSON arrays replace inherited/default lists. Bevy's apply merges by index and keeps
+// the tail, so empty and shortened authored lists must clear the destination first.
+fn clear_authored_lists(value: &mut dyn PartialReflect, patch: &dyn PartialReflect) {
+    use bevy::reflect::{ReflectMut, ReflectRef};
+    match (value.reflect_mut(), patch.reflect_ref()) {
+        (ReflectMut::List(list), ReflectRef::List(_)) => while list.pop().is_some() {},
+        (ReflectMut::Struct(value), ReflectRef::Struct(patch)) => {
+            for i in 0..patch.field_len() {
+                if let Some(field) = patch.name_at(i).and_then(|name| value.field_mut(name)) {
+                    clear_authored_lists(field, patch.field_at(i).expect("field"));
+                }
+            }
+        }
+        (ReflectMut::TupleStruct(value), ReflectRef::TupleStruct(patch)) => {
+            for i in 0..patch.field_len() {
+                if let Some(field) = value.field_mut(i) {
+                    clear_authored_lists(field, patch.field(i).expect("field"));
+                }
+            }
+        }
+        (ReflectMut::Tuple(value), ReflectRef::Tuple(patch)) => {
+            for i in 0..patch.field_len() {
+                if let Some(field) = value.field_mut(i) {
+                    clear_authored_lists(field, patch.field(i).expect("field"));
+                }
+            }
+        }
+        (ReflectMut::Array(value), ReflectRef::Array(patch)) => {
+            for i in 0..patch.len() {
+                if let Some(field) = value.get_mut(i) {
+                    clear_authored_lists(field, patch.get(i).expect("item"));
+                }
+            }
+        }
+        (ReflectMut::Enum(value), ReflectRef::Enum(patch))
+            if value.variant_name() == patch.variant_name() =>
+        {
+            for i in 0..patch.field_len() {
+                if let Some(field) = value.field_at_mut(i) {
+                    clear_authored_lists(field, patch.field_at(i).expect("field"));
+                }
+            }
+        }
+        (ReflectMut::Map(value), ReflectRef::Map(patch)) => {
+            for (key, patch) in patch.iter() {
+                if let Some(field) = value.get_mut(key) {
+                    clear_authored_lists(field, patch);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 impl Builder<'_> {
     /// Finds the registered component a definition key refers to.
     pub fn component_registration(
@@ -110,6 +164,7 @@ impl Builder<'_> {
         let info = registration.type_info();
         if let Some(default) = registration.data::<ReflectDefault>() {
             let mut value = default.default();
+            clear_authored_lists(value.as_partial_reflect_mut(), &*partial);
             value.apply(&*partial);
             return Ok(value);
         }

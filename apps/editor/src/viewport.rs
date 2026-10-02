@@ -63,6 +63,7 @@ pub struct ViewportPlugin;
 
 impl Plugin for ViewportPlugin {
     fn build(&self, app: &mut App) {
+        order_camera_layout(app);
         app.init_resource::<Orbit>()
             .init_resource::<Dragging>()
             .init_resource::<Typing>()
@@ -104,6 +105,15 @@ impl Plugin for ViewportPlugin {
                 scene_view::sync_poses.after(struction_scene::render::SceneRenderSystems::Dress),
             );
     }
+}
+
+// Egui changes the viewport and can reactivate a compact-layout camera. Do that
+// before camera projection, visibility and shadow cascades consume its state.
+fn order_camera_layout(app: &mut App) {
+    app.configure_sets(
+        PostUpdate,
+        bevy_egui::EguiPostUpdateSet::EndPass.before(bevy::camera::CameraUpdateSystems),
+    );
 }
 
 fn setup(mut commands: Commands) {
@@ -413,6 +423,58 @@ fn draw_guides(editor: NonSend<Editor>, mut gizmos: Gizmos) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reactivated_camera_has_shadow_cascades_in_the_same_frame() {
+        use bevy::light::{
+            Cascades, DirectionalLightShadowMap, cascade::build_directional_light_cascades,
+        };
+        let mut app = App::new();
+        order_camera_layout(&mut app);
+        app.init_resource::<DirectionalLightShadowMap>();
+        app.add_systems(
+            PostUpdate,
+            build_directional_light_cascades.after(bevy::camera::CameraUpdateSystems),
+        );
+        app.add_systems(
+            PostUpdate,
+            (|mut cameras: Query<&mut Camera>| {
+                for mut camera in &mut cameras {
+                    camera.is_active = true;
+                }
+            })
+            .in_set(bevy_egui::EguiPostUpdateSet::EndPass),
+        );
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                Camera {
+                    is_active: false,
+                    ..default()
+                },
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        let light = app
+            .world_mut()
+            .spawn((
+                DirectionalLight {
+                    shadow_maps_enabled: true,
+                    ..default()
+                },
+                GlobalTransform::IDENTITY,
+            ))
+            .id();
+        app.update();
+        assert!(
+            app.world()
+                .get::<Cascades>(light)
+                .unwrap()
+                .cascades
+                .contains_key(&camera)
+        );
+    }
 
     #[test]
     fn zoom_follows_the_scroll_amount() {

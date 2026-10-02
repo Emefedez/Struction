@@ -1067,3 +1067,97 @@ fn incomplete_added_struct_returns_diagnostics_without_writing() {
     );
     assert!(!project.session().history().can_undo());
 }
+
+#[test]
+fn edit_and_remove_inherited_entries_preserve_siblings_and_undo() {
+    let (dir, mut project) = fields_project();
+    let before = std::fs::read_to_string(dir.path().join(GUARD)).unwrap();
+    let list = keys(&["components", "Tuning", "cancel_into"]);
+    let mut field = list.clone();
+    field.extend([Field::Index(0), Field::Key("start".into())]);
+    for value in [0.2, 0.3] {
+        project
+            .edit_field(GUARD, &field, json!(value), Some("drag".into()))
+            .unwrap();
+    }
+    project.end_group();
+    let options = project.field_options(GUARD, &list).unwrap();
+    assert_eq!(options.value.as_array().unwrap().len(), 1);
+    assert_eq!(options.value[0]["end"], 0.5);
+    assert_eq!(options.value[0]["start"], 0.3);
+    project.undo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(GUARD)).unwrap(),
+        before
+    );
+    project.remove_entry(GUARD, &list, 0).unwrap();
+    assert_eq!(
+        project.field_options(GUARD, &list).unwrap().value,
+        json!([])
+    );
+    assert!(
+        project
+            .inspect_definition("guards/ogre")
+            .unwrap()
+            .components[Tuning::type_path()]["cancel_into"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(project.remove_entry(GUARD, &list, 0).is_err());
+    project.undo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(GUARD)).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn removing_authored_entries_keeps_comments_and_scene_edits_materialize_lists() {
+    let (dir, mut project) = fields_project();
+    let source = "// own tuning\n{\"descendsFrom\":\"Actor\",\"components\":{\"Tuning\":{\"blocked_while\":[\n// Keep this reason\n\"Idle\",\"Moving\"]}}}";
+    std::fs::write(dir.path().join(GUARD), source).unwrap();
+    project.refresh().unwrap();
+    let list = keys(&["components", "Tuning", "blocked_while"]);
+    project.remove_entry(GUARD, &list, 1).unwrap();
+    assert!(
+        std::fs::read_to_string(dir.path().join(GUARD))
+            .unwrap()
+            .contains("// Keep this reason")
+    );
+    project.undo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(GUARD)).unwrap(),
+        source
+    );
+    let mut list = keys(&[
+        "spawnerList",
+        "guards",
+        "spawns",
+        "ogre",
+        "overrides",
+        "components",
+        "Tuning",
+        "blocked_while",
+    ]);
+    let scene_before = std::fs::read_to_string(dir.path().join(SCENE)).unwrap();
+    list.push(Field::Index(0));
+    project
+        .edit_field(SCENE, &list, json!("Moving"), None)
+        .unwrap();
+    list.pop();
+    assert_eq!(
+        project.field_options(SCENE, &list).unwrap().value,
+        json!(["Moving", "Moving"])
+    );
+    project.undo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(SCENE)).unwrap(),
+        scene_before
+    );
+    project.start_play().unwrap();
+    assert!(matches!(
+        project.remove_entry(GUARD, &keys(&["components", "Tuning", "blocked_while"]), 0),
+        Err(SessionError::Playing)
+    ));
+}

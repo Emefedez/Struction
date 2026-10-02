@@ -8,6 +8,7 @@
 //! quits, for checking the GUI without a person at the screen.
 
 mod game;
+mod inspector_fields;
 mod play_view;
 mod pose_tool;
 mod programs;

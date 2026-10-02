@@ -4,6 +4,59 @@
     "Roll": {
       "recovery": 0.0
     },
-    "CharacterController": {}
+    "CharacterController": {},
+    "PoseTargets": {
+      "poses": {
+        "roll": {
+          "doc": "Tucked into a ball, the key pose of the roll",
+          "joints": [
+            {
+              "joint": "spine",
+              "euler_deg": [-35.0, 0.0, 0.0]
+            },
+            {
+              "joint": "chest",
+              "euler_deg": [-30.0, 0.0, 0.0]
+            },
+            {
+              "joint": "head",
+              "euler_deg": [-20.0, 0.0, 0.0]
+            },
+            {
+              "joint": "thigh_l",
+              "euler_deg": [135.0, 0.0, -6.0]
+            },
+            {
+              "joint": "shin_l",
+              "euler_deg": [-150.0, 0.0, 0.0]
+            },
+            {
+              "joint": "upper_arm_l",
+              "euler_deg": [65.0, 0.0, -12.0]
+            },
+            {
+              "joint": "forearm_l",
+              "euler_deg": [120.0, 0.0, 0.0]
+            },
+            {
+              "joint": "thigh_r",
+              "euler_deg": [135.0, 0.0, 6.0]
+            },
+            {
+              "joint": "shin_r",
+              "euler_deg": [-150.0, 0.0, 0.0]
+            },
+            {
+              "joint": "upper_arm_r",
+              "euler_deg": [65.0, 0.0, 12.0]
+            },
+            {
+              "joint": "forearm_r",
+              "euler_deg": [20.0, 0.0, 0.0]
+            }
+          ]
+        }
+      }
+    }
   }
 }

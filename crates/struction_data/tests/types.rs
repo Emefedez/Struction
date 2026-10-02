@@ -192,3 +192,40 @@ fn incomplete_collection_entries_report_source_errors_instead_of_panicking() {
         }]
     );
 }
+
+#[derive(Component, Reflect, Debug)]
+#[reflect(Component, Default)]
+struct DefaultLists {
+    values: Vec<u32>,
+    nested: Vec<Vec<u32>>,
+}
+impl Default for DefaultLists {
+    fn default() -> Self {
+        Self {
+            values: vec![1, 2, 3],
+            nested: vec![vec![1, 2], vec![3]],
+        }
+    }
+}
+
+#[test]
+fn authored_lists_replace_defaults_instead_of_retaining_their_tail() {
+    let mut registry = registry();
+    registry.register::<DefaultLists>();
+    for (text, expected) in [("[]", vec![]), ("[9]", vec![9])] {
+        let dir = write_project(&[(
+            "Actor/entity.jsonc",
+            &format!(r#"{{"components":{{"DefaultLists":{{"values":{text},"nested":[[]]}}}}}}"#),
+        )]);
+        let mut store = DefinitionStore::new(dir.path());
+        store.load(&registry);
+        assert!(store.errors().is_empty(), "{:?}", store.errors());
+        let lists = store
+            .get("Actor")
+            .unwrap()
+            .component::<DefaultLists>()
+            .unwrap();
+        assert_eq!(lists.values, expected);
+        assert_eq!(lists.nested, vec![Vec::<u32>::new()]);
+    }
+}

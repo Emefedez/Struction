@@ -29,6 +29,17 @@ pub enum Command {
     Refresh,
     Select(Option<Selected>),
     Edit(EditRequest),
+    EditField {
+        file: String,
+        path: Vec<Field>,
+        value: Value,
+        group: Option<String>,
+    },
+    RemoveEntry {
+        file: String,
+        path: Vec<Field>,
+        index: usize,
+    },
     AddField {
         file: String,
         path: Vec<Field>,
@@ -179,6 +190,23 @@ impl Editor {
                 "Add entry",
                 project
                     .add_entry(&file, &path, Some(value))
+                    .map(|a| Some(a.label)),
+            ),
+            Command::EditField {
+                file,
+                path,
+                value,
+                group,
+            } => (
+                "Edit field",
+                project
+                    .edit_field(&file, &path, value, group)
+                    .map(|a| Some(a.label)),
+            ),
+            Command::RemoveEntry { file, path, index } => (
+                "Remove entry",
+                project
+                    .remove_entry(&file, &path, index)
                     .map(|a| Some(a.label)),
             ),
             Command::Edit(request) => ("Edit", project.edit(request).map(|a| Some(a.label))),

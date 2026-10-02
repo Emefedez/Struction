@@ -17,7 +17,9 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Bounds one request's work, so a typo cannot hang the session.
 const MAX_STEP_TICKS: usize = 10_000;
 
-const COMMANDS: [&str; 32] = [
+const COMMANDS: [&str; 34] = [
+    "edit_field",
+    "remove_entry",
     "field_options",
     "add_field",
     "add_entry",
@@ -62,6 +64,18 @@ pub struct Request {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    EditField {
+        file: String,
+        path: Vec<crate::Field>,
+        value: Value,
+        #[serde(default)]
+        group: Option<String>,
+    },
+    RemoveEntry {
+        file: String,
+        path: Vec<crate::Field>,
+        index: usize,
+    },
     FieldOptions {
         file: String,
         path: Vec<crate::Field>,
@@ -215,6 +229,15 @@ pub fn execute(project: &mut AuthoringProject, request: Request) -> Response {
 
 fn apply(project: &mut AuthoringProject, command: Command) -> Result<Value, SessionError> {
     Ok(match command {
+        Command::EditField {
+            file,
+            path,
+            value,
+            group,
+        } => json!(project.edit_field(&file, &path, value, group)?),
+        Command::RemoveEntry { file, path, index } => {
+            json!(project.remove_entry(&file, &path, index)?)
+        }
         Command::FieldOptions { file, path } => json!(project.field_options(&file, &path)?),
         Command::AddField {
             file,
@@ -242,7 +265,7 @@ fn apply(project: &mut AuthoringProject, command: Command) -> Result<Value, Sess
         )?),
         Command::Describe {} => json!({
             "protocol_version": PROTOCOL_VERSION,
-            "commands": COMMANDS,
+            "commands": COMMANDS.as_slice(),
             "max_step_ticks": MAX_STEP_TICKS,
         }),
         Command::Validate {} => json!({ "diagnostics": project.validate() }),

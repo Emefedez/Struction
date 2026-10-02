@@ -105,7 +105,7 @@ pub fn schema_at<'a>(
         };
         current = current.and_then(|v| lookup(v, std::slice::from_ref(field)));
     }
-    Some(shape(root, schema, current))
+    Some(schema)
 }
 
 /// A starting value for the form, not a promise of semantic validity; project validation
@@ -278,6 +278,7 @@ impl AuthoringProject {
         let (schema, document, relative) = self.field_document(file, path)?;
         let at = schema_at(&schema, &schema, &document, &relative)
             .ok_or_else(|| invalid("No registered schema at this field"))?;
+        let at = shape(&schema, at, lookup(&document, &relative));
         let authored = match self.session().read(file) {
             Ok(text) => {
                 let source = parse_jsonc(file, &text)
@@ -380,6 +381,63 @@ impl AuthoringProject {
         }
     }
 
+    /// Edit an effective field, materializing inherited lists before touching an entry.
+    /// Object fields stay sparse; a drag can supply a history group.
+    pub fn edit_field(
+        &mut self,
+        file: &str,
+        path: &[Field],
+        value: Value,
+        group: Option<String>,
+    ) -> Result<Applied, SessionError> {
+        self.field_options(file, path)?;
+        self.set_effective(file, path.to_vec(), value, "Edit field".into(), group)
+    }
+
+    pub fn remove_entry(
+        &mut self,
+        file: &str,
+        path: &[Field],
+        index: usize,
+    ) -> Result<Applied, SessionError> {
+        let options = self.field_options(file, path)?;
+        let items = options
+            .value
+            .as_array()
+            .ok_or_else(|| invalid("Remove entry requires a list"))?;
+        if index >= items.len() {
+            return Err(invalid("Entry index is out of range"));
+        }
+        if options
+            .schema
+            .get("minItems")
+            .and_then(Value::as_u64)
+            .is_some_and(|min| items.len() <= min as usize)
+        {
+            return Err(invalid("This array cannot have fewer entries"));
+        }
+        if options.authored.as_ref().is_some_and(Value::is_array) {
+            let mut at = path.to_vec();
+            at.push(Field::Index(index));
+            self.edit(EditRequest::Remove {
+                file: file.into(),
+                path: at,
+                label: "Remove entry".into(),
+                revision: None,
+            })
+        } else {
+            let mut items = items.clone();
+            items.remove(index);
+            self.set_effective(
+                file,
+                path.to_vec(),
+                Value::Array(items),
+                "Remove entry".into(),
+                None,
+            )
+        }
+    }
+
     fn set_added(
         &mut self,
         file: &str,
@@ -387,38 +445,48 @@ impl AuthoringProject {
         value: Value,
         label: String,
     ) -> Result<Applied, SessionError> {
-        // A nested edit in an inherited list must first materialize that list, as one step.
-        if let Some(index) = path.iter().position(|f| matches!(f, Field::Index(_))) {
+        self.set_effective(file, path, value, label, None)
+    }
+
+    fn set_effective(
+        &mut self,
+        file: &str,
+        path: Vec<Field>,
+        value: Value,
+        label: String,
+        group: Option<String>,
+    ) -> Result<Applied, SessionError> {
+        // The first inherited list owns all nested entries. Materialize and edit it in one
+        // transaction, preserving its siblings and avoiding sparse numeric object keys.
+        for (index, segment) in path.iter().enumerate() {
+            if !matches!(segment, Field::Index(_)) {
+                continue;
+            }
             let prefix = &path[..index];
             let options = self.field_options(file, prefix)?;
             if options.authored.is_none() {
-                let mut array = options.value;
-                let mut at = &mut array;
-                for segment in &path[index..path.len() - 1] {
-                    at = match segment {
-                        Field::Key(k) => at.get_mut(k),
-                        Field::Index(i) => at.get_mut(*i),
-                    }
-                    .ok_or_else(|| invalid("Missing parent in inherited list"))?;
-                }
-                match path.last().expect("nested field") {
-                    Field::Key(k) => {
-                        at.as_object_mut()
-                            .ok_or_else(|| invalid("Expected object"))?
-                            .insert(k.clone(), value);
-                    }
-                    Field::Index(i) => {
-                        at.as_array_mut()
-                            .ok_or_else(|| invalid("Expected list"))?
-                            .insert(*i, value);
-                    }
-                }
+                let document = json!({"value": options.value}).to_string();
+                let mut at = vec![struction_data::edit::PathSegment::Key("value".into())];
+                at.extend(
+                    path[index..]
+                        .iter()
+                        .map(struction_data::edit::PathSegment::from),
+                );
+                let edited =
+                    struction_data::edit::set_value(&document, &at, value).map_err(|source| {
+                        SessionError::Edit {
+                            file: file.into(),
+                            source,
+                        }
+                    })?;
+                let mut document: Value =
+                    serde_json::from_str(&edited.text).map_err(|e| invalid(e.to_string()))?;
                 return self.edit(EditRequest::Set {
                     file: file.into(),
                     path: prefix.to_vec(),
-                    value: array,
+                    value: document["value"].take(),
                     label,
-                    group: None,
+                    group,
                     revision: None,
                 });
             }
@@ -428,7 +496,7 @@ impl AuthoringProject {
             path,
             value,
             label,
-            group: None,
+            group,
             revision: None,
         })
     }
