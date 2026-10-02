@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 # `serialize` gives Vec3/Quat/Transform serde impls for the data layer.
 bevy = { workspace = true, features = ["serialize"] }
+jsonc-parser = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

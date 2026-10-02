@@ -6,7 +6,7 @@ use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*};
 use struction_anim::{
     humanoid::{self, ANKLE_HEIGHT},
     locomotion::{FootTarget, LocomotionParams},
-    moves::{MoveKind, MovePose},
+    moves::{LoopPose, MovePose, PlaySequence},
     plugin::{AnimMotion, Locomotor, SolvedPose},
 };
 use struction_character::{CharacterAnimationPlugin, prelude::*, spawn_rig};
@@ -43,7 +43,7 @@ fn roll_tumbles_the_pose_without_rotating_the_body_or_rig_root() {
         .roll_requested = true;
     step(&mut app, 20);
     let roll = app.world().get::<MovePose>(rig).unwrap();
-    assert_eq!(roll.kind, MoveKind::Roll);
+    assert_eq!(roll.sequence, "roll");
     assert!(roll.phase > 0.4 && roll.phase < 0.55, "{}", roll.phase);
     let pose = &app.world().get::<SolvedPose>(rig).unwrap().0;
     let humanoid = humanoid::rig();
@@ -97,6 +97,41 @@ fn cancelled_roll_blends_out_and_animation_never_moves_physics() {
     assert_eq!(app.world().get::<MovePose>(rig).unwrap().weight, 0.0);
 }
 
+/// A body's `PlaySequence` (what a `states` rule enables) loops on its rig, and walking is a
+/// condition such rules can name.
+#[test]
+fn a_played_sequence_loops_while_walking_and_blends_out_when_removed() {
+    let mut app = app();
+    floor(&mut app, Quat::IDENTITY);
+    let (body, rig) = character(&mut app, Vec3::new(0.0, FEET, 0.0));
+    step(&mut app, 30);
+    let walking = |app: &App| {
+        let world = app.world();
+        world.get::<CharacterMove>(body).unwrap().holds(
+            world.get::<CharacterState>(body).unwrap(),
+            CharacterCondition::Walking,
+        )
+    };
+    assert!(!walking(&app));
+    app.world_mut()
+        .get_mut::<CharacterIntent>(body)
+        .unwrap()
+        .movement = Vec2::Y;
+    app.world_mut().entity_mut(body).insert(PlaySequence {
+        sequence: "arm_swing".into(),
+    });
+    step(&mut app, 30);
+    assert!(walking(&app));
+    let looping = app.world().get::<LoopPose>(rig).unwrap();
+    assert_eq!(
+        (looping.sequence.as_str(), looping.weight),
+        ("arm_swing", 1.0)
+    );
+    app.world_mut().entity_mut(body).remove::<PlaySequence>();
+    step(&mut app, 30);
+    assert_eq!(app.world().get::<LoopPose>(rig).unwrap().weight, 0.0);
+}
+
 #[test]
 fn a_swing_raises_the_arm_while_the_legs_keep_walking() {
     let mut app = app();
@@ -111,8 +146,8 @@ fn a_swing_raises_the_arm_while_the_legs_keep_walking() {
         intent.movement = Vec2::Y;
     }
     step(&mut app, 12);
-    let swing = *app.world().get::<MovePose>(rig).unwrap();
-    assert_eq!(swing.kind, MoveKind::Swing);
+    let swing = app.world().get::<MovePose>(rig).unwrap().clone();
+    assert_eq!(swing.sequence, "swing");
     assert!(swing.phase > 0.2 && swing.phase < 0.5, "{}", swing.phase);
     let humanoid = humanoid::rig();
     let arm = humanoid.skeleton.joint_id("upper_arm_r").unwrap();

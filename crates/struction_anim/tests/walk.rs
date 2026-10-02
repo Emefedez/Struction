@@ -92,6 +92,7 @@ impl<'g> Sim<'g> {
                 locomotion: Some(&output),
                 body_weight: 1.0,
                 moving: None,
+                looping: None,
                 dt: DT,
             })
             .unwrap();
@@ -431,6 +432,7 @@ fn feet_lie_flat_on_a_slope_under_an_upright_body() {
         locomotion: Some(sim.state.output()),
         body_weight: 1.0,
         moving: None,
+        looping: None,
         dt: DT,
     });
     let model = sim.solver.rig.skeleton.model_transforms(&pose.unwrap());

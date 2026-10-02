@@ -8,6 +8,12 @@ pub enum AnimError {
     UnknownJoint(String),
     #[error("unknown base pose `{0}`")]
     UnknownPose(String),
+    #[error("unknown pose sequence `{0}`")]
+    UnknownSequence(String),
+    #[error("pose sequence `{sequence}`: {message}")]
+    InvalidSequence { sequence: String, message: String },
+    #[error("pose library: {0}")]
+    Library(String),
     #[error("rig has no limb {0:?}")]
     UnknownLimb(crate::rig::Limb),
     #[error("graph node `{node}` refers to unknown input `{input}`")]

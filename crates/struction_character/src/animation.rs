@@ -2,8 +2,9 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use struction_anim::{
     AnimError, AnimPlugin, AnimSystems,
+    base_pose::{BasePoseSet, RigPoseSet},
     locomotion::{Ground, GroundHit, LocomotionParams},
-    moves::{MoveKind, MovePose},
+    moves::{LoopPose, MovePose, PlaySequence},
     plugin::{AnimMotion, CustomGround, Locomotor, spawn_character},
     rig::Rig,
 };
@@ -49,9 +50,12 @@ pub fn spawn_rig(
     params: LocomotionParams,
 ) -> Result<Entity, AnimError> {
     let root = spawn_character(commands, rig, Transform::IDENTITY, params)?;
-    commands
-        .entity(root)
-        .insert((RigOf(body), CustomGround, MovePose::default()));
+    commands.entity(root).insert((
+        RigOf(body),
+        CustomGround,
+        MovePose::default(),
+        LoopPose::default(),
+    ));
     Ok(root)
 }
 
@@ -64,6 +68,7 @@ type Body = (
     &'static Collider,
     Option<&'static Rolling>,
     Option<&'static Attacking>,
+    Option<&'static PlaySequence>,
 );
 
 fn follow_bodies(
@@ -76,12 +81,13 @@ fn follow_bodies(
         &mut AnimMotion,
         &mut struction_anim::plugin::LocalUp,
         &mut MovePose,
+        &mut LoopPose,
     )>,
 ) {
     // Simulation timers run ahead of the interpolated body by the unspent part of a tick.
     let lag = fixed.timestep().as_secs_f32() * (1.0 - fixed.overstep_fraction());
-    for (of, mut root, mut motion, mut anim_up, mut pose) in &mut rigs {
-        let Ok((body, up, gravity, velocity, state, collider, rolling, attacking)) =
+    for (of, mut root, mut motion, mut anim_up, mut pose, mut looping) in &mut rigs {
+        let Ok((body, up, gravity, velocity, state, collider, rolling, attacking, play)) =
             bodies.get(of.0)
         else {
             continue;
@@ -92,11 +98,25 @@ fn follow_bodies(
         root.rotation = body.rotation;
         anim_up.0 = *up.0;
         let running = rolling
-            .map(|r| (MoveKind::Roll, r.elapsed, r.tuning.duration, r.direction))
-            .or(attacking.map(|a| (MoveKind::Swing, a.elapsed, a.tuning.duration, a.direction)));
-        if let Some((kind, elapsed, duration, direction)) = running {
+            .map(|r| {
+                (
+                    &r.tuning.sequence,
+                    r.elapsed,
+                    r.tuning.duration,
+                    r.direction,
+                )
+            })
+            .or(attacking.map(|a| {
+                (
+                    &a.tuning.sequence,
+                    a.elapsed,
+                    a.tuning.duration,
+                    a.direction,
+                )
+            }));
+        if let Some((sequence, elapsed, duration, direction)) = running {
             *pose = MovePose {
-                kind,
+                sequence: sequence.clone(),
                 phase: ((elapsed - lag).max(0.0) / duration).clamp(0.0, 1.0),
                 weight: 1.0,
                 direction,
@@ -104,6 +124,7 @@ fn follow_bodies(
         } else {
             pose.weight = (pose.weight - time.delta_secs() / 0.12).max(0.0);
         }
+        looping.follow(play.map(|play| play.sequence.as_str()), time.delta_secs());
         *motion = AnimMotion {
             velocity: velocity.0,
             // Swimming legs should not plant on the pool floor.
@@ -146,6 +167,7 @@ impl Ground for PhysicsGround<'_, '_, '_> {
 #[allow(clippy::type_complexity)]
 fn step_locomotion(
     time: Res<Time>,
+    poses: Option<Res<BasePoseSet>>,
     spatial: SpatialQuery,
     colliders: Query<&ColliderOf>,
     sensors: Query<(), With<Sensor>>,
@@ -157,6 +179,7 @@ fn step_locomotion(
             &struction_anim::plugin::LocalUp,
             &mut Locomotor,
             &MovePose,
+            Option<&RigPoseSet>,
         ),
         With<CustomGround>,
     >,
@@ -165,7 +188,7 @@ fn step_locomotion(
     if dt <= 0.0 {
         return;
     }
-    for (of, root, motion, up, mut locomotor, moving) in &mut rigs {
+    for (of, root, motion, up, mut locomotor, moving, library) in &mut rigs {
         // Feet stand on solid colliders other than the character's own body.
         let body = of.0;
         let solid = |other: Entity| {
@@ -177,8 +200,13 @@ fn step_locomotion(
             solid: &solid,
         };
         let mut input = motion.locomotion_input(*root, up.0);
-        // Feet do not stay planted at the takeoff point of a roll, nor while it fades out.
-        if moving.kind == MoveKind::Roll && moving.weight > 0.0 {
+        // Feet do not stay planted at the takeoff point of a whole-body move like a roll, nor
+        // while it fades out.
+        let library = library.map(|set| &set.0).or(poses.as_deref());
+        let whole_body = library
+            .and_then(|library| moving.sequence(library))
+            .is_some_and(|sequence| sequence.takeover >= 1.0);
+        if whole_body && moving.weight > 0.0 {
             locomotor.state.reset();
             input.grounded = false;
         }

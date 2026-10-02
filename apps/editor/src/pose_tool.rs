@@ -314,6 +314,7 @@ mod tests {
             "roll".into(),
             BasePose {
                 joints: vec![JointPose::rotation("head", Vec3::new(25.0, 0.0, 0.0))],
+                ..default()
             },
         );
         draft.apply(&mut editor).unwrap();

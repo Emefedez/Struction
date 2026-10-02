@@ -241,6 +241,9 @@ impl CharacterMove {
     pub fn holds(&self, state: &CharacterState, condition: CharacterCondition) -> bool {
         match condition {
             CharacterCondition::Grounded => state.grounded && !state.swimming,
+            CharacterCondition::Walking => {
+                state.grounded && !state.swimming && state.ground_speed >= WALKING_SPEED
+            }
             CharacterCondition::Airborne => !state.grounded && !state.swimming,
             CharacterCondition::Swimming => state.swimming,
             CharacterCondition::Rolling | CharacterCondition::Attacking => {
@@ -261,7 +264,12 @@ pub struct CharacterState {
     pub ground_normal: Vec3,
     /// Friction of the ground's `Surface`, 1.0 when it has none.
     pub ground_friction: f32,
+    /// Speed along the ground while grounded (m/s), zero otherwise.
+    pub ground_speed: f32,
 }
+
+/// Ground speed from which a grounded character counts as `Walking` (m/s).
+pub const WALKING_SPEED: f32 = 0.5;
 
 impl Default for CharacterState {
     fn default() -> Self {
@@ -271,6 +279,7 @@ impl Default for CharacterState {
             ground: None,
             ground_normal: Vec3::Y,
             ground_friction: 1.0,
+            ground_speed: 0.0,
         }
     }
 }
@@ -282,6 +291,8 @@ impl Default for CharacterState {
 pub enum CharacterCondition {
     /// On walkable ground, not swimming.
     Grounded,
+    /// Grounded and moving along the ground at [`WALKING_SPEED`] or faster.
+    Walking,
     /// Jumping or falling: neither on walkable ground nor swimming.
     Airborne,
     Swimming,
@@ -330,6 +341,7 @@ impl Plugin for CharacterControllerPlugin {
                     .owns::<PlayerControlled>()
                     .requires("physics")
                     .state("Grounded")
+                    .state("Walking")
                     .state("Airborne")
                     .state("Swimming")
                     .state("Recovering"),
@@ -465,6 +477,11 @@ fn sense_motion(
         let normal = state.ground_normal.normalize_or(*up.0);
         state.grounded &= velocity.0.dot(normal) <= LEAVING_GROUND_SPEED;
         state.swimming = submersion.0 >= controller.swim_threshold;
+        state.ground_speed = if state.grounded {
+            (velocity.0 - normal * velocity.0.dot(normal)).length()
+        } else {
+            0.0
+        };
         moving.recovery = (moving.recovery - time.delta_secs()).max(0.0);
     }
 }

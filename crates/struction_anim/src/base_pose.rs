@@ -1,5 +1,5 @@
 //! Authored base poses: sparse, data-only joint targets the solvers move away from and the
-//! springs return to.
+//! springs return to, and the [`PoseSequence`]s that play them in order.
 
 use std::collections::BTreeMap;
 
@@ -9,11 +9,12 @@ use bevy::ecs::{
     reflect::{ReflectComponent, ReflectResource},
 };
 use bevy::math::{EulerRot, Quat, Vec3};
-use bevy::reflect::Reflect;
+use bevy::reflect::{Reflect, std_traits::ReflectDefault};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AnimError;
 use crate::pose::{BoneMask, Pose};
+pub use crate::sequence::{PoseSequence, SequenceKey, Tumble};
 use crate::skeleton::Skeleton;
 
 /// Absolute local values for one joint; unset fields keep the underlying pose.
@@ -40,23 +41,38 @@ impl JointPose {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Reflect, Serialize, Deserialize)]
+#[reflect(Default)]
 pub struct BasePose {
+    /// What the pose is for, shown by tools.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[reflect(default)]
+    pub doc: String,
     pub joints: Vec<JointPose>,
 }
 
-/// Named library of base poses (`idle`, `grip`, `fist`, `seated`, `aim`, ...).
+/// A rig's library: named key poses (`idle`, `grip`, `seated`, `swing_raise`, ...) and the
+/// sequences that play them (`roll`, `swing`, ...). Authored as JSONC, such as the humanoid's
+/// `content/humanoid.poses.jsonc`.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Reflect, Serialize, Deserialize)]
 #[reflect(Resource)]
 pub struct BasePoseSet {
     pub poses: BTreeMap<String, BasePose>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[reflect(default)]
+    pub sequences: BTreeMap<String, PoseSequence>,
 }
 
-/// Sparse per-actor targets. Names are those consumed by the animation solvers (`idle`,
-/// `roll`, `swing_raise`, `swing_strike`, ...); unspecified poses use the shared library.
+/// Sparse per-actor overrides of the rig's library, by pose and sequence name; anything left out
+/// comes from the library.
 #[derive(Component, Clone, Debug, Default, PartialEq, Reflect, Serialize, Deserialize)]
-#[reflect(Component)]
+#[reflect(Component, Default)]
 pub struct PoseTargets {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[reflect(default)]
     pub poses: BTreeMap<String, BasePose>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[reflect(default)]
+    pub sequences: BTreeMap<String, PoseSequence>,
 }
 
 /// Effective library on a rig, rebuilt when its body's targets change.
@@ -64,6 +80,7 @@ pub struct PoseTargets {
 pub struct RigPoseSet(pub BasePoseSet);
 
 impl PoseTargets {
+    /// The library with these overrides, checked against `skeleton`.
     pub fn resolve(
         &self,
         defaults: &BasePoseSet,
@@ -74,11 +91,56 @@ impl PoseTargets {
             pose.resolve(skeleton)?;
             merged.poses.insert(name.clone(), pose.clone());
         }
+        for (name, sequence) in &self.sequences {
+            merged.sequences.insert(name.clone(), sequence.clone());
+        }
+        for name in self.sequences.keys() {
+            merged.sequences[name].validate(name, &merged)?;
+        }
         Ok(merged)
+    }
+
+    /// The sequence `name` plays for an actor with these overrides.
+    pub fn sequence<'a>(
+        targets: Option<&'a Self>,
+        defaults: Option<&'a BasePoseSet>,
+        name: &str,
+    ) -> Option<&'a PoseSequence> {
+        targets
+            .and_then(|targets| targets.sequences.get(name))
+            .or_else(|| defaults?.sequences.get(name))
     }
 }
 
 impl BasePoseSet {
+    /// Reads a library from JSONC and checks its sequences; joints are checked against a
+    /// skeleton by [`Self::validate`].
+    pub fn from_jsonc(text: &str) -> Result<Self, AnimError> {
+        let set: Self = jsonc_parser::parse_to_serde_value(text, &Default::default())
+            .map_err(|e| AnimError::Library(e.to_string()))?;
+        for (name, sequence) in &set.sequences {
+            sequence.validate(name, &set)?;
+        }
+        Ok(set)
+    }
+
+    /// Every pose binds to `skeleton` and every sequence plays known poses.
+    pub fn validate(&self, skeleton: &Skeleton) -> Result<(), AnimError> {
+        for pose in self.poses.values() {
+            pose.resolve(skeleton)?;
+        }
+        for (name, sequence) in &self.sequences {
+            sequence.validate(name, self)?;
+        }
+        Ok(())
+    }
+
+    pub fn sequence(&self, name: &str) -> Result<&PoseSequence, AnimError> {
+        self.sequences
+            .get(name)
+            .ok_or_else(|| AnimError::UnknownSequence(name.to_owned()))
+    }
+
     pub fn resolve(&self, name: &str, skeleton: &Skeleton) -> Result<ResolvedBasePose, AnimError> {
         self.poses
             .get(name)
@@ -161,6 +223,7 @@ impl ResolvedBasePose {
 mod tests {
     use super::*;
     use crate::humanoid;
+    use bevy::prelude::default;
 
     #[test]
     fn round_trips_through_json_and_applies() {
@@ -204,6 +267,7 @@ mod tests {
         let sk = humanoid::rig().skeleton;
         let bad = BasePose {
             joints: vec![JointPose::rotation("tail", Vec3::ZERO)],
+            ..default()
         };
         assert_eq!(
             bad.resolve(&sk),

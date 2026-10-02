@@ -79,6 +79,45 @@ fn a_swing_knocks_back_what_is_in_front_once() {
     );
 }
 
+/// The hit lands at the `strike` event of the swing's sequence, which an actor can override.
+#[test]
+fn the_strike_is_timed_by_the_swing_sequence() {
+    use struction_anim::base_pose::{BasePoseSet, PoseTargets};
+    let (mut app, body) = scene();
+    let library = app.world().resource::<BasePoseSet>().clone();
+    let strike = |app: &mut App| {
+        intent(app, body).attack_requested = true;
+        step(app, 1);
+        app.world().get::<Attacking>(body).unwrap().strike
+    };
+    assert_eq!(
+        strike(&mut app),
+        library.sequences["swing"].events["strike"]
+    );
+    step(&mut app, 60);
+    let mut late = library.sequences["swing"].clone();
+    late.events.insert("strike".into(), 0.8);
+    let mut targets = PoseTargets::default();
+    targets.sequences.insert("swing".into(), late);
+    app.world_mut().entity_mut(body).insert(targets);
+    assert_eq!(strike(&mut app), 0.8);
+    let mut ticks = 1;
+    while !app.world().get::<Attacking>(body).unwrap().struck {
+        step(&mut app, 1);
+        ticks += 1;
+    }
+    let tick = app
+        .world()
+        .resource::<Time<Fixed>>()
+        .timestep()
+        .as_secs_f32();
+    let expected = (0.8 * Attack::default().duration / tick).ceil() as i32;
+    assert!(
+        (ticks - expected).abs() <= 1,
+        "{ticks} ticks, expected {expected}"
+    );
+}
+
 #[test]
 fn one_move_at_a_time_and_jumps_wait() {
     let (mut app, body) = scene();

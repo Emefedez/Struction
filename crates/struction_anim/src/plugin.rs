@@ -32,7 +32,7 @@ use crate::constraint::{
 use crate::error::AnimError;
 use crate::humanoid;
 use crate::locomotion::{Ground, LocomotionInput, LocomotionParams, LocomotionState};
-use crate::moves::MovePose;
+use crate::moves::{LoopPose, MovePose, PlaySequence};
 use crate::pose::Pose;
 use crate::rig::{Limb, Rig};
 use crate::solve::{PoseSolver, SolveFrame, SolverSettings, foot_goals};
@@ -68,6 +68,8 @@ impl Plugin for AnimPlugin {
             .register_type::<MotionFromTransform>()
             .register_type::<CustomGround>()
             .register_type::<MovePose>()
+            .register_type::<LoopPose>()
+            .register_type::<PlaySequence>()
             .register_type::<AnimConstraints>()
             .register_type::<AnimIntent>()
             .register_type::<Locomotor>()
@@ -549,6 +551,7 @@ type SolveData = (
     Option<&'static Locomotor>,
     Option<&'static LocalUp>,
     Option<&'static MovePose>,
+    Option<&'static LoopPose>,
     Option<&'static RigPoseSet>,
 );
 
@@ -559,7 +562,7 @@ fn solve_poses(
     transforms: WorldTransforms,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut solver, mut solved, constraints, locomotor, up, moving, targets) in
+    for (entity, mut solver, mut solved, constraints, locomotor, up, moving, looping, targets) in
         &mut characters
     {
         let Some(root) = transforms.get(entity) else {
@@ -567,7 +570,11 @@ fn solve_poses(
         };
         let up = up.map_or(Vec3::Y, |u| u.0).normalize_or(Vec3::Y);
         let mut goals = core::mem::take(&mut solver.goals);
-        let ordinary_weight = 1.0 - moving.map_or(0.0, MovePose::takeover);
+        let library = targets.map_or(&*poses, |targets| &targets.0);
+        let takeover = moving
+            .map_or(0.0, |moving| moving.takeover(library))
+            .max(looping.map_or(0.0, |looping| looping.takeover(library)));
+        let ordinary_weight = 1.0 - takeover;
         for goal in &mut goals {
             goal.weight *= ordinary_weight;
         }
@@ -583,12 +590,13 @@ fn solve_poses(
         let frame = SolveFrame {
             root,
             up,
-            base_poses: targets.map_or(&*poses, |targets| &targets.0),
+            base_poses: library,
             constraints: &constraints.0,
             goals: &goals,
             locomotion: output,
             body_weight,
             moving,
+            looping,
             dt,
         };
         match solver.solver.solve(&frame) {

@@ -1,0 +1,201 @@
+// The humanoid rig's pose library: named key poses and the sequences that play them.
+//
+// A pose is sparse: it lists only the joints it sets, as local XYZ Euler angles in degrees
+// (`euler_deg`) and, rarely, a local `translation` in meters. Joints it leaves out keep whatever
+// locomotion, constraints or an earlier key gave them.
+//
+// A sequence plays key poses in order. Each key reaches its pose at `at`, a fraction of the
+// sequence, easing from the previous key. A one-shot sequence is stretched over the move that
+// plays it (a roll's or an attack's `duration`); a `looping` one repeats every `seconds`,
+// wrapping from its last key back to its first, until the state that plays it ends.
+//   takeover   fraction of locomotion, feet and constraints it replaces: 1 for the whole body,
+//              0 to leave walking legs alone
+//   fade_in    fraction of a one-shot sequence spent blending in, `fade_out` blending out
+//   events     named instants, as fractions, that simulation acts on (`strike` lands a hit)
+//   tumble     a full turn of the pelvis across the travel direction between two fractions,
+//              with the pelvis lowered by `sink`
+//
+// Definitions override any of these for their actors with a `PoseTargets` component, which the
+// editor's pose tool writes.
+{
+  "poses": {
+    "idle": {
+      "doc": "Standing base the body springs back to: relaxed arms, soft knees, curled fingers",
+      "joints": [
+        { "joint": "fingers_0_l", "euler_deg": [15, 0, 0] },
+        { "joint": "fingers_1_l", "euler_deg": [20, 0, 0] },
+        { "joint": "fingers_2_l", "euler_deg": [15, 0, 0] },
+        { "joint": "thumb_0_l", "euler_deg": [5, 0, 3.5] },
+        { "joint": "thumb_1_l", "euler_deg": [10, 0, 0] },
+        { "joint": "fingers_0_r", "euler_deg": [15, 0, 0] },
+        { "joint": "fingers_1_r", "euler_deg": [20, 0, 0] },
+        { "joint": "fingers_2_r", "euler_deg": [15, 0, 0] },
+        { "joint": "thumb_0_r", "euler_deg": [5, 0, -3.5] },
+        { "joint": "thumb_1_r", "euler_deg": [10, 0, 0] },
+        { "joint": "upper_arm_l", "euler_deg": [-4, 0, -8] },
+        { "joint": "forearm_l", "euler_deg": [18, 0, 0] },
+        { "joint": "thigh_l", "euler_deg": [6, 0, 0] },
+        { "joint": "shin_l", "euler_deg": [-10, 0, 0] },
+        { "joint": "upper_arm_r", "euler_deg": [-4, 0, 8] },
+        { "joint": "forearm_r", "euler_deg": [18, 0, 0] },
+        { "joint": "thigh_r", "euler_deg": [6, 0, 0] },
+        { "joint": "shin_r", "euler_deg": [-10, 0, 0] }
+      ]
+    },
+    "grip": {
+      "doc": "Hands closed around a handle; used by hold constraints",
+      "joints": [
+        { "joint": "fingers_0_l", "euler_deg": [55, 0, 0] },
+        { "joint": "fingers_1_l", "euler_deg": [70, 0, 0] },
+        { "joint": "fingers_2_l", "euler_deg": [50, 0, 0] },
+        { "joint": "thumb_0_l", "euler_deg": [15, 0, 10.5] },
+        { "joint": "thumb_1_l", "euler_deg": [30, 0, 0] },
+        { "joint": "fingers_0_r", "euler_deg": [55, 0, 0] },
+        { "joint": "fingers_1_r", "euler_deg": [70, 0, 0] },
+        { "joint": "fingers_2_r", "euler_deg": [50, 0, 0] },
+        { "joint": "thumb_0_r", "euler_deg": [15, 0, -10.5] },
+        { "joint": "thumb_1_r", "euler_deg": [30, 0, 0] }
+      ]
+    },
+    "fist": {
+      "doc": "Clenched hands",
+      "joints": [
+        { "joint": "fingers_0_l", "euler_deg": [85, 0, 0] },
+        { "joint": "fingers_1_l", "euler_deg": [100, 0, 0] },
+        { "joint": "fingers_2_l", "euler_deg": [70, 0, 0] },
+        { "joint": "thumb_0_l", "euler_deg": [25, 0, 17.5] },
+        { "joint": "thumb_1_l", "euler_deg": [40, 0, 0] },
+        { "joint": "fingers_0_r", "euler_deg": [85, 0, 0] },
+        { "joint": "fingers_1_r", "euler_deg": [100, 0, 0] },
+        { "joint": "fingers_2_r", "euler_deg": [70, 0, 0] },
+        { "joint": "thumb_0_r", "euler_deg": [25, 0, -17.5] },
+        { "joint": "thumb_1_r", "euler_deg": [40, 0, 0] }
+      ]
+    },
+    "seated": {
+      "doc": "Sitting on a seat about half a meter high; used by sit constraints",
+      "joints": [
+        { "joint": "hips", "translation": [0, 0.54, 0.04] },
+        { "joint": "spine", "euler_deg": [-4, 0, 0] },
+        { "joint": "thigh_l", "euler_deg": [90, 0, -4] },
+        { "joint": "shin_l", "euler_deg": [-90, 0, 0] },
+        { "joint": "upper_arm_l", "euler_deg": [25, 0, -6] },
+        { "joint": "forearm_l", "euler_deg": [55, 0, 0] },
+        { "joint": "thigh_r", "euler_deg": [90, 0, 4] },
+        { "joint": "shin_r", "euler_deg": [-90, 0, 0] },
+        { "joint": "upper_arm_r", "euler_deg": [25, 0, 6] },
+        { "joint": "forearm_r", "euler_deg": [55, 0, 0] }
+      ]
+    },
+    "aim": {
+      "doc": "Both arms raised forward, the right one leveled",
+      "joints": [
+        { "joint": "spine", "euler_deg": [0, -12, 0] },
+        { "joint": "head", "euler_deg": [0, 12, 0] },
+        { "joint": "upper_arm_r", "euler_deg": [88, 0, 4] },
+        { "joint": "forearm_r", "euler_deg": [4, 0, 0] },
+        { "joint": "upper_arm_l", "euler_deg": [62, 0, -14] },
+        { "joint": "forearm_l", "euler_deg": [50, 0, 0] }
+      ]
+    },
+    "roll": {
+      "doc": "Tucked into a ball, the key pose of the roll",
+      "joints": [
+        { "joint": "spine", "euler_deg": [-35, 0, 0] },
+        { "joint": "chest", "euler_deg": [-30, 0, 0] },
+        { "joint": "head", "euler_deg": [-20, 0, 0] },
+        { "joint": "thigh_l", "euler_deg": [135, 0, -6] },
+        { "joint": "shin_l", "euler_deg": [-150, 0, 0] },
+        { "joint": "upper_arm_l", "euler_deg": [65, 0, -12] },
+        { "joint": "forearm_l", "euler_deg": [120, 0, 0] },
+        { "joint": "thigh_r", "euler_deg": [135, 0, 6] },
+        { "joint": "shin_r", "euler_deg": [-150, 0, 0] },
+        { "joint": "upper_arm_r", "euler_deg": [65, 0, 12] },
+        { "joint": "forearm_r", "euler_deg": [120, 0, 0] }
+      ]
+    },
+    "swing_raise": {
+      "doc": "Wind-up of the overhead swing: right hand raised behind the head",
+      "joints": [
+        { "joint": "spine", "euler_deg": [6, 0, 0] },
+        { "joint": "chest", "euler_deg": [0, -28, 0] },
+        { "joint": "head", "euler_deg": [0, 20, 0] },
+        { "joint": "upper_arm_r", "euler_deg": [160, 0, 18] },
+        { "joint": "forearm_r", "euler_deg": [70, 0, 0] },
+        { "joint": "upper_arm_l", "euler_deg": [30, 0, -12] },
+        { "joint": "forearm_l", "euler_deg": [40, 0, 0] },
+        { "joint": "fingers_0_l", "euler_deg": [75, 0, 0] },
+        { "joint": "fingers_1_l", "euler_deg": [90, 0, 0] },
+        { "joint": "fingers_2_l", "euler_deg": [65, 0, 0] },
+        { "joint": "thumb_0_l", "euler_deg": [20, 0, 14] },
+        { "joint": "thumb_1_l", "euler_deg": [35, 0, 0] },
+        { "joint": "fingers_0_r", "euler_deg": [75, 0, 0] },
+        { "joint": "fingers_1_r", "euler_deg": [90, 0, 0] },
+        { "joint": "fingers_2_r", "euler_deg": [65, 0, 0] },
+        { "joint": "thumb_0_r", "euler_deg": [20, 0, -14] },
+        { "joint": "thumb_1_r", "euler_deg": [35, 0, 0] }
+      ]
+    },
+    "swing_strike": {
+      "doc": "Follow-through of the overhead swing: struck down in front",
+      "joints": [
+        { "joint": "spine", "euler_deg": [-16, 0, 0] },
+        { "joint": "chest", "euler_deg": [0, 30, 0] },
+        { "joint": "head", "euler_deg": [0, -18, 0] },
+        { "joint": "upper_arm_r", "euler_deg": [40, 0, -14] },
+        { "joint": "forearm_r", "euler_deg": [12, 0, 0] },
+        { "joint": "upper_arm_l", "euler_deg": [-10, 0, -10] },
+        { "joint": "forearm_l", "euler_deg": [30, 0, 0] }
+      ]
+    },
+    "arm_swing_left": {
+      "doc": "Walking arms, left arm forward",
+      "joints": [
+        { "joint": "upper_arm_l", "euler_deg": [22, 0, -8] },
+        { "joint": "forearm_l", "euler_deg": [30, 0, 0] },
+        { "joint": "upper_arm_r", "euler_deg": [-18, 0, 8] },
+        { "joint": "forearm_r", "euler_deg": [12, 0, 0] },
+        { "joint": "chest", "euler_deg": [0, 6, 0] }
+      ]
+    },
+    "arm_swing_right": {
+      "doc": "Walking arms, right arm forward",
+      "joints": [
+        { "joint": "upper_arm_l", "euler_deg": [-18, 0, -8] },
+        { "joint": "forearm_l", "euler_deg": [12, 0, 0] },
+        { "joint": "upper_arm_r", "euler_deg": [22, 0, 8] },
+        { "joint": "forearm_r", "euler_deg": [30, 0, 0] },
+        { "joint": "chest", "euler_deg": [0, -6, 0] }
+      ]
+    }
+  },
+  "sequences": {
+    "roll": {
+      "doc": "Dodge roll: tuck, a full turn around the pelvis, then stand",
+      "keys": [{ "pose": "roll", "at": 0 }],
+      "takeover": 1,
+      "fade_in": 0.15,
+      "fade_out": 0.2,
+      "tumble": { "from": 0.15, "to": 0.8, "sink": 0.62 }
+    },
+    "swing": {
+      "doc": "Overhead melee swing of the right hand; the legs keep walking",
+      "keys": [
+        { "pose": "swing_raise", "at": 0.3 },
+        { "pose": "swing_strike", "at": 0.55 }
+      ],
+      "fade_in": 0.1,
+      "fade_out": 0.35,
+      "events": { "strike": 0.45 }
+    },
+    "arm_swing": {
+      "doc": "Arms swinging against the legs while walking; loop it from a `Walking` state",
+      "keys": [
+        { "pose": "arm_swing_left", "at": 0 },
+        { "pose": "arm_swing_right", "at": 0.5 }
+      ],
+      "looping": true,
+      "seconds": 1.1
+    }
+  }
+}

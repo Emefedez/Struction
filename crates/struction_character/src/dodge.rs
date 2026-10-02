@@ -26,6 +26,8 @@ pub struct Roll {
     pub blocked_while: Vec<CharacterCondition>,
     /// Actions that may cut it short, and from how many seconds in. Empty: it always runs out.
     pub cancel_into: Vec<CancelInto>,
+    /// Pose sequence the rig plays over the roll, by name in its pose library.
+    pub sequence: String,
 }
 
 impl Default for Roll {
@@ -41,6 +43,7 @@ impl Default for Roll {
                 CharacterCondition::Recovering,
             ],
             cancel_into: Vec::new(),
+            sequence: "roll".into(),
         }
     }
 }

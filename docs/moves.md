@@ -32,15 +32,15 @@ they use: `DodgePlugin` and `CombatPlugin` from `struction_character` (`structio
 
 ## Tuning
 
-`Roll { duration: 0.65, peak_speed: 10, recovery: 0.2, blocked_while: ["Airborne", "Swimming", "Attacking", "Recovering"], cancel_into: [] }`.
+`Roll { duration: 0.65, peak_speed: 10, recovery: 0.2, blocked_while: ["Airborne", "Swimming", "Attacking", "Recovering"], cancel_into: [], sequence: "roll" }`.
 Duration includes tucking and getting up. Speed follows a sine curve, so the defaults cover about
 4.14 m on unobstructed flat ground. Walls can shorten it. Movement ignores surface traction while
 rolling. The upright capsule keeps its shape, so the tuck does not fit under lower ceilings.
 There are no immunity frames or stamina costs.
 
-`Attack { duration: 0.5, reach: 1, radius: 0.6, knockback: 4, recovery: 0.15, blocked_while: ["Swimming", "Rolling", "Recovering"], cancel_into: [] }`.
-The strike lands once, when the swing passes its strike phase (`struction_anim::moves::SWING_STRIKE`,
-45% of the duration). It hits every solid body overlapping a sphere of `radius` centered `reach`
+`Attack { duration: 0.5, reach: 1, radius: 0.6, knockback: 4, recovery: 0.15, blocked_while: ["Swimming", "Rolling", "Recovering"], cancel_into: [], sequence: "swing" }`.
+The strike lands once, when the swing passes the `strike` event of its pose sequence (45% of the
+duration for the engine's `swing`; halfway if the sequence names none), read when the swing starts. It hits every solid body overlapping a sphere of `radius` centered `reach`
 ahead of the body's center, excluding the attacker and sensor volumes. The character keeps
 walking while swinging and faces the strike.
 
@@ -49,7 +49,7 @@ walking while swinging and faces the strike.
 Two lists per move, both plain data, answer different questions.
 
 `blocked_while` lists the `CharacterCondition`s in which the move neither starts nor continues:
-`Grounded`, `Airborne` (jumping or falling), `Swimming`, `Rolling`, `Attacking`, or `Recovering`
+`Grounded`, `Walking`, `Airborne` (jumping or falling), `Swimming`, `Rolling`, `Attacking`, or `Recovering`
 (the `recovery` seconds after a move ends; it only refuses starting, never cuts a move short). A
 move ignores its own condition. Becoming true mid-move cancels it, for example on leaving the
 ground mid-roll. The defaults keep one move at a time with a short recovery between them, but
@@ -82,7 +82,7 @@ state holds; leaving the state restores what it replaced:
 }
 ```
 
-State names come from the extensors that contribute them: `character` (`Grounded`, `Airborne`,
+State names come from the extensors that contribute them: `character` (`Grounded`, `Walking`, `Airborne`,
 `Swimming`, `Recovering`), `dodge` (`Rolling`) and `combat` (`Attacking`). An unknown state is an
 error with its file and line, and a state or enabled component of an opt-in extensor needs that
 extensor named, like any of its components. Rules apply after the moves and before the
@@ -119,11 +119,38 @@ yet.
 
 ## Presentation
 
-The bridge interpolates the running move's phase into the rig's `MovePose`. A roll blends the
-authored `roll` tuck pose with a full turn around the pelvis, suppressing locomotion and
-constraints while it tumbles. A swing blends the `swing_raise` and `swing_strike` base poses on
-the arms and torso only, so the legs keep walking. Interrupted poses fade out over 0.12 seconds.
-The rig root and capsule never turn over, so neither does the camera.
+Each move plays the pose sequence its tuning names (`sequence`), stretched over its duration;
+see [Pose sequences](#pose-sequences). The bridge interpolates the running move's phase into the
+rig's `MovePose`. The engine's `roll` holds the tucked `roll` pose under a full turn of the
+pelvis, taking over locomotion and constraints while it tumbles. Its `swing` eases from
+`swing_raise` to `swing_strike` on the arms and torso only, so the legs keep walking.
+Interrupted moves fade out over 0.12 seconds. The rig root and capsule never turn over, so
+neither does the camera.
+
+## Pose sequences
+
+A rig's pose library holds named key poses and the sequences that play them. The humanoid's is
+`crates/struction_anim/content/humanoid.poses.jsonc`, whose header documents every field. A
+sequence lists `keys` (`{ "pose": "swing_raise", "at": 0.3 }`) reached in order, each eased from
+the one before; `takeover` (0 to 1) is how much of locomotion, feet and constraints it replaces;
+`fade_in`/`fade_out` bound one-shots; `events` name instants simulation acts on (`strike`); a
+`tumble` turns the pelvis over (the roll).
+
+A `looping` sequence repeats every `seconds`, wrapping from its last key to its first. A body
+plays one while it has a `PlaySequence` component, usually enabled by a state, so leaving the state
+interrupts it and it blends out over 0.2 seconds; it plays under any move:
+
+```jsonc
+"states": {
+  "Walking": { "enable": { "PlaySequence": { "sequence": "arm_swing" } } }
+}
+```
+
+`Walking` holds while the character is grounded and moving along the ground at 0.5 m/s or more.
+A definition overrides poses and sequences for its actors (and their descendants) with
+`PoseTargets { poses, sequences }`; the editor's pose tool edits it, and anything left out comes
+from the library. Unknown poses in a sequence, keys out of order or outside 0..1 and the like are
+reported with the sequence's name.
 
 `--smoke-test` rolls at three seconds and attacks at four and a half. `--trace FILE.jsonl` records
 `Rolling`, `Attacking` and `CharacterMove` alongside position, velocity and grounding. Headless

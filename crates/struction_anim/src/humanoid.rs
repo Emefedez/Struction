@@ -1,4 +1,5 @@
-//! Built-in humanoid rig and base poses: the reference content for tests and the playground.
+//! Built-in humanoid rig and its pose library (`content/humanoid.poses.jsonc`): the reference
+//! content for tests and the playground.
 //!
 //! Y up, -Z forward, +X is the character's right, meters. The rest pose hangs the arms down
 //! and stands with straight legs; the origin sits on the ground below the pelvis.
@@ -6,7 +7,7 @@
 use bevy::math::Vec3;
 use bevy::transform::components::Transform;
 
-use crate::base_pose::{BasePose, BasePoseSet, JointPose};
+use crate::base_pose::BasePoseSet;
 use crate::rig::{Limb, LimbBinding, Rig};
 use crate::skeleton::{JointDef, Skeleton};
 
@@ -129,136 +130,15 @@ pub fn rig() -> Rig {
     }
 }
 
+/// The humanoid's pose library, authored in [`POSES_FILE`].
 pub fn base_poses() -> BasePoseSet {
-    let mut set = BasePoseSet::default();
-    let euler =
-        |joint: &str, x: f32, y: f32, z: f32| JointPose::rotation(joint, Vec3::new(x, y, z));
-    let both = |f: &dyn Fn(&str, f32) -> Vec<JointPose>| -> Vec<JointPose> {
-        [("l", -1.0), ("r", 1.0)]
-            .into_iter()
-            .flat_map(|(s, side)| f(s, side))
-            .collect()
-    };
-    let hand = |curl: [f32; 3], thumb: [f32; 2]| {
-        both(&|s, side| {
-            vec![
-                euler(&format!("fingers_0_{s}"), curl[0], 0.0, 0.0),
-                euler(&format!("fingers_1_{s}"), curl[1], 0.0, 0.0),
-                euler(&format!("fingers_2_{s}"), curl[2], 0.0, 0.0),
-                euler(
-                    &format!("thumb_0_{s}"),
-                    thumb[0],
-                    0.0,
-                    -side * 0.7 * thumb[0],
-                ),
-                euler(&format!("thumb_1_{s}"), thumb[1], 0.0, 0.0),
-            ]
-        })
-    };
-
-    let mut idle = hand([15.0, 20.0, 15.0], [5.0, 10.0]);
-    idle.extend(both(&|s, side| {
-        vec![
-            euler(&format!("upper_arm_{s}"), -4.0, 0.0, side * 8.0),
-            euler(&format!("forearm_{s}"), 18.0, 0.0, 0.0),
-            euler(&format!("thigh_{s}"), 6.0, 0.0, 0.0),
-            euler(&format!("shin_{s}"), -10.0, 0.0, 0.0),
-        ]
-    }));
-    set.poses.insert("idle".into(), BasePose { joints: idle });
-    set.poses.insert(
-        "grip".into(),
-        BasePose {
-            joints: hand([55.0, 70.0, 50.0], [15.0, 30.0]),
-        },
-    );
-    set.poses.insert(
-        "fist".into(),
-        BasePose {
-            joints: hand([85.0, 100.0, 70.0], [25.0, 40.0]),
-        },
-    );
-
-    let mut seated = vec![
-        JointPose {
-            joint: "hips".into(),
-            translation: Some(Vec3::new(0.0, 0.54, 0.04)),
-            euler_deg: None,
-        },
-        euler("spine", -4.0, 0.0, 0.0),
-    ];
-    seated.extend(both(&|s, side| {
-        vec![
-            euler(&format!("thigh_{s}"), 90.0, 0.0, side * 4.0),
-            euler(&format!("shin_{s}"), -90.0, 0.0, 0.0),
-            euler(&format!("upper_arm_{s}"), 25.0, 0.0, side * 6.0),
-            euler(&format!("forearm_{s}"), 55.0, 0.0, 0.0),
-        ]
-    }));
-    set.poses
-        .insert("seated".into(), BasePose { joints: seated });
-
-    set.poses.insert(
-        "aim".into(),
-        BasePose {
-            joints: vec![
-                euler("spine", 0.0, -12.0, 0.0),
-                euler("head", 0.0, 12.0, 0.0),
-                euler("upper_arm_r", 88.0, 0.0, 4.0),
-                euler("forearm_r", 4.0, 0.0, 0.0),
-                euler("upper_arm_l", 62.0, 0.0, -14.0),
-                euler("forearm_l", 50.0, 0.0, 0.0),
-            ],
-        },
-    );
-    let mut roll = vec![
-        euler("spine", -35.0, 0.0, 0.0),
-        euler("chest", -30.0, 0.0, 0.0),
-        euler("head", -20.0, 0.0, 0.0),
-    ];
-    roll.extend(both(&|s, side| {
-        vec![
-            euler(&format!("thigh_{s}"), 135.0, 0.0, side * 6.0),
-            euler(&format!("shin_{s}"), -150.0, 0.0, 0.0),
-            euler(&format!("upper_arm_{s}"), 65.0, 0.0, side * 12.0),
-            euler(&format!("forearm_{s}"), 120.0, 0.0, 0.0),
-        ]
-    }));
-    set.poses.insert("roll".into(), BasePose { joints: roll });
-
-    // An overhead swing of the right hand: raised behind the head, then struck down in front.
-    let mut swing_raise = vec![
-        euler("spine", 6.0, 0.0, 0.0),
-        euler("chest", 0.0, -28.0, 0.0),
-        euler("head", 0.0, 20.0, 0.0),
-        euler("upper_arm_r", 160.0, 0.0, 18.0),
-        euler("forearm_r", 70.0, 0.0, 0.0),
-        euler("upper_arm_l", 30.0, 0.0, -12.0),
-        euler("forearm_l", 40.0, 0.0, 0.0),
-    ];
-    swing_raise.extend(hand([75.0, 90.0, 65.0], [20.0, 35.0]));
-    set.poses.insert(
-        "swing_raise".into(),
-        BasePose {
-            joints: swing_raise,
-        },
-    );
-    set.poses.insert(
-        "swing_strike".into(),
-        BasePose {
-            joints: vec![
-                euler("spine", -16.0, 0.0, 0.0),
-                euler("chest", 0.0, 30.0, 0.0),
-                euler("head", 0.0, -18.0, 0.0),
-                euler("upper_arm_r", 40.0, 0.0, -14.0),
-                euler("forearm_r", 12.0, 0.0, 0.0),
-                euler("upper_arm_l", -10.0, 0.0, -10.0),
-                euler("forearm_l", 30.0, 0.0, 0.0),
-            ],
-        },
-    );
-    set
+    BasePoseSet::from_jsonc(POSES).expect("the humanoid pose library is valid")
 }
+
+const POSES: &str = include_str!("../content/humanoid.poses.jsonc");
+
+/// Source of [`base_poses`], for tools that show or open it.
+pub const POSES_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/content/humanoid.poses.jsonc");
 
 #[cfg(test)]
 mod tests {
@@ -280,19 +160,11 @@ mod tests {
     }
 
     #[test]
-    fn every_base_pose_resolves() {
-        let rig = rig();
-        for name in [
-            "idle",
-            "grip",
-            "fist",
-            "seated",
-            "aim",
-            "roll",
-            "swing_raise",
-            "swing_strike",
-        ] {
-            base_poses().resolve(name, &rig.skeleton).unwrap();
+    fn the_pose_library_fits_the_rig() {
+        let poses = base_poses();
+        poses.validate(&rig().skeleton).unwrap();
+        for sequence in ["roll", "swing", "arm_swing"] {
+            poses.sequence(sequence).unwrap();
         }
     }
 }

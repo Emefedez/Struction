@@ -14,7 +14,7 @@ use crate::constraint::{AnimConstraint, ConstraintProperty, ResolvedConstraint};
 use crate::error::AnimError;
 use crate::ik::{self, GazeLimits};
 use crate::locomotion::LocomotionOutput;
-use crate::moves::MovePose;
+use crate::moves::{LoopPose, MovePose};
 use crate::pose::{BoneMask, Pose};
 use crate::rig::{Limb, Rig};
 use crate::spring::{SpringParams, SpringQuat};
@@ -110,7 +110,9 @@ pub struct SolveFrame<'a> {
     /// Locomotion result; `body_weight` scales its pelvis motion and deformation.
     pub locomotion: Option<&'a LocomotionOutput>,
     pub body_weight: f32,
+    /// A move's one-shot sequence, over the looping one.
     pub moving: Option<&'a MovePose>,
+    pub looping: Option<&'a LoopPose>,
     pub dt: f32,
 }
 
@@ -351,6 +353,9 @@ impl PoseSolver {
         if let Some(loco) = frame.locomotion {
             let w = frame.body_weight.clamp(0.0, 1.0);
             pose.locals[self.rig.root].scale = Vec3::ONE.lerp(loco.scale, w);
+        }
+        if let Some(looping) = frame.looping {
+            looping.apply(&self.rig, frame.base_poses, frame.root, frame.up, &mut pose)?;
         }
         if let Some(moving) = frame.moving {
             moving.apply(&self.rig, frame.base_poses, frame.root, frame.up, &mut pose)?;

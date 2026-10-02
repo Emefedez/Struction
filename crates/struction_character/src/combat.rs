@@ -1,10 +1,10 @@
-//! The `combat` extensor: an optional melee swing. The strike lands at a fixed phase of the
-//! swing, matching the procedural pose, and hits what is in front of the character through the
-//! `combat/hit` action, so definitions can react to being hit.
+//! The `combat` extensor: an optional melee swing. The strike lands at the `strike` event of the
+//! swing's pose sequence, authored data shared with its animation, and hits what is in front of
+//! the character through the `combat/hit` action, so definitions can react to being hit.
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use struction_anim::moves::SWING_STRIKE;
+use struction_anim::base_pose::{BasePoseSet, PoseTargets};
 use struction_core::{
     ActionAppExt, ActionArgs, ActionCall, ActionInvocation, ActionMeta, ActionQueue,
     ExtensorAppExt, ExtensorMeta, ParamType,
@@ -36,7 +36,12 @@ pub struct Attack {
     pub blocked_while: Vec<CharacterCondition>,
     /// Actions that may cut it short, and from how many seconds in. Empty: it always runs out.
     pub cancel_into: Vec<CancelInto>,
+    /// Pose sequence the rig plays over the swing; its `strike` event times the hit.
+    pub sequence: String,
 }
+
+/// Phase of the strike when the swing's sequence names no `strike` event.
+pub const DEFAULT_STRIKE: f32 = 0.5;
 
 impl Default for Attack {
     fn default() -> Self {
@@ -52,6 +57,7 @@ impl Default for Attack {
                 CharacterCondition::Recovering,
             ],
             cancel_into: Vec::new(),
+            sequence: "swing".into(),
         }
     }
 }
@@ -92,6 +98,8 @@ pub struct Attacking {
     pub tuning: Attack,
     /// The strike has landed (or missed); a swing strikes once.
     pub struck: bool,
+    /// Phase the strike lands at, read from the sequence when the swing started.
+    pub strike: f32,
 }
 
 impl Attacking {
@@ -108,6 +116,10 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
+        // Hits are timed by the swing's pose sequence, with or without animation running.
+        if !app.world().contains_resource::<BasePoseSet>() {
+            app.insert_resource(struction_anim::humanoid::base_poses());
+        }
         app.register_type::<Attack>()
             .register_type::<Attacking>()
             .register_extensor(
@@ -196,10 +208,12 @@ type Attacker<'a> = (
     &'a Position,
     Option<&'a Attack>,
     Option<&'a mut Attacking>,
+    Option<&'a PoseTargets>,
 );
 
 /// Starts accepted requests and runs swings; the character keeps walking meanwhile, facing the
 /// strike. A blocking condition or losing the capability cancels a swing.
+#[allow(clippy::too_many_arguments)]
 fn attack(
     mut commands: Commands,
     time: Res<Time>,
@@ -207,10 +221,11 @@ fn attack(
     bodies: Query<&ColliderOf>,
     sensors: Query<(), With<Sensor>>,
     mut queue: Option<ResMut<ActionQueue>>,
+    poses: Option<Res<BasePoseSet>>,
     mut characters: Query<Attacker>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut intent, state, look, mut moving, up, position, tuning, attacking) in
+    for (entity, mut intent, state, look, mut moving, up, position, tuning, attacking, targets) in
         &mut characters
     {
         let up = *up.0;
@@ -244,6 +259,9 @@ fn attack(
                     up,
                     tuning: tuning.clone(),
                     struck: false,
+                    strike: PoseTargets::sequence(targets, poses.as_deref(), &tuning.sequence)
+                        .and_then(|sequence| sequence.event("strike"))
+                        .unwrap_or(DEFAULT_STRIKE),
                 }
             }
         };
@@ -251,7 +269,7 @@ fn attack(
         swing.up = up;
         swing.elapsed = (swing.elapsed + dt).min(swing.tuning.duration);
         moving.facing = Some(swing.direction);
-        if !swing.struck && swing.phase() >= SWING_STRIKE {
+        if !swing.struck && swing.phase() >= swing.strike {
             swing.struck = true;
             let center = position.0 + swing.direction * swing.tuning.reach;
             let filter = SpatialQueryFilter::default().with_excluded_entities([entity]);

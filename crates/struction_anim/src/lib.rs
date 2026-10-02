@@ -5,7 +5,7 @@
 //! ```
 //!
 //! No clips. Authored base poses are attractors; solvers move joints away from them and springs
-//! snap them back. The math modules are pure and Bevy-free (headless testable); `plugin` is the
+//! snap them back. Moves and states play authored sequences of them. The math modules are pure and Bevy-free (headless testable); `plugin` is the
 //! thin ECS layer on top.
 
 pub mod affordance;
@@ -20,6 +20,7 @@ pub mod moves;
 pub mod plugin;
 pub mod pose;
 pub mod rig;
+pub mod sequence;
 pub mod skeleton;
 pub mod solve;
 pub mod spring;

@@ -15,6 +15,7 @@ impl CharacterCondition {
     pub fn named(name: &str) -> Option<Self> {
         Some(match name {
             "Grounded" => Self::Grounded,
+            "Walking" => Self::Walking,
             "Airborne" => Self::Airborne,
             "Swimming" => Self::Swimming,
             "Rolling" => Self::Rolling,
