@@ -229,7 +229,26 @@ pub fn editor_ui(
         if compact && matches!(&command, Command::Select(Some(_))) {
             drafts.compact_tab = 1;
         }
-        editor.apply(command);
+        if let Command::OpenIde(target) = command {
+            if let Some(project) = &editor.project {
+                match project
+                    .source_location(&target)
+                    .map_err(|e| e.to_string())
+                    .and_then(|location| toolbox.programs.open_ide(&location))
+                {
+                    Ok(()) => editor.status = Some("Opened source in IDE".into()),
+                    Err(message) => {
+                        editor.rejection = Some(crate::state::Rejection {
+                            action: "Open in IDE",
+                            message,
+                            diagnostics: Vec::new(),
+                        })
+                    }
+                }
+            }
+        } else {
+            editor.apply(command);
+        }
     }
     Ok(())
 }
@@ -300,6 +319,19 @@ fn top_bar(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut V
         });
         ui.menu_button("Programs…", |ui| {
             ui.set_min_width(360.0);
+            ui.label(RichText::new("IDE command").strong());
+            ui.add(TextEdit::singleline(&mut toolbox.programs.ide_input).desired_width(360.0));
+            hint(ui, "Example: code --goto {file}:{line}:{column}");
+            hint(
+                ui,
+                "Quote paths with spaces. No shell expansion. A missing {file} is appended.",
+            );
+            if ui.button("Save IDE command").clicked()
+                && let Err(error) = toolbox.programs.save_ide()
+            {
+                toolbox.programs.error = Some(error);
+            }
+            ui.separator();
             ui.label(RichText::new("Blender executable").strong());
             ui.add(TextEdit::singleline(&mut toolbox.programs.input).desired_width(360.0));
             ui.horizontal(|ui| {
@@ -592,23 +624,29 @@ fn definition_node(
     commands: &mut Vec<Command>,
 ) {
     let row = |ui: &mut Ui, commands: &mut Vec<Command>| {
-        if ui
-            .selectable_label(
-                editor.selected == Some(Selected::Definition(node.key.clone())),
-                RichText::new(&node.key).color(
-                    if editor
-                        .diagnostics
-                        .iter()
-                        .any(|d| d.file.as_deref() == Some(definition_file(&node.key).as_str()))
-                    {
-                        ui.visuals().error_fg_color
-                    } else {
-                        theme::DEFINITION
-                    },
-                ),
-            )
-            .clicked()
-        {
+        let row = ui.selectable_label(
+            editor.selected == Some(Selected::Definition(node.key.clone())),
+            RichText::new(&node.key).color(
+                if editor
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.file.as_deref() == Some(definition_file(&node.key).as_str()))
+                {
+                    ui.visuals().error_fg_color
+                } else {
+                    theme::DEFINITION
+                },
+            ),
+        );
+        row.context_menu(|ui| {
+            if ui.button("Open in IDE").clicked() {
+                commands.push(Command::OpenIde(
+                    struction_editor::SourceTarget::Definition(node.key.clone()),
+                ));
+                ui.close();
+            }
+        });
+        if row.clicked() {
             commands.push(Command::Select(Some(Selected::Definition(
                 node.key.clone(),
             ))));
@@ -769,6 +807,17 @@ fn entity_row(
         )),
         None => row.on_hover_text(&key),
     };
+    row.context_menu(|ui| {
+        if ui
+            .add_enabled(entity.source.is_some(), egui::Button::new("Open in IDE"))
+            .clicked()
+        {
+            commands.push(Command::OpenIde(struction_editor::SourceTarget::Entity(
+                key.clone(),
+            )));
+            ui.close();
+        }
+    });
     if row.clicked() {
         commands.push(Command::Select(Some(Selected::Entity(key))));
     }
@@ -929,8 +978,34 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
         asset_inspector(ui, &asset, editor, toolbox);
         return;
     }
+    if let Some(selected) = &editor.selected {
+        let target = match selected {
+            Selected::Definition(path) => {
+                Some(struction_editor::SourceTarget::Definition(path.clone()))
+            }
+            Selected::Entity(path) => Some(struction_editor::SourceTarget::Entity(path.clone())),
+            Selected::Asset(_) => None,
+        };
+        if let Some(target) = target {
+            let location = editor
+                .project
+                .as_ref()
+                .and_then(|p| p.source_location(&target).ok());
+            if ui
+                .add_enabled(location.is_some(), egui::Button::new("Open in IDE"))
+                .on_hover_text(location.map_or_else(
+                    || "No authored source".into(),
+                    |s| format!("{}:{}", s.file.display(), s.line),
+                ))
+                .clicked()
+            {
+                commands.push(Command::OpenIde(target));
+            }
+        }
+    }
     let playing = editor.playing();
     let masters = editor.masters.clone();
+    let schema = editor.schema.clone();
     let Some(inspection) = editor.inspection() else {
         ui.label(RichText::new("Select an entity or definition.").color(theme::MUTED));
         return;
@@ -1074,6 +1149,8 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
                         path,
                         authored: overrides.get("components").and_then(|c| c.get(name)),
                         owner: key.rsplit('/').next().unwrap_or(key).to_owned(),
+                        schema: &schema,
+                        component_schema: &schema["properties"]["components"]["properties"][name],
                     }
                 });
                 section(ui, name, |ui| {
@@ -1168,6 +1245,12 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
                     path: path_in_file,
                     authored,
                     owner: path.clone(),
+                    schema: &schema,
+                    component_schema: if name == "Transform" {
+                        &schema["properties"]["transform"]
+                    } else {
+                        &schema["properties"]["components"]["properties"][name]
+                    },
                 });
                 section(ui, name, |ui| {
                     value_editor(ui, value, &mut Vec::new(), target.as_ref(), commands);
@@ -1284,6 +1367,8 @@ struct FieldTarget<'a> {
     path: Vec<Field>,
     authored: Option<&'a Value>,
     owner: String,
+    schema: &'a Value,
+    component_schema: &'a Value,
 }
 
 impl FieldTarget<'_> {
@@ -1338,13 +1423,30 @@ fn value_editor(
     target: Option<&FieldTarget>,
     commands: &mut Vec<Command>,
 ) {
+    value_editor_at(ui, value, value, field, target, commands);
+}
+
+fn value_editor_at(
+    ui: &mut Ui,
+    root_value: &Value,
+    value: &Value,
+    field: &mut Vec<Field>,
+    target: Option<&FieldTarget>,
+    commands: &mut Vec<Command>,
+) {
+    use struction_editor::fields::{initial_value, schema_at, shape};
+    let schema = target.and_then(|t| schema_at(t.schema, t.component_schema, root_value, field));
+    let fixed_vector = value.as_array().is_some_and(|a| is_vector(a))
+        && schema.is_none_or(|s| s.get("maxItems").is_some());
     match value {
         Value::Object(members) => {
             for (key, member) in members {
                 field.push(Field::Key(key.clone()));
-                if member.is_object() || member.as_array().is_some_and(|a| !is_vector(a)) {
+                if member.is_object() || member.is_array() {
                     ui.label(RichText::new(key).color(theme::MUTED));
-                    ui.indent(key, |ui| value_editor(ui, member, field, target, commands));
+                    ui.indent(key, |ui| {
+                        value_editor_at(ui, root_value, member, field, target, commands)
+                    });
                 } else {
                     leaf_row(ui, key, member, field, target, commands);
                 }
@@ -1353,15 +1455,142 @@ fn value_editor(
             if members.is_empty() {
                 hint(ui, "No fields.");
             }
+            if let (Some(t), Some(s)) = (target, schema) {
+                ui.menu_button("Add field…", |ui| {
+                    let mut any = false;
+                    if let Some(props) = s.get("properties").and_then(Value::as_object) {
+                        for (key, prop) in props {
+                            let mut child = field.clone();
+                            child.push(Field::Key(key.clone()));
+                            if t.is_set(&child) {
+                                continue;
+                            }
+                            any = true;
+                            ui.menu_button(key, |ui| {
+                                let default = members
+                                    .get(key)
+                                    .cloned()
+                                    .or_else(|| initial_value(t.schema, prop));
+                                if let Some(value) = addition_value(ui, key, default) {
+                                    commands.push(Command::AddField {
+                                        file: t.file.clone(),
+                                        path: t.full_path(field),
+                                        key: key.clone(),
+                                        value,
+                                    });
+                                    ui.close();
+                                }
+                            });
+                        }
+                    }
+                    if let Some(prop) = s.get("additionalProperties").filter(|v| v.is_object()) {
+                        any = true;
+                        let id = ui.id().with(("new-key", format!("{field:?}")));
+                        let mut key = ui
+                            .data_mut(|d| d.get_temp::<String>(id))
+                            .unwrap_or_default();
+                        ui.add(TextEdit::singleline(&mut key).hint_text("Field name"));
+                        ui.data_mut(|d| d.insert_temp(id, key.clone()));
+                        ui.add_enabled_ui(!key.is_empty() && !members.contains_key(&key), |ui| {
+                            if let Some(value) =
+                                addition_value(ui, "map", initial_value(t.schema, prop))
+                            {
+                                commands.push(Command::AddField {
+                                    file: t.file.clone(),
+                                    path: t.full_path(field),
+                                    key,
+                                    value,
+                                });
+                                ui.close();
+                            }
+                        });
+                    }
+                    if !any {
+                        hint(ui, "All schema fields are already authored.");
+                    }
+                });
+            }
         }
-        Value::Array(items) if !is_vector(items) => {
+        Value::Array(items) if !fixed_vector => {
             for (index, item) in items.iter().enumerate() {
                 field.push(Field::Index(index));
-                leaf_row(ui, &index.to_string(), item, field, target, commands);
+                if item.is_object() || item.is_array() {
+                    ui.label(format!("Entry {index}"));
+                    ui.indent(index, |ui| {
+                        value_editor_at(ui, root_value, item, field, target, commands)
+                    });
+                } else {
+                    leaf_row(ui, &index.to_string(), item, field, target, commands);
+                }
                 field.pop();
+            }
+            if let (Some(t), Some(s)) = (target, schema)
+                && !s
+                    .get("maxItems")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|n| items.len() >= n as usize)
+                && let Some(item_schema) = s.get("items")
+            {
+                ui.menu_button("Add entry…", |ui| {
+                    let item = shape(t.schema, item_schema, None);
+                    if let Some(choices) = item.get("enum").and_then(Value::as_array) {
+                        for choice in choices {
+                            if ui.button(choice.as_str().unwrap_or("value")).clicked() {
+                                commands.push(Command::AddEntry {
+                                    file: t.file.clone(),
+                                    path: t.full_path(field),
+                                    value: choice.clone(),
+                                });
+                                ui.close();
+                            }
+                        }
+                    } else if let Some(value) =
+                        addition_value(ui, "entry", initial_value(t.schema, item_schema))
+                    {
+                        commands.push(Command::AddEntry {
+                            file: t.file.clone(),
+                            path: t.full_path(field),
+                            value,
+                        });
+                        ui.close();
+                    }
+                });
             }
         }
         leaf => leaf_row(ui, "value", leaf, field, target, commands),
+    }
+}
+
+/// Keep an editable draft until Add, so required references and timings can be supplied
+/// before validation instead of forcing an invalid placeholder into the project.
+fn addition_value(ui: &mut Ui, salt: &str, default: Option<Value>) -> Option<Value> {
+    let id = ui.id().with(("addition", salt));
+    let mut draft = ui
+        .data_mut(|d| d.get_temp::<String>(id))
+        .unwrap_or_else(|| {
+            default.map_or(String::new(), |v| {
+                serde_json::to_string_pretty(&v).unwrap_or_default()
+            })
+        });
+    ui.label("Initial value (JSON)");
+    ui.add(
+        TextEdit::multiline(&mut draft)
+            .desired_width(240.0)
+            .desired_rows(3),
+    );
+    ui.data_mut(|d| d.insert_temp(id, draft.clone()));
+    let parsed = serde_json::from_str::<Value>(&draft);
+    if ui
+        .add_enabled(parsed.is_ok(), egui::Button::new("Add"))
+        .clicked()
+    {
+        ui.data_mut(|d| d.remove::<String>(id));
+        parsed.ok()
+    } else {
+        if let Err(error) = parsed {
+            hint(ui, &error.to_string());
+        }
+        None
     }
 }
 

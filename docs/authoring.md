@@ -44,6 +44,10 @@ For read-modify-write clients, pass the opaque `revision` returned by `read` in 
 | `schema` | — | Definition JSON Schema using the host's registered component types |
 | `actions` | — | Registered action names, documentation, typed parameters, defaults and required components |
 | `definitions` | — | Definition paths, including broken sources that need repair |
+| `source_location` | `target: {kind: "definition" or "entity", path: "…"}` | Absolute file, line and column for a definition, spawn or spawner; library definitions resolve to their real files |
+| `field_options` | `file`, `path` | Schema fragment (with `$defs`), effective value and locally authored value for a definition field or spawn override |
+| `add_field` | `file`, `path` (parent), `key`, optional `value` | Add a field absent from this source; defaults to the effective value or a schema-generated starting value |
+| `add_entry` | `file`, `path` (list), optional `value` | Append a schema-guided entry, preserving inherited entries; fixed-size arrays refuse extra entries |
 | `inspect_definition` | `path` | Lineage, resolved authored data and reflected components including defaults, plus extensors: those in use with their reason (`named_by`, `owns`, `required_by`) and supplied components, dropped ones, suggested ones and the rest available |
 | `add_extensor` | `path`, `extensor` | Name an extensor in the definition's own source (or remove its own `"-name"` drop); validated and undoable |
 | `remove_extensor` | `path`, `extensor` | Take an extensor and the definition's own components of it out, dropping it with `"-name"` when inherited; refused while another extensor in use builds on it |
@@ -141,6 +145,42 @@ cargo run -p struction-editor -- apps/playground/project --blender /path/to/blen
 ```
 
 The order is `--blender`, saved editor choice, then automatic discovery (`STRUCTION_BLENDER`, `PATH`, macOS application directories). **Detect** fills the discovered path; **Save** activates it. Settings live in `$XDG_CONFIG_HOME/struction/programs.json` or `~/.config/struction/programs.json` on Linux, and `~/Library/Application Support/struction/programs.json` on macOS. These paths stay out of project sources. The asset CLI still accepts `STRUCTION_BLENDER` for its own processes.
+
+## Source navigation and adding fields
+
+Right-click a definition, instance or spawner in the scene tree and choose **Open in IDE**,
+or use the inspector's button. Instances open their spawn entry; definitions open their
+own file (the library file until a project override exists). Broken definitions remain
+openable for repair. Runtime entities without authored provenance have no source button.
+
+**Programs… → IDE command** is machine-local alongside Blender. The initial command comes
+from `$VISUAL`, then `$EDITOR`, or `code --goto {file}:{line}:{column}`. Use `{file}`, `{line}`
+and `{column}` placeholders, and quote executable paths with spaces. Without `{file}`, the
+path is appended. Commands launch directly without shell expansion; terminal editors need
+a terminal launcher in the template. Saving either program preserves the other setting.
+
+Object sections offer **Add field…** for fields not yet authored here, including inherited
+or default fields already displayed. Lists offer **Add entry…**, with choices for enums and
+an editable JSON draft for structured values. Nested objects and list entries expand into
+editable controls. Map fields allow a new key. These controls use the reflected schema,
+so new component fields appear without editor-specific handling. Fixed-size vectors cannot
+grow. Additions validate before writing, are disabled during Play and undo as a single step;
+appending to an inherited list preserves its existing entries. Appending to an authored
+list preserves comments on its existing entries.
+
+The same operations are available over JSONL:
+
+```jsonl
+{"id":1,"command":{"op":"source_location","target":{"kind":"definition","path":"characters/player"}}}
+{"id":2,"command":{"op":"field_options","file":"characters/player/entity.jsonc","path":["components","Roll"]}}
+{"id":3,"command":{"op":"add_field","file":"characters/player/entity.jsonc","path":["components","Roll"],"key":"cancel_into","value":[]}}
+{"id":4,"command":{"op":"add_entry","file":"characters/player/entity.jsonc","path":["components","Roll","blocked_while"],"value":"Attacking"}}
+{"id":5,"command":{"op":"undo"}}
+```
+
+Scene override paths begin with `spawnerList`, the spawner name, `spawns`, the spawn name,
+`overrides`, then the definition field path. Schema-generated initial values are starting
+points: required references or cross-field constraints may need an explicit value.
 
 ## Guarantees and current limits
 

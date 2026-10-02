@@ -836,3 +836,234 @@ fn editing_a_library_definition_creates_a_project_override() {
         engine_source
     );
 }
+
+#[test]
+fn source_locations_cover_definitions_spawners_spawns_and_libraries() {
+    let dir = fixture();
+    let project = AuthoringProject::open(dir.path(), factory).unwrap();
+    let source = project
+        .source_location(&SourceTarget::Definition("guards/ogre".into()))
+        .unwrap();
+    assert_eq!(source.file, dir.path().join(GUARD));
+    assert_eq!(source.line, 2);
+    for path in ["Court/guards", "Court/guards/ogre"] {
+        let source = project
+            .source_location(&SourceTarget::Entity(path.into()))
+            .unwrap();
+        assert_eq!(source.file, dir.path().join(SCENE));
+        assert_eq!(source.line, 1);
+        assert!(source.column > 1);
+    }
+    assert!(
+        project
+            .source_location(&SourceTarget::Definition("../outside".into()))
+            .is_err()
+    );
+    let (library, dir, mut project) = library_project();
+    let target = SourceTarget::Definition("Creature".into());
+    assert_eq!(
+        project.source_location(&target).unwrap().file,
+        library.path().join("Creature/entity.jsonc")
+    );
+    project
+        .edit(set(
+            "Creature/entity.jsonc",
+            &["components", "Health", "max"],
+            json!(7),
+        ))
+        .unwrap();
+    assert_eq!(
+        project.source_location(&target).unwrap().file,
+        dir.path().join("Creature/entity.jsonc")
+    );
+    std::fs::write(dir.path().join("Creature/entity.jsonc"), "broken").unwrap();
+    assert_eq!(project.source_location(&target).unwrap().line, 1);
+}
+
+#[derive(Reflect, Default)]
+enum Condition {
+    #[default]
+    Idle,
+    Moving,
+}
+#[derive(Reflect, Default)]
+struct Window {
+    start: f32,
+    end: f32,
+    condition: Option<Condition>,
+}
+#[derive(Component, Reflect, Default)]
+#[reflect(Component, Default)]
+struct Tuning {
+    blocked_while: Vec<Condition>,
+    cancel_into: Vec<Window>,
+}
+
+fn fields_project() -> (tempfile::TempDir, AuthoringProject) {
+    let dir = fixture();
+    std::fs::write(
+        dir.path().join("Actor/entity.jsonc"),
+        r#"{
+      "components": {
+        "Health": { "current": 50, "max": 50 },
+        "Tuning": { "blocked_while": ["Idle"], "cancel_into": [{"start": 0.1, "end": 0.5, "condition": null}] }
+      }
+    }"#,
+    )
+    .unwrap();
+    let project = AuthoringProject::open(dir.path(), |root: &Path| {
+        let mut app = factory(root);
+        app.register_type::<Tuning>();
+        app
+    })
+    .unwrap();
+    assert!(project.validate().is_empty(), "{:?}", project.validate());
+    (dir, project)
+}
+fn keys(path: &[&str]) -> Vec<Field> {
+    path.iter().map(|s| Field::Key((*s).into())).collect()
+}
+
+#[test]
+fn schema_additions_preserve_inherited_lists_comments_and_exact_undo() {
+    let (dir, mut project) = fields_project();
+    let before = std::fs::read_to_string(dir.path().join(GUARD)).unwrap();
+    let list = keys(&["components", "Tuning", "blocked_while"]);
+    let options = project.field_options(GUARD, &list).unwrap();
+    assert_eq!(options.value, json!(["Idle"]));
+    assert!(options.authored.is_none());
+    project
+        .add_entry(GUARD, &list, Some(json!("Moving")))
+        .unwrap();
+    let after = std::fs::read_to_string(dir.path().join(GUARD)).unwrap();
+    assert!(after.contains("// Ogre guard."));
+    let inspected = project.inspect_definition("guards/ogre").unwrap();
+    assert_eq!(
+        inspected.resolved["components"]["Tuning"]["blocked_while"],
+        json!(["Idle", "Moving"])
+    );
+    project.undo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(GUARD)).unwrap(),
+        before
+    );
+    project.redo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(GUARD)).unwrap(),
+        after
+    );
+    project
+        .add_entry(GUARD, &list, Some(json!("Idle")))
+        .unwrap();
+    assert_eq!(
+        project.field_options(GUARD, &list).unwrap().value,
+        json!(["Idle", "Moving", "Idle"])
+    );
+    project.undo().unwrap();
+    let history = project.session().history().undo_stack().len();
+    assert!(
+        project
+            .add_entry(GUARD, &list, Some(json!("Unknown")))
+            .is_err()
+    );
+    assert_eq!(project.session().history().undo_stack().len(), history);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(GUARD)).unwrap(),
+        after
+    );
+}
+
+#[test]
+fn additions_materialize_nested_inherited_lists_and_spawn_overrides() {
+    let (dir, mut project) = fields_project();
+    let before = std::fs::read_to_string(dir.path().join(GUARD)).unwrap();
+    let mut window = keys(&["components", "Tuning", "cancel_into"]);
+    window.push(Field::Index(0));
+    project
+        .add_field(GUARD, &window, "condition", Some(json!("Moving")))
+        .unwrap();
+    let authored = project.inspect_definition("guards/ogre").unwrap().resolved;
+    assert_eq!(
+        authored["components"]["Tuning"]["cancel_into"][0],
+        json!({"start":0.1,"end":0.5,"condition":"Moving"})
+    );
+    assert!(
+        project
+            .add_field(GUARD, &window, "condition", None)
+            .is_err()
+    );
+    assert!(
+        project
+            .add_field(GUARD, &window, "typo", Some(json!(1)))
+            .is_err()
+    );
+    project.undo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(GUARD)).unwrap(),
+        before
+    );
+    let scene_before = std::fs::read_to_string(dir.path().join(SCENE)).unwrap();
+    let list = keys(&[
+        "spawnerList",
+        "guards",
+        "spawns",
+        "ogre",
+        "overrides",
+        "components",
+        "Tuning",
+        "blocked_while",
+    ]);
+    project
+        .add_entry(SCENE, &list, Some(json!("Moving")))
+        .unwrap();
+    assert_eq!(
+        project.field_options(SCENE, &list).unwrap().value,
+        json!(["Idle", "Moving"])
+    );
+    project.undo().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(SCENE)).unwrap(),
+        scene_before
+    );
+    project.start_play().unwrap();
+    assert!(matches!(
+        project.add_entry(SCENE, &list, None),
+        Err(SessionError::Playing)
+    ));
+}
+
+#[test]
+fn protocol_discovers_and_adds_fields_and_entries() {
+    use struction_editor::protocol::{Request, execute};
+    let (_dir, mut project) = fields_project();
+    for command in [
+        json!({"op":"source_location", "target":{"kind":"definition","path":"guards/ogre"}}),
+        json!({"op":"field_options", "file":GUARD, "path":["components", "Tuning"]}),
+        json!({"op":"add_field", "file":GUARD, "path":["components", "Tuning"], "key":"cancel_into"}),
+        json!({"op":"add_entry", "file":GUARD, "path":["components", "Tuning", "cancel_into"]}),
+    ] {
+        let request: Request = serde_json::from_value(json!({"id":1,"command":command})).unwrap();
+        let response = execute(&mut project, request);
+        assert!(response.ok, "{response:?}");
+    }
+}
+
+#[test]
+fn incomplete_added_struct_returns_diagnostics_without_writing() {
+    let (dir, mut project) = fields_project();
+    let before = std::fs::read_to_string(dir.path().join(GUARD)).unwrap();
+    let error = project
+        .add_entry(
+            GUARD,
+            &keys(&["components", "Tuning", "cancel_into"]),
+            Some(json!({"start": 0.2})),
+        )
+        .unwrap_err();
+    assert!(matches!(error, SessionError::Validation(_)), "{error}");
+    assert!(error.to_string().contains("end"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(GUARD)).unwrap(),
+        before
+    );
+    assert!(!project.session().history().can_undo());
+}

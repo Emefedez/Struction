@@ -17,7 +17,11 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Bounds one request's work, so a typo cannot hang the session.
 const MAX_STEP_TICKS: usize = 10_000;
 
-const COMMANDS: [&str; 28] = [
+const COMMANDS: [&str; 32] = [
+    "field_options",
+    "add_field",
+    "add_entry",
+    "source_location",
     "master_hierarchy",
     "definition_hierarchy",
     "set_master",
@@ -58,6 +62,26 @@ pub struct Request {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    FieldOptions {
+        file: String,
+        path: Vec<crate::Field>,
+    },
+    AddField {
+        file: String,
+        path: Vec<crate::Field>,
+        key: String,
+        #[serde(default)]
+        value: Option<Value>,
+    },
+    AddEntry {
+        file: String,
+        path: Vec<crate::Field>,
+        #[serde(default)]
+        value: Option<Value>,
+    },
+    SourceLocation {
+        target: crate::SourceTarget,
+    },
     MasterHierarchy {
         #[serde(default)]
         playing: bool,
@@ -191,6 +215,15 @@ pub fn execute(project: &mut AuthoringProject, request: Request) -> Response {
 
 fn apply(project: &mut AuthoringProject, command: Command) -> Result<Value, SessionError> {
     Ok(match command {
+        Command::FieldOptions { file, path } => json!(project.field_options(&file, &path)?),
+        Command::AddField {
+            file,
+            path,
+            key,
+            value,
+        } => json!(project.add_field(&file, &path, &key, value)?),
+        Command::AddEntry { file, path, value } => json!(project.add_entry(&file, &path, value)?),
+        Command::SourceLocation { target } => json!(project.source_location(&target)?),
         Command::MasterHierarchy { playing } => json!(project.master_hierarchy(playing)?),
         Command::DefinitionHierarchy {} => json!(project.definition_hierarchy()),
         Command::SetMaster { path, master } => json!(project.set_master(&path, master.as_deref())?),

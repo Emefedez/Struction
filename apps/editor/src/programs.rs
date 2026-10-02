@@ -5,6 +5,8 @@ use struction_assets::{Blender, OpenIn};
 
 pub struct Programs {
     pub blender: Blender,
+    pub ide_input: String,
+    ide: String,
     pub input: String,
     pub error: Option<String>,
     pub status: Option<String>,
@@ -34,6 +36,8 @@ impl Programs {
     fn load(config: Option<PathBuf>) -> Self {
         let mut programs = Self {
             blender: Blender::default(),
+            ide: default_ide(),
+            ide_input: String::new(),
             input: String::new(),
             error: None,
             status: None,
@@ -43,6 +47,9 @@ impl Programs {
             match std::fs::read_to_string(path) {
                 Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(value) => {
+                        if let Some(ide) = value.get("ide").and_then(|v| v.as_str()) {
+                            programs.ide = ide.into();
+                        }
                         if let Some(path) = value.get("blender").and_then(|v| v.as_str()) {
                             programs.blender.executable = executable(PathBuf::from(path));
                         }
@@ -53,6 +60,7 @@ impl Programs {
                 Err(error) => programs.error = Some(format!("{}: {error}", path.display())),
             }
         }
+        programs.ide_input = programs.ide.clone();
         programs.input = programs.blender.executable.to_string_lossy().into_owned();
         if programs.error.is_none() && !programs.blender.is_available() {
             programs.error = Some(format!(
@@ -82,16 +90,7 @@ impl Programs {
             ));
         }
         if persist {
-            let path = self
-                .config
-                .as_ref()
-                .ok_or("Cannot locate your user settings directory")?;
-            std::fs::create_dir_all(path.parent().expect("settings directory"))
-                .map_err(|e| e.to_string())?;
-            let text =
-                serde_json::to_vec_pretty(&serde_json::json!({"blender": blender.executable}))
-                    .map_err(|e| e.to_string())?;
-            std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+            self.save_setting("blender", serde_json::json!(blender.executable))?;
         }
         self.input = blender.executable.to_string_lossy().into_owned();
         self.blender = blender;
@@ -107,6 +106,66 @@ impl Programs {
         Ok(())
     }
 
+    fn save_setting(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
+        let path = self
+            .config
+            .as_ref()
+            .ok_or("Cannot locate your user settings directory")?;
+        let mut settings = match std::fs::read_to_string(path) {
+            Ok(text) => {
+                serde_json::from_str::<serde_json::Value>(&text).map_err(|e| e.to_string())?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            Err(e) => return Err(e.to_string()),
+        };
+        settings
+            .as_object_mut()
+            .ok_or("Program settings must be an object")?
+            .insert(key.into(), value);
+        std::fs::create_dir_all(path.parent().expect("settings directory"))
+            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    pub fn save_ide(&mut self) -> Result<(), String> {
+        ide_arguments(
+            &self.ide_input,
+            &struction_editor::SourceLocation {
+                file: "source.jsonc".into(),
+                line: 1,
+                column: 1,
+            },
+        )?;
+        self.save_setting("ide", serde_json::json!(self.ide_input))?;
+        self.ide = self.ide_input.clone();
+        self.error = None;
+        self.status = Some("IDE command saved for this machine".into());
+        Ok(())
+    }
+
+    pub fn open_ide(&self, location: &struction_editor::SourceLocation) -> Result<(), String> {
+        let args = ide_arguments(&self.ide, location)?;
+        let mut child = std::process::Command::new(&args[0])
+            .args(&args[1..])
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| {
+                format!(
+                    "Cannot open {} with {}: {e}",
+                    location.file.display(),
+                    args[0]
+                )
+            })?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+
     pub fn open_in(&self) -> OpenIn {
         let mut open = OpenIn::default();
         open.by_extension.insert(
@@ -115,6 +174,40 @@ impl Programs {
         );
         open
     }
+}
+
+fn default_ide() -> String {
+    std::env::var("VISUAL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("EDITOR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| "code --goto {file}:{line}:{column}".into())
+}
+
+/// Split the template before substitution: a source path is always one literal argument.
+fn ide_arguments(
+    template: &str,
+    location: &struction_editor::SourceLocation,
+) -> Result<Vec<String>, String> {
+    let mut args = shlex::split(template).ok_or("Unclosed quotes in IDE command")?;
+    if args.first().is_none_or(String::is_empty) {
+        return Err("Choose an IDE command, for example code --goto {file}:{line}".into());
+    }
+    let has_file = args.iter().any(|s| s.contains("{file}"));
+    for arg in &mut args {
+        *arg = arg
+            .replace("{line}", &location.line.to_string())
+            .replace("{column}", &location.column.to_string())
+            .replace("{file}", &location.file.to_string_lossy());
+    }
+    if !has_file {
+        args.push(location.file.to_string_lossy().into_owned());
+    }
+    Ok(args)
 }
 
 fn executable(path: PathBuf) -> PathBuf {
@@ -170,6 +263,46 @@ mod tests {
             1
         );
         assert!(programs.blender.is_available());
+    }
+
+    #[test]
+    fn ide_templates_keep_source_paths_literal_and_settings_independent() {
+        let location = struction_editor::SourceLocation {
+            file: "/tmp/project with spaces/$(touch nope){line}.jsonc".into(),
+            line: 12,
+            column: 3,
+        };
+        assert_eq!(
+            ide_arguments(
+                "'/custom IDE/code' --goto {file}:{line}:{column}",
+                &location
+            )
+            .unwrap(),
+            [
+                "/custom IDE/code",
+                "--goto",
+                "/tmp/project with spaces/$(touch nope){line}.jsonc:12:3"
+            ]
+        );
+        assert_eq!(
+            ide_arguments("editor --wait", &location)
+                .unwrap()
+                .last()
+                .unwrap(),
+            location.file.to_str().unwrap()
+        );
+        assert!(ide_arguments("'broken", &location).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("programs.json");
+        let mut programs = Programs::load(Some(config.clone()));
+        programs.ide_input = "code --goto {file}:{line}".into();
+        programs.save_ide().unwrap();
+        programs
+            .select(std::env::current_exe().unwrap(), true)
+            .unwrap();
+        let loaded = Programs::load(Some(config));
+        assert_eq!(loaded.ide, programs.ide_input);
+        assert_eq!(loaded.blender.executable, programs.blender.executable);
     }
 
     #[test]

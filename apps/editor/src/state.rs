@@ -25,9 +25,21 @@ pub enum Selected {
 
 pub enum Command {
     Open(PathBuf),
+    OpenIde(struction_editor::SourceTarget),
     Refresh,
     Select(Option<Selected>),
     Edit(EditRequest),
+    AddField {
+        file: String,
+        path: Vec<Field>,
+        key: String,
+        value: Value,
+    },
+    AddEntry {
+        file: String,
+        path: Vec<Field>,
+        value: Value,
+    },
     Move {
         path: String,
         position: Vec3,
@@ -132,6 +144,7 @@ pub struct Editor {
     pub play: Option<Play>,
     /// Bumped whenever the snapshot changes, so dependents rebuild.
     pub generation: u64,
+    pub schema: std::sync::Arc<Value>,
     inspection: Option<(u64, Selected, Inspection)>,
 }
 
@@ -149,8 +162,25 @@ impl Editor {
             return;
         };
         let (action, result) = match command {
-            Command::Open(_) | Command::Select(_) => return,
+            Command::Open(_) | Command::Select(_) | Command::OpenIde(_) => return,
             Command::Refresh => ("Refresh", project.refresh().map(|()| None)),
+            Command::AddField {
+                file,
+                path,
+                key,
+                value,
+            } => (
+                "Add field",
+                project
+                    .add_field(&file, &path, &key, Some(value))
+                    .map(|a| Some(a.label)),
+            ),
+            Command::AddEntry { file, path, value } => (
+                "Add entry",
+                project
+                    .add_entry(&file, &path, Some(value))
+                    .map(|a| Some(a.label)),
+            ),
             Command::Edit(request) => ("Edit", project.edit(request).map(|a| Some(a.label))),
             Command::Move {
                 path,
@@ -298,6 +328,7 @@ impl Editor {
             .master_hierarchy(self.play.is_some())
             .unwrap_or_default();
         if validate {
+            self.schema = std::sync::Arc::new(project.schema());
             self.definitions = project.definitions();
             self.definitions.sort();
             self.lineages = project.definition_hierarchy();

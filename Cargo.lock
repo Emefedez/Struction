@@ -5541,6 +5541,7 @@ dependencies = [
  "bevy_egui",
  "rfd",
  "serde_json",
+ "shlex",
  "struction_anim",
  "struction_assets",
  "struction_camera",

@@ -13,6 +13,7 @@ workspace = true
 hotpatching = ["bevy/hotpatching"]
 
 [dependencies]
+shlex = { workspace = true }
 bevy = { workspace = true, features = [
     "bevy_color",
     "bevy_camera",

@@ -16,3 +16,8 @@ pub use project::{
     Unavailable,
 };
 pub use session::{Applied, EditRequest, EditSession, Field, SessionError};
+
+pub mod source;
+pub use source::{SourceLocation, SourceTarget};
+
+pub mod fields;
