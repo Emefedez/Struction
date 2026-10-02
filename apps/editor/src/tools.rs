@@ -92,6 +92,9 @@ pub struct Toolbox {
     pub tool: Option<MeshTool>,
     /// Last "Open in…" failure, shown with the asset.
     pub open_error: Option<String>,
+    /// Closed from inside the tool's own egui pass, which still holds its context; despawned
+    /// on the next update.
+    closed: Vec<MeshTool>,
 }
 
 impl Toolbox {
@@ -518,6 +521,9 @@ fn scan_assets(
 }
 
 fn handle_requests(mut commands: Commands, mut toolbox: ResMut<Toolbox>, editor: NonSend<Editor>) {
+    for tool in std::mem::take(&mut toolbox.closed) {
+        despawn_tool(&mut commands, &tool);
+    }
     for request in std::mem::take(&mut toolbox.requests) {
         let Some(root) = editor.root.clone() else {
             continue;
@@ -689,10 +695,11 @@ fn close_windows(
     }
 }
 
-/// Carries out an answered close prompt: closes the tool, or opens the next asset.
-pub fn finish_close(toolbox: &mut Toolbox, after: After, commands: &mut Commands) {
+/// Carries out an answered close prompt: closes the tool, or opens the next asset. Runs inside
+/// the tool window's egui pass, so the window outlives it until the next update.
+pub fn finish_close(toolbox: &mut Toolbox, after: After) {
     if let Some(tool) = toolbox.tool.take() {
-        despawn_tool(commands, &tool);
+        toolbox.closed.push(tool);
     }
     if let After::Open(asset, mode) = after {
         toolbox.requests.push(Request::Open { asset, mode });
@@ -1160,6 +1167,57 @@ mod tests {
             find_assets(dir.path()),
             ["models/ball.GLB", "models/ogre.blend", "props/cup.gltf"]
         );
+    }
+
+    /// Closing from the tool's own panel must not despawn the egui context bevy_egui is still
+    /// running (it panicked with "previously queried context").
+    #[test]
+    fn closing_from_the_tool_window_outlives_its_egui_pass() {
+        let mut app = App::new();
+        app.init_resource::<Toolbox>();
+        let world = app.world_mut();
+        let window = world.spawn_empty().id();
+        let camera = world.spawn_empty().id();
+        let ui_camera = world
+            .spawn((
+                bevy_egui::EguiContext::default(),
+                EguiSchedule::new(ToolWindowPass),
+            ))
+            .id();
+        world.resource_mut::<Toolbox>().tool = Some(MeshTool {
+            asset: "models/a.glb".into(),
+            source: "models/a.glb".into(),
+            mode: Mode::Inspect,
+            window,
+            camera,
+            ui_camera,
+            state: ToolState::Failed(String::new()),
+            themed: true,
+            closing: None,
+            pointer_over_ui: false,
+            orbit: ToolOrbit::default(),
+            framed: false,
+            shown: None,
+            view: None,
+        });
+        app.add_systems(ToolWindowPass, |mut toolbox: ResMut<Toolbox>| {
+            finish_close(&mut toolbox, After::Close)
+        });
+        app.add_systems(Update, handle_requests);
+        app.insert_non_send(Editor::default());
+        bevy_egui::run_egui_context_pass_loop_system(app.world_mut()).unwrap();
+        // Rendering would consume the pass's texture changes; egui refuses to drop them unread.
+        let mut output = app
+            .world_mut()
+            .get_mut::<bevy_egui::EguiFullOutput>(ui_camera)
+            .expect("the context survives its own pass");
+        if let Some(output) = output.0.as_mut() {
+            output.textures_delta.clear();
+        }
+        app.world_mut().run_schedule(Update);
+        for entity in [window, camera, ui_camera] {
+            assert!(app.world().get_entity(entity).is_err());
+        }
     }
 
     #[test]

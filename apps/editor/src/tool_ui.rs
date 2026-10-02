@@ -17,7 +17,6 @@ use crate::tools::{
 };
 
 pub fn tool_ui(
-    mut commands: Commands,
     mut toolbox: ResMut<Toolbox>,
     mut editor: NonSendMut<crate::state::Editor>,
     mut contexts: Query<&mut EguiContext, Without<PrimaryEguiContext>>,
@@ -175,7 +174,7 @@ pub fn tool_ui(
         if tool.is_dirty() {
             tool.closing = Some(After::Close);
         } else {
-            finish_close(&mut toolbox, After::Close, &mut commands);
+            finish_close(&mut toolbox, After::Close);
             toolbox.requests.extend(requests);
             return Ok(());
         }
@@ -215,7 +214,7 @@ pub fn tool_ui(
                     });
                 tool.closing = None;
                 if applied {
-                    finish_close(&mut toolbox, after, &mut commands);
+                    finish_close(&mut toolbox, after);
                 }
             }
             Some(None) => tool.closing = None,
