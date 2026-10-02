@@ -887,7 +887,7 @@ fn sequences_tab(ui: &mut Ui, draft: &mut PoseDraft, definition: Option<&Definit
                 swap = Some(index);
             }
             if ui
-                .add_enabled(count > 1, egui::Button::new("✕").small())
+                .add_enabled(count > 1, egui::Button::new("×").small())
                 .clicked()
             {
                 remove = Some(index);
@@ -951,7 +951,7 @@ fn sequences_tab(ui: &mut Ui, draft: &mut PoseDraft, definition: Option<&Definit
                     .range(0.0..=1.0)
                     .prefix("at "),
             );
-            if ui.small_button("✕").clicked() {
+            if ui.small_button("×").clicked() {
                 dropped = Some(name.clone());
             }
         });
