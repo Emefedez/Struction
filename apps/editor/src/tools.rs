@@ -24,6 +24,7 @@ use struction_assets::{
     compile::PrepareSettings, format::MeshBundle, lod_mesh,
 };
 
+use crate::pose_tool::PreviewPart;
 use crate::state::Editor;
 use crate::viewport::zoom_factor;
 
@@ -54,6 +55,7 @@ impl Mode {
         Self::Uvs,
         Self::Materials,
     ];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Inspect => "Inspect",
@@ -64,6 +66,57 @@ impl Mode {
             Self::Materials => "Materials",
         }
     }
+
+    pub fn workspace(self) -> Workspace {
+        match self {
+            Self::Inspect | Self::Lods | Self::Collision => Workspace::Prepare,
+            Self::Uvs | Self::Materials => Workspace::Surface,
+            Self::Poses => Workspace::Poses,
+        }
+    }
+}
+
+/// What the tool's tabs switch between: modes that work on the same thing share one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Workspace {
+    /// LODs and collision: both preparation recipe settings, applied together.
+    Prepare,
+    /// UVs and materials of the part selected in the view.
+    Surface,
+    Poses,
+}
+
+impl Workspace {
+    pub const ALL: [Self; 3] = [Self::Prepare, Self::Surface, Self::Poses];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Prepare => "Prepare",
+            Self::Surface => "Surface",
+            Self::Poses => "Poses",
+        }
+    }
+
+    pub fn mode(self) -> Mode {
+        match self {
+            Self::Prepare => Mode::Lods,
+            Self::Surface => Mode::Uvs,
+            Self::Poses => Mode::Poses,
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// An edit the tool applied, in the order its Undo walks back.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ToolEdit {
+    /// The source's preparation recipe.
+    Recipe,
+    /// A project edit, by its history label.
+    Project(String),
 }
 
 pub enum Request {
@@ -122,6 +175,8 @@ pub struct MeshTool {
     /// Set while a close (or switch) waits for apply, discard or cancel.
     pub closing: Option<After>,
     pub pointer_over_ui: bool,
+    /// A drag in the view that is not orbiting, such as turning a joint's ring.
+    pub view_drag: bool,
     orbit: ToolOrbit,
     framed: bool,
     shown: Option<Shown>,
@@ -147,8 +202,15 @@ pub struct Ready {
     pub error: Option<String>,
     pub status: Option<String>,
     pub view: ViewOptions,
+    /// Each workspace's view options; `view` holds those of `workspace`.
+    views: [ViewOptions; 3],
+    workspace: Workspace,
     pub pose: crate::pose_tool::PoseDraft,
+    /// The selected part, shared by view clicks and every workspace.
     pub mesh_index: usize,
+    /// Applied edits, last last, and those undone since.
+    pub order: Vec<ToolEdit>,
+    pub undone: Vec<ToolEdit>,
     /// Bumped with each new preview, so the 3D view rebuilds.
     revision: u64,
 }
@@ -158,9 +220,12 @@ pub struct Hull {
     faces: Vec<[u32; 3]>,
 }
 
+/// Overlays of the 3D view, each usable in any workspace.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ViewOptions {
     pub lod: usize,
+    /// Show LOD 0 beside the chosen level.
+    pub compare: bool,
     pub wireframe: bool,
     pub hull: bool,
     pub trimesh: bool,
@@ -171,11 +236,19 @@ impl Default for ViewOptions {
     fn default() -> Self {
         Self {
             lod: 1,
-            wireframe: true,
-            hull: true,
+            compare: false,
+            wireframe: false,
+            hull: false,
             trimesh: false,
-            parts: true,
+            parts: false,
         }
+    }
+}
+
+impl ViewOptions {
+    /// A collision overlay is on, so solids are drawn see-through.
+    pub fn collision(&self) -> bool {
+        self.hull || self.trimesh || self.parts
     }
 }
 
@@ -183,14 +256,14 @@ impl Default for ViewOptions {
 #[derive(Clone, PartialEq, Debug)]
 struct Shown {
     revision: u64,
-    mode: Mode,
+    workspace: Workspace,
     view: ViewOptions,
     /// The pose view's rig, whose parts follow the draft every frame.
     rig: Option<String>,
 }
 
 impl Ready {
-    fn new(session: PrepSession) -> Self {
+    pub(crate) fn new(session: PrepSession) -> Self {
         Self {
             draft: session.applied().clone(),
             session,
@@ -202,8 +275,12 @@ impl Ready {
             error: None,
             status: None,
             view: ViewOptions::default(),
+            views: [ViewOptions::default(); 3],
+            workspace: Workspace::Prepare,
             pose: default(),
             mesh_index: 0,
+            order: Vec::new(),
+            undone: Vec::new(),
             revision: 0,
         }
     }
@@ -239,7 +316,34 @@ impl Ready {
             .session
             .apply(preview, label)
             .map(|applied| applied.label);
+        let applied = result.is_ok();
         self.finish(result.map(Some));
+        if applied {
+            self.order.push(ToolEdit::Recipe);
+            self.undone.clear();
+        }
+    }
+
+    /// Keeps each workspace's overlays: stores the current ones and shows `to`'s.
+    pub fn switch_view(&mut self, to: Workspace) {
+        if to != self.workspace {
+            self.views[self.workspace.index()] = self.view;
+            self.view = self.views[to.index()];
+            self.workspace = to;
+        }
+    }
+
+    /// Recipe settings the draft changes, for the apply bar.
+    pub fn pending_recipe(&self) -> Vec<&'static str> {
+        let applied = self.session.applied();
+        [
+            (self.draft.lod != applied.lod, "LODs"),
+            (self.draft.collision != applied.collision, "collision"),
+            (self.draft.generate_uvs != applied.generate_uvs, "UVs"),
+        ]
+        .into_iter()
+        .filter_map(|(changed, what)| changed.then_some(what))
+        .collect()
     }
 
     pub fn revert(&mut self) {
@@ -430,7 +534,7 @@ impl Plugin for ToolboxPlugin {
                     close_windows,
                     poll_tool,
                     refresh_tool_on_focus,
-                    crate::pose_tool::pick_joint,
+                    crate::pose_tool::pointer,
                     orbit_tool,
                     show_preview,
                     crate::pose_tool::animate_preview,
@@ -662,6 +766,7 @@ fn spawn_tool(
         themed: false,
         closing: None,
         pointer_over_ui: false,
+        view_drag: false,
         orbit: ToolOrbit::default(),
         framed: false,
         shown: None,
@@ -774,7 +879,7 @@ fn orbit_tool(
         && !tool.pointer_over_ui;
     let orbiting = [MouseButton::Left, MouseButton::Right, MouseButton::Middle];
     if buttons.any_just_pressed(orbiting) {
-        *held = over;
+        *held = over && !tool.view_drag;
     } else if !buttons.any_pressed(orbiting) {
         *held = false;
     }
@@ -888,7 +993,7 @@ fn show_preview(
     };
     let want = Shown {
         revision: ready.revision,
-        mode,
+        workspace: mode.workspace(),
         view: ready.view,
         rig: (mode == Mode::Poses).then(|| ready.pose.rig_name.clone()),
     };
@@ -915,17 +1020,15 @@ fn show_preview(
         None => placements(bundle),
     };
     let layer = RenderLayers::layer(TOOL_LAYER);
-    let mut spawn = |mesh: Mesh, look: Look, transform: Transform, joint: Option<usize>| {
-        let mut part = commands.spawn((
+    let mut spawn = |mesh: Mesh, look: Look, transform: Transform, part: PreviewPart| {
+        commands.spawn((
             ToolPreview,
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(materials.add(material(look))),
             transform,
             layer.clone(),
+            part,
         ));
-        if let Some(joint) = joint {
-            part.insert(crate::pose_tool::PosedPart { joint });
-        }
     };
 
     let bounds = scene_bounds(bundle, &placements);
@@ -946,15 +1049,23 @@ fn show_preview(
             under_lines: true,
         }
     };
-    // Side by side in LOD mode: LOD 0 on the left, the chosen level on the right.
+    // Comparing LODs: LOD 0 on the left, the chosen level on the right.
     let lod = view.lod;
     let right = Quat::from_rotation_y(tool.orbit.yaw) * Vec3::X;
-    let copies: Vec<(usize, f32)> = match mode {
-        Mode::Lods if lod > 0 => vec![(0, -0.6 * width), (lod, 0.6 * width)],
-        _ => vec![(0, 0.0)],
+    let copies: Vec<(usize, f32)> = if view.compare && lod > 0 && posed.is_none() {
+        vec![(0, -0.6 * width), (lod, 0.6 * width)]
+    } else {
+        vec![(0, 0.0)]
     };
+    let see_through = view.collision();
     for (part, &(index, transform)) in placements.iter().enumerate() {
         let joint = posed.as_ref().map(|posed| posed[part].2);
+        // Overlays follow their part's joint too, but only solids light up when selected.
+        let overlay = || PreviewPart {
+            mesh: index,
+            joint,
+            solid: false,
+        };
         let mesh = &bundle.meshes[index];
         for &(level, offset) in &copies {
             let Some(chosen) = mesh.lods.get(level.min(mesh.lods.len() - 1)) else {
@@ -962,12 +1073,17 @@ fn show_preview(
             };
             let placed = Transform::from_translation(right * offset) * transform;
             let mut look = solid(index);
-            if mode == Mode::Collision {
+            if see_through {
                 look.color = look.color.with_alpha(0.25);
                 look.alpha = true;
             }
-            spawn(lod_mesh(chosen), look, placed, joint);
-            if view.wireframe && !matches!(mode, Mode::Collision | Mode::Poses | Mode::Materials) {
+            let part = PreviewPart {
+                mesh: index,
+                joint,
+                solid: true,
+            };
+            spawn(lod_mesh(chosen), look, placed, part);
+            if view.wireframe {
                 let triangles = chosen.indices.as_chunks::<3>().0.iter().copied();
                 spawn(
                     wire_mesh(&chosen.positions, triangles),
@@ -978,12 +1094,9 @@ fn show_preview(
                         under_lines: false,
                     },
                     placed,
-                    None,
+                    overlay(),
                 );
             }
-        }
-        if mode != Mode::Collision {
-            continue;
         }
         let collision = &mesh.collision;
         let line = |color: Color| Look {
@@ -1005,13 +1118,13 @@ fn show_preview(
                 wire_mesh(&hull.points, hull.faces.iter().copied()),
                 line(HULL),
                 transform,
-                None,
+                overlay(),
             );
             spawn(
                 solid_mesh(&hull.points, &hull.faces),
                 fill(HULL),
                 transform,
-                None,
+                overlay(),
             );
         }
         if view.trimesh {
@@ -1020,7 +1133,7 @@ fn show_preview(
                 wire_mesh(&trimesh.vertices, trimesh.triangles.iter().copied()),
                 line(TRIMESH),
                 transform,
-                None,
+                overlay(),
             );
         }
         if view.parts {
@@ -1030,13 +1143,13 @@ fn show_preview(
                     wire_mesh(&hull.points, hull.faces.iter().copied()),
                     line(color),
                     transform,
-                    None,
+                    overlay(),
                 );
                 spawn(
                     solid_mesh(&hull.points, &hull.faces),
                     fill(color),
                     transform,
-                    None,
+                    overlay(),
                 );
             }
         }
@@ -1053,7 +1166,7 @@ fn show_preview(
 }
 
 /// Each mesh index with its placement in the imported scene; unplaced meshes sit at the origin.
-fn placements(bundle: &MeshBundle) -> Vec<(usize, Transform)> {
+pub fn placements(bundle: &MeshBundle) -> Vec<(usize, Transform)> {
     let mut globals: Vec<Transform> = Vec::with_capacity(bundle.nodes.len());
     let mut placed = Vec::new();
     let mut used = vec![false; bundle.meshes.len()];
@@ -1205,6 +1318,7 @@ mod tests {
             themed: true,
             closing: None,
             pointer_over_ui: false,
+            view_drag: false,
             orbit: ToolOrbit::default(),
             framed: false,
             shown: None,

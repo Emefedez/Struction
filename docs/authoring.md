@@ -235,25 +235,37 @@ Toggle Spatial guides to hide them; gameplay hides authoring guides automaticall
 
 ## Model tools and state targets
 
-The permanent **Toolbox** menu lists model sources and opens Inspect, LODs, Collision,
-Poses, UVs or Materials. Asset name, source path and mode tabs remain pinned while the
-controls scroll. All modes share one model-tool window; there is no nested tool launcher.
-Collision presets and detail/decomposition controls preview before Apply; recipe undo
-stays in the tool. The UV mode shows a selected part's UV triangles over a checker tile,
-can generate missing coordinates through the existing preparation recipe, and opens the
-selected object in Blender's **UV Editing** workspace for seams/repacking/re-unwrapping.
+The permanent **Toolbox** menu lists model sources and opens the model-tool window. Its tabs
+are three workspaces, each holding work that belongs together so it needs no switching:
+**Prepare** (LODs and collision, both preparation-recipe settings), **Surface** (UVs and
+material of one part) and **Poses** (keys `1`–`3`). A model summary (parts, triangles,
+materials, recipe) stays above every workspace and folds out per mesh. One part selection is
+shared: click a part in the view, or pick it from the list, and it glows in every workspace.
+Overlays are switches at the bottom of the view usable in any workspace (wireframe, hull,
+trimesh, convex parts, LOD 0 beside the chosen level, pose ghosts); each workspace keeps its
+own. One bar at the bottom lists what is not applied yet, across workspaces, with one
+**Apply** (`Ctrl+Enter`) and **Revert** (`Esc`); **Undo**/**Redo** walk back the tool's applied
+edits newest first, whether recipe or project edits, and refuse a project edit that is no
+longer the project's latest. Collision presets and detail/decomposition controls preview
+before Apply. **Surface** draws the selected part's UV triangles over a checker tile beside the
+3D view, can generate missing coordinates through the preparation recipe, and opens the part
+in Blender's **UV Editing** workspace for seams, repacking or re-unwrapping.
 
 **Poses** selects a definition using that model and edits its overrides of the rig's pose
-library ([pose sequences](moves.md#pose-sequences)); every name, description and use it shows
-comes from that data and the definition. **Key poses** lists the library's poses with their
-`doc` and the sequences that play them. Pick a joint from the list or by clicking the model:
-the chosen joint's parts glow and the skeleton overlay marks it. XYZ angles are absolute local
-rotations in degrees; a joint can be left to the body again, and a pose can be added as a copy.
-**Sequences** lists the library's sequences and what plays them on this definition (a move's
-`sequence` such as `Attack.sequence`, or a state rule's `PlaySequence`). Keys can be added,
-removed, reordered and retimed; looping, length, takeover, fades, events and the pelvis tumble
-are editable; Play, Repeat and the phase slider preview it on the model over the standing base,
-as the runtime blends it. Apply checks the overrides against the rig, then writes sparse
+library ([pose sequences](moves.md#pose-sequences)) in one workspace; every name, description
+and use it shows comes from that data and the definition. The **timeline** under the view shows
+the chosen sequence over its real length (the move's `duration`, such as `Attack.duration`,
+editable beside "Played by"; a loop's `seconds` otherwise): keys and events are markers to drag,
+the fades are shaded, and the playhead can be scrubbed, played (`Space`), repeated or stepped
+key to key (`,` `.`). Clicking a key edits its pose in the sidebar while the view keeps the
+sequence at that moment; a key the sequence is still fading at is shown alone ("Key pose
+alone"). Faint ghosts show the keys the playhead is between. Joints are picked by clicking the
+model, from the list, or by walking the skeleton (`↑` parent, `↓` child, `Tab` other side); the
+chosen joint glows, joints the pose sets are marked, and three rings turn it about its own
+axes by dragging, beside exact XYZ angles in degrees. **Mirror** copies the pose's joints on
+the selected side to the other, mirrored. Keys can also be added at the playhead, removed and
+reordered, and looping, length, takeover, fades, events and the pelvis tumble edited under
+Sequence settings. Apply checks the overrides against the rig, then writes sparse
 `PoseTargets { poses, sequences }` as one validated, undoable source edit (the JSONL `edit`
 command does the same); engine definitions get project overrides. Runtime rigs merge them with
 the library when they change, and the swing's `strike` event times its hit.

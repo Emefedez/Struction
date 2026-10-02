@@ -1,6 +1,8 @@
-//! The mesh tool window's panels: mode tabs, presets and a few controls on the left, the 3D
-//! preview in the middle, the tool's own undo and the "Open in…" handoff at the bottom. Edits
-//! only change the draft; Apply is the one step that writes, through the preparation session.
+//! The mesh tool window's panels: workspace tabs, the model summary and the workspace's controls
+//! on the left, the 3D preview with its overlay switches in the middle (and the pose timeline
+//! under it), and one apply bar at the bottom. Edits only change drafts; Apply writes them all,
+//! the recipe through the preparation session and poses as a project edit, and Undo walks
+//! them back in order.
 use bevy::prelude::*;
 use bevy_egui::{
     EguiContext, PrimaryEguiContext,
@@ -13,7 +15,8 @@ use struction_assets::{CollisionPreset, LodPreset, recipe::MAX_LOD_LEVELS};
 
 use crate::theme;
 use crate::tools::{
-    After, Mode, Ready, Request, ToolState, Toolbox, finish_close, open_in_label, place_view,
+    After, Mode, Ready, Request, ToolEdit, ToolState, Toolbox, Workspace, finish_close,
+    open_in_label, place_view,
 };
 
 pub fn tool_ui(
@@ -40,20 +43,48 @@ pub fn tool_ui(
     let mut answer = None;
     let mut close_clicked = false;
 
-    if !ctx.text_edit_focused()
-        && let Some(ready) = tool.ready_mut()
-    {
-        let undo = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
-        let redo = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
-        let (undo, redo) = ctx.input_mut(|input| {
-            let redo = input.consume_shortcut(&redo);
-            (!redo && input.consume_shortcut(&undo), redo)
+    if let Some(ready) = tool.ready_mut() {
+        collect_applied(ready);
+    }
+    if !ctx.text_edit_focused() && tool.closing.is_none() {
+        let workspace = tool.mode.workspace();
+        let switch = ctx.input_mut(|input| {
+            [Key::Num1, Key::Num2, Key::Num3]
+                .into_iter()
+                .zip(Workspace::ALL)
+                .find(|(key, _)| input.consume_key(Modifiers::NONE, *key))
+                .map(|(_, workspace)| workspace)
         });
-        if redo {
-            ready.redo();
-        } else if undo {
-            ready.undo();
+        if let Some(ready) = tool.ready_mut() {
+            let shortcut = |modifiers, key| {
+                ctx.input_mut(|input| {
+                    input.consume_shortcut(&KeyboardShortcut::new(modifiers, key))
+                })
+            };
+            let redo = shortcut(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+            if redo {
+                redo_tool(ready, &mut editor);
+            } else if shortcut(Modifiers::COMMAND, Key::Z) {
+                undo_tool(ready, &mut editor);
+            }
+            if shortcut(Modifiers::COMMAND, Key::Enter) {
+                apply_all(ready, &mut editor);
+            }
+            if shortcut(Modifiers::NONE, Key::Escape) {
+                revert_all(ready, &editor);
+            }
+            if workspace == Workspace::Poses {
+                crate::pose_tool::shortcuts(&ctx, &mut ready.pose, &editor);
+            }
         }
+        if let Some(next) = switch {
+            tool.mode = next.mode();
+        }
+    }
+
+    let workspace = tool.mode.workspace();
+    if let Some(ready) = tool.ready_mut() {
+        ready.switch_view(workspace);
     }
 
     let mut root = Ui::new(
@@ -78,6 +109,7 @@ pub fn tool_ui(
             bottom_bar(
                 ui,
                 tool.ready_mut(),
+                &mut editor,
                 &mut requests,
                 &mut close_clicked,
                 (asset, source),
@@ -89,75 +121,121 @@ pub fn tool_ui(
     let left =
         egui::Panel::left("tool_panel")
             .resizable(true)
-            .default_size(340.0)
-            .size_range(280.0..=520.0)
+            .default_size(360.0)
+            .size_range(280.0..=560.0)
             .frame(panel)
             .show(&mut root, |ui| {
                 ui.label(RichText::new(tool.file_name()).heading());
                 ui.label(RichText::new(&tool.asset).monospace().small().color(theme::MUTED));
                 ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    for mode in Mode::ALL {
-                        if ui.selectable_label(tool.mode == mode, mode.label()).clicked() {
-                            tool.mode = mode;
+                let current = tool.mode.workspace();
+                ui.horizontal(|ui| {
+                    for (index, workspace) in Workspace::ALL.into_iter().enumerate() {
+                        if ui
+                            .selectable_label(current == workspace, workspace.label())
+                            .on_hover_text(format!("{}", index + 1))
+                            .clicked()
+                            && workspace != current
+                        {
+                            tool.mode = workspace.mode();
                         }
                     }
                 });
+                if let Some(ready) = tool.ready_mut() {
+                    summary(ui, ready);
+                }
                 ui.separator();
-                let mode = tool.mode;
+                let workspace = tool.mode.workspace();
                 let asset = tool.asset.clone();
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                if let Some(error)=&open_error { error_text(ui,error); }
-                match &mut tool.state {
-                    ToolState::Opening(_) => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("Importing…");
-                        });
-                        hint(ui, "Blender runs in the background for .blend sources.");
-                    }
-                    ToolState::Failed(error) => {
+                    if let Some(error) = &open_error {
                         error_text(ui, error);
-                        hint(
-                            ui,
-                            "Fix the source, or choose Blender in Programs… on the main window, then reopen it.",
-                        );
                     }
-                    ToolState::Ready(ready) => match mode {
-                        Mode::Inspect => inspect(ui, ready),
-                        Mode::Lods => lods(ui, ready),
-                        Mode::Collision => collision(ui, ready),
-                        Mode::Poses => crate::pose_tool::panel(ui, &mut ready.pose, &mut editor, &asset),
-                        Mode::Uvs => uv_panel(ui, ready, &asset, &mut requests),
-                        Mode::Materials => material_panel(ui, ready, &asset, &mut requests),
-                    },
-                }
-                if let Some(ready) = tool.ready_mut()
-                    && matches!(mode,Mode::Lods|Mode::Collision|Mode::Uvs)
-                {
-                    ui.add_space(10.0);
-                    apply_row(ui, ready, mode);
-                }
-                if let Some(ready) = tool.ready() {
-                    ui.add_space(8.0);
-                    if let Some(error) = ready.error.as_ref().or(ready.preview_error.as_ref()) {
-                        error_text(ui, error);
-                    } else if let Some(status) = &ready.status {
-                        hint(ui, status);
+                    match &mut tool.state {
+                        ToolState::Opening(_) => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Importing…");
+                            });
+                            hint(ui, "Blender runs in the background for .blend sources.");
+                        }
+                        ToolState::Failed(error) => {
+                            error_text(ui, error);
+                            hint(
+                                ui,
+                                "Fix the source, or choose Blender in Programs… on the main window, then reopen it.",
+                            );
+                        }
+                        ToolState::Ready(ready) => match workspace {
+                            Workspace::Prepare => {
+                                egui::CollapsingHeader::new(theme::section("LODs"))
+                                    .default_open(true)
+                                    .show(ui, |ui| lods(ui, ready));
+                                egui::CollapsingHeader::new(theme::section("Collision"))
+                                    .default_open(true)
+                                    .show(ui, |ui| collision(ui, ready));
+                            }
+                            Workspace::Surface => {
+                                mesh_choice(ui, ready);
+                                hint(ui, "Or click a part in the view.");
+                                egui::CollapsingHeader::new(theme::section("UVs"))
+                                    .default_open(true)
+                                    .show(ui, |ui| {
+                                        uv_view(ui, ready);
+                                        uv_panel(ui, ready, &asset, &mut requests);
+                                    });
+                                egui::CollapsingHeader::new(theme::section("Material"))
+                                    .default_open(true)
+                                    .show(ui, |ui| {
+                                        material_panel(ui, ready, &asset, &mut requests)
+                                    });
+                            }
+                            Workspace::Poses => crate::pose_tool::panel(
+                                ui,
+                                &mut ready.pose,
+                                &mut editor,
+                                &asset,
+                            ),
+                        },
                     }
-                }
-            });
+                    if let Some(ready) = tool.ready() {
+                        ui.add_space(8.0);
+                        if let Some(error) =
+                            ready.error.as_ref().or(ready.preview_error.as_ref())
+                        {
+                            error_text(ui, error);
+                        } else if let Some(status) = &ready.status {
+                            hint(ui, status);
+                        }
+                    }
+                });
                 ui.allocate_rect(ui.available_rect_before_wrap(), Sense::hover());
             })
             .response
             .rect
             .width();
+    let mode = tool.mode;
+    let timeline = match tool.ready_mut() {
+        Some(ready) if mode == Mode::Poses => egui::Panel::bottom("timeline")
+            .frame(
+                Frame::new()
+                    .fill(theme::PANEL)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .inner_margin(Margin::symmetric(12, 8)),
+            )
+            .show(&mut root, |ui| {
+                crate::pose_tool::timeline(ui, &mut ready.pose)
+            })
+            .response
+            .rect
+            .height(),
+        _ => 0.0,
+    };
 
     let full = ctx.viewport_rect();
-    let view = Rect::new(left, 0.0, full.max.x, full.max.y - bottom);
+    let view = Rect::new(left, 0.0, full.max.x, full.max.y - bottom - timeline);
     let (camera, window) = tool.view_entities();
     if let (Ok(mut camera), Ok(window)) = (cameras.get_mut(camera), windows.get(window)) {
-        camera.is_active = tool.mode != Mode::Uvs;
         tool.view = Some(place_view(
             &mut camera,
             window,
@@ -165,10 +243,23 @@ pub fn tool_ui(
             ctx.pixels_per_point(),
         ));
     }
-    if tool.mode == Mode::Uvs {
-        uv_view(&ctx, view, tool.ready());
-    }
     caption(&ctx, tool.mode, tool.ready(), egui::pos2(left + 12.0, 10.0));
+    let toggles = tool.ready_mut().map(|ready| {
+        let workspace = mode.workspace();
+        egui::Area::new("view_toggles".into())
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .fixed_pos(egui::pos2(left + 12.0, view.max.y - 8.0))
+            .constrain_to(egui::Rect::from_min_max(
+                egui::pos2(view.min.x, view.min.y),
+                egui::pos2(view.max.x, view.max.y),
+            ))
+            .show(&ctx, |ui| {
+                ui.set_max_width(view.width() - 24.0);
+                view_toggles(ui, ready, workspace)
+            })
+            .response
+            .rect
+    });
 
     if close_clicked {
         if tool.is_dirty() {
@@ -205,12 +296,8 @@ pub fn tool_ui(
             Some(Some(apply)) => {
                 let applied = !apply
                     || tool.ready_mut().is_none_or(|ready| {
-                        if let Err(error) = ready.pose.apply(&mut editor) {
-                            ready.error = Some(error);
-                            return false;
-                        }
-                        ready.apply("Apply on close");
-                        ready.error.is_none() && !ready.is_dirty()
+                        apply_all(ready, &mut editor);
+                        ready.error.is_none() && !ready.is_dirty() && !ready.pose.dirty()
                     });
                 tool.closing = None;
                 if applied {
@@ -222,38 +309,230 @@ pub fn tool_ui(
         }
     }
     if let Some(tool) = &mut toolbox.tool {
-        tool.pointer_over_ui = tool.closing.is_some();
+        let pointer = ctx.pointer_hover_pos();
+        let over_toggles = toggles
+            .zip(pointer)
+            .is_some_and(|(rect, pointer)| rect.contains(pointer));
+        tool.pointer_over_ui = tool.closing.is_some() || over_toggles;
     }
     toolbox.requests.extend(requests);
     Ok(())
 }
 
+/// Overlay switches over the view, each available in any workspace.
+fn view_toggles(ui: &mut Ui, ready: &mut Ready, workspace: Workspace) {
+    Frame::new()
+        .fill(theme::PANEL.gamma_multiply(0.92))
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .corner_radius(6)
+        .inner_margin(Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.horizontal_wrapped(|ui| {
+                let small = |text: &str| RichText::new(text).small();
+                let view = &mut ready.view;
+                ui.label(small("Show").color(theme::MUTED));
+                ui.toggle_value(&mut view.wireframe, small("Wireframe"));
+                ui.toggle_value(
+                    &mut view.hull,
+                    small("Hull").color(Color32::from_rgb(0x5a, 0xc7, 0xf2)),
+                );
+                ui.toggle_value(
+                    &mut view.trimesh,
+                    small("Trimesh").color(Color32::from_rgb(0x7c, 0xd9, 0x73)),
+                );
+                ui.toggle_value(&mut view.parts, small("Parts"))
+                    .on_hover_text("Convex parts of the collision decomposition");
+                if workspace != Workspace::Poses {
+                    ui.toggle_value(&mut view.compare, small("LOD 0"))
+                        .on_hover_text("Compare LOD 0 with the level chosen under LODs");
+                } else {
+                    ui.toggle_value(&mut ready.pose.ghosts, small("Ghosts"));
+                }
+            });
+        });
+}
+
+/// The model at a glance, kept above every workspace; details fold out.
+fn summary(ui: &mut Ui, ready: &mut Ready) {
+    let Some(preview) = &ready.preview else {
+        return;
+    };
+    let triangles: usize = preview.meshes.iter().map(|m| m.lods[0].triangles).sum();
+    egui::CollapsingHeader::new(
+        RichText::new(format!(
+            "{} parts · {} triangles · {} materials",
+            preview.meshes.len(),
+            count(triangles),
+            preview.bundle.materials.len()
+        ))
+        .small()
+        .color(theme::MUTED),
+    )
+    .id_salt("model_summary")
+    .show(ui, |ui| inspect(ui, ready));
+}
+
+/// Project edits the pose workspace made join the tool's undo order.
+fn collect_applied(ready: &mut Ready) {
+    for label in std::mem::take(&mut ready.pose.applied) {
+        ready.order.push(ToolEdit::Project(label));
+        ready.undone.clear();
+    }
+}
+
+/// Walks back the tool's last applied edit, whichever kind it was. A project edit is only
+/// undone while it is still the project's latest.
+fn undo_tool(ready: &mut Ready, editor: &mut crate::state::Editor) {
+    let Some(edit) = ready.order.last().cloned() else {
+        return;
+    };
+    match &edit {
+        ToolEdit::Recipe => ready.undo(),
+        ToolEdit::Project(label) => {
+            if project_undo(editor) != Some(label.clone()) {
+                ready.error = Some(format!(
+                    "The project's last edit is not \"{label}\"; undo it from the main window"
+                ));
+                return;
+            }
+            editor.apply(crate::state::Command::Undo);
+            ready.pose.load(editor);
+        }
+    }
+    ready.order.pop();
+    ready.undone.push(edit);
+}
+
+fn redo_tool(ready: &mut Ready, editor: &mut crate::state::Editor) {
+    let Some(edit) = ready.undone.last().cloned() else {
+        return;
+    };
+    match &edit {
+        ToolEdit::Recipe => ready.redo(),
+        ToolEdit::Project(label) => {
+            if project_redo(editor) != Some(label.clone()) {
+                ready.error = Some(format!(
+                    "The project can no longer redo \"{label}\"; it changed since"
+                ));
+                return;
+            }
+            editor.apply(crate::state::Command::Redo);
+            ready.pose.load(editor);
+        }
+    }
+    ready.undone.pop();
+    ready.order.push(edit);
+}
+
+fn project_undo(editor: &crate::state::Editor) -> Option<String> {
+    let project = editor.project.as_ref()?;
+    project.session().history().undo_label().map(str::to_owned)
+}
+
+fn project_redo(editor: &crate::state::Editor) -> Option<String> {
+    let project = editor.project.as_ref()?;
+    project.session().history().redo_label().map(str::to_owned)
+}
+
+/// What Apply would write, by what it changes.
+fn pending(ready: &Ready) -> Vec<String> {
+    let mut pending: Vec<String> = Vec::new();
+    let recipe = ready.pending_recipe();
+    if !recipe.is_empty() {
+        pending.push(format!("{} settings", recipe.join(", ")));
+    }
+    if ready.pose.dirty() {
+        pending.push(format!("poses of {}", ready.pose.definition));
+    }
+    pending
+}
+
+/// Applies every pending change: recipe settings once their preview is ready, then pose
+/// targets.
+fn apply_all(ready: &mut Ready, editor: &mut crate::state::Editor) {
+    let recipe = ready.pending_recipe();
+    if !recipe.is_empty() && ready.is_current() {
+        let label = format!("{} settings", recipe.join(", "));
+        ready.apply(&label);
+    }
+    if ready.pose.dirty()
+        && let Err(error) = ready.pose.apply(editor)
+    {
+        ready.error = Some(error);
+    }
+    collect_applied(ready);
+}
+
+fn revert_all(ready: &mut Ready, editor: &crate::state::Editor) {
+    ready.revert();
+    if ready.pose.dirty() {
+        ready.pose.load(editor);
+    }
+}
+
 fn bottom_bar(
     ui: &mut Ui,
     ready: Option<&mut Ready>,
+    editor: &mut crate::state::Editor,
     requests: &mut Vec<Request>,
     close_clicked: &mut bool,
     (asset, source): (String, std::path::PathBuf),
 ) {
     ui.horizontal(|ui| {
         if let Some(ready) = ready {
-            let undo = ready.session.undo_label().map(str::to_owned);
-            let redo = ready.session.redo_label().map(str::to_owned);
-            let button = ui
+            let undo = ready.order.last().map(edit_label);
+            let redo = ready.undone.last().map(edit_label);
+            if ui
                 .add_enabled(undo.is_some(), egui::Button::new("Undo"))
-                .on_hover_text(undo.map_or("Nothing to undo".into(), |l| format!("Undo {l} (Ctrl+Z)")));
-            if button.clicked() {
-                ready.undo();
+                .on_hover_text(undo.map_or("Nothing to undo".into(), |l| format!("Undo {l} (Ctrl+Z)")))
+                .clicked()
+            {
+                undo_tool(ready, editor);
             }
-            let button = ui
+            if ui
                 .add_enabled(redo.is_some(), egui::Button::new("Redo"))
                 .on_hover_text(
                     redo.map_or("Nothing to redo".into(), |l| format!("Redo {l} (Ctrl+Shift+Z)")),
-                );
-            if button.clicked() {
-                ready.redo();
+                )
+                .clicked()
+            {
+                redo_tool(ready, editor);
             }
-            hint(ui, "Undo covers this tool's applies, separately from the project.");
+            ui.separator();
+            let pending = pending(ready);
+            let waiting = !ready.pending_recipe().is_empty() && !ready.is_current();
+            let checked = ready.pose.check(editor);
+            if pending.is_empty() {
+                hint(ui, "Everything is applied.");
+            } else {
+                ui.colored_label(theme::ACCENT, format!("Not applied: {}", pending.join(" · ")));
+                if ready.is_previewing() {
+                    ui.spinner();
+                }
+            }
+            if ui
+                .add_enabled(
+                    !pending.is_empty() && !waiting && (!ready.pose.dirty() || checked.is_ok()),
+                    egui::Button::new("Apply"),
+                )
+                .on_hover_text("Write the recipe and pose targets (Ctrl+Enter)")
+                .on_disabled_hover_text(if waiting {
+                    "Waiting for the preview".to_owned()
+                } else {
+                    checked.err().unwrap_or("Nothing changed".into())
+                })
+                .clicked()
+            {
+                apply_all(ready, editor);
+            }
+            if ui
+                .add_enabled(!pending.is_empty(), egui::Button::new("Revert"))
+                .on_hover_text("Drop the changes not applied yet (Esc)")
+                .clicked()
+            {
+                revert_all(ready, editor);
+            }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // Unapplied edits ask first; see `tool_ui`.
@@ -268,6 +547,13 @@ fn bottom_bar(
             }
         });
     });
+}
+
+fn edit_label(edit: &ToolEdit) -> String {
+    match edit {
+        ToolEdit::Recipe => "the recipe change".into(),
+        ToolEdit::Project(label) => label.clone(),
+    }
 }
 
 fn inspect(ui: &mut Ui, ready: &mut Ready) {
@@ -290,7 +576,6 @@ fn inspect(ui: &mut Ui, ready: &mut Ready) {
         );
         ui.end_row();
     });
-    ui.checkbox(&mut ready.view.wireframe, "Show wireframe");
     let Some(preview) = &ready.preview else {
         preparing(ui);
         return;
@@ -421,8 +706,11 @@ fn lods(ui: &mut Ui, ready: &mut Ready) {
     if levels > 1 {
         let view = &mut ready.view;
         view.lod = view.lod.clamp(1, levels - 1);
-        ui.add(Slider::new(&mut view.lod, 1..=levels - 1).text("Compare with LOD 0"));
-        ui.checkbox(&mut view.wireframe, "Show wireframe");
+        ui.checkbox(&mut view.compare, "Compare with LOD 0 in the view");
+        ui.add_enabled(
+            view.compare,
+            Slider::new(&mut view.lod, 1..=levels - 1).text("Level"),
+        );
     }
     notes(ui, preview.meshes.iter().flat_map(|m| &m.lod_notes));
 }
@@ -519,52 +807,18 @@ fn collision(ui: &mut Ui, ready: &mut Ready) {
     notes(ui, preview.meshes.iter().flat_map(|m| &m.collision_notes));
 }
 
-fn apply_row(ui: &mut Ui, ready: &mut Ready, mode: Mode) {
-    ui.separator();
-    ui.horizontal(|ui| {
-        let dirty = ready.is_dirty();
-        let apply = ui
-            .add_enabled(dirty && ready.is_current(), egui::Button::new("Apply"))
-            .on_hover_text("Save these settings as the source's recipe and write its compiled mesh")
-            .on_disabled_hover_text(if dirty {
-                "Waiting for the preview"
-            } else {
-                "Nothing changed"
-            });
-        if apply.clicked() {
-            let label = match mode {
-                Mode::Lods => "LOD settings",
-                Mode::Uvs => "UV settings",
-                _ => "Collision settings",
-            };
-            ready.apply(label);
-        }
-        if ui
-            .add_enabled(dirty, egui::Button::new("Revert"))
-            .on_hover_text("Go back to the applied settings")
-            .clicked()
-        {
-            ready.revert();
-        }
-        if ready.is_previewing() {
-            ui.spinner();
-        } else if dirty {
-            hint(ui, "Not applied yet");
-        }
-    });
-}
-
 /// A short caption over the 3D view saying what it shows.
 fn caption(ctx: &egui::Context, mode: Mode, ready: Option<&Ready>, at: egui::Pos2) {
     let Some(preview) = ready.and_then(|ready| ready.preview.as_ref()) else {
         return;
     };
-    let text = match mode {
-        Mode::Poses => "Click a part to pick its joint · drag to orbit · wheel to zoom".into(),
-        Mode::Uvs => "UV layout · selected mesh".into(),
-        Mode::Materials => "Material slots · select a part to edit in Blender".into(),
-        Mode::Inspect => "Drag to orbit · middle-drag to pan · wheel to zoom".to_owned(),
-        Mode::Lods => {
+    let comparing = ready.is_some_and(|ready| ready.view.compare);
+    let text = match mode.workspace() {
+        Workspace::Poses => {
+            "Click a part to pick its joint · drag a ring to turn it · drag to orbit".into()
+        }
+        Workspace::Surface => "Click a part to select it · drag to orbit · wheel to zoom".into(),
+        Workspace::Prepare if comparing => {
             let level = ready.map_or(1, |ready| ready.view.lod);
             let sum = |level: usize| -> usize {
                 preview
@@ -588,7 +842,9 @@ fn caption(ctx: &egui::Context, mode: Mode, ready: Option<&Ready>, at: egui::Pos
                 )
             }
         }
-        Mode::Collision => "Model shown faded under its collision shapes".to_owned(),
+        Workspace::Prepare => {
+            "Click a part to select it · drag to orbit · middle-drag to pan".to_owned()
+        }
     };
     egui::Area::new(egui::Id::new("tool_caption"))
         .fixed_pos(at)
@@ -747,7 +1003,6 @@ fn handoff(
 }
 
 fn uv_panel(ui: &mut Ui, ready: &mut Ready, asset: &str, requests: &mut Vec<Request>) {
-    mesh_choice(ui, ready);
     ui.label(theme::section("UV preparation"));
     let mut draft = ready.draft.clone();
     ui.checkbox(
@@ -774,7 +1029,6 @@ fn uv_panel(ui: &mut Ui, ready: &mut Ready, asset: &str, requests: &mut Vec<Requ
 }
 
 fn material_panel(ui: &mut Ui, ready: &mut Ready, asset: &str, requests: &mut Vec<Request>) {
-    mesh_choice(ui, ready);
     if let Some(preview) = &ready.preview
         && let Some(mesh) = preview.bundle.meshes.get(ready.mesh_index)
     {
@@ -813,20 +1067,12 @@ fn material_panel(ui: &mut Ui, ready: &mut Ready, asset: &str, requests: &mut Ve
     );
 }
 
-fn uv_view(ctx: &egui::Context, view: Rect, ready: Option<&Ready>) {
-    let rect = egui::Rect::from_min_max(
-        egui::pos2(view.min.x, view.min.y),
-        egui::pos2(view.max.x, view.max.y),
-    );
-    let painter = ctx
-        .layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            "uv_canvas".into(),
-        ))
-        .with_clip_rect(rect);
-    painter.rect_filled(rect, 0.0, theme::BASE);
-    let size = (rect.width().min(rect.height()) - 70.0).max(10.0);
-    let square = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
+/// The selected part's UV layout over a checker tile, beside the part in the 3D view.
+fn uv_view(ui: &mut Ui, ready: &Ready) {
+    let size = ui.available_width().clamp(120.0, 340.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size + 18.0), Sense::hover());
+    let painter = ui.painter_at(rect);
+    let square = egui::Rect::from_min_size(rect.min, egui::vec2(size, size));
     for x in 0..10 {
         for y in 0..10 {
             let cell = egui::Rect::from_min_size(
@@ -850,9 +1096,6 @@ fn uv_view(ctx: &egui::Context, view: Rect, ready: Option<&Ready>) {
         egui::Stroke::new(1.0, theme::BORDER),
         egui::StrokeKind::Inside,
     );
-    let Some(ready) = ready else {
-        return;
-    };
     let Some(mesh) = ready
         .preview
         .as_ref()
@@ -888,7 +1131,7 @@ fn uv_view(ctx: &egui::Context, view: Rect, ready: Option<&Ready>) {
     painter.text(
         square.left_bottom() + egui::vec2(0.0, 6.0),
         egui::Align2::LEFT_TOP,
-        "0,0                                      UV tile 0–1",
+        "0,0 · UV tile 0–1",
         egui::FontId::monospace(11.0),
         theme::MUTED,
     );
@@ -896,12 +1139,136 @@ fn uv_view(ctx: &egui::Context, view: Rect, ready: Option<&Ready>) {
 
 #[cfg(test)]
 mod tests {
-    use super::count;
+    use super::*;
+    use crate::state::{Command, Editor};
+    use struction_anim::base_pose::{BasePose, JointPose};
+    use struction_assets::{Blender, PrepSession, read_recipe};
 
     #[test]
     fn counts_group_thousands() {
         assert_eq!(count(7), "7");
         assert_eq!(count(1234), "1,234");
         assert_eq!(count(1_234_567), "1,234,567");
+    }
+
+    /// A tetrahedron as a glTF source, Blender-free.
+    fn tetrahedron(dir: &std::path::Path) -> std::path::PathBuf {
+        let positions: [[f32; 3]; 4] = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+        let indices: [u16; 12] = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3];
+        let mut bytes: Vec<u8> = positions
+            .iter()
+            .flatten()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        bytes.extend(indices.iter().flat_map(|i| i.to_le_bytes()));
+        std::fs::write(dir.join("tetra.bin"), &bytes).unwrap();
+        let gltf = serde_json::json!({
+            "asset": { "version": "2.0" },
+            "buffers": [{ "uri": "tetra.bin", "byteLength": bytes.len() }],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 48 },
+                { "buffer": 0, "byteOffset": 48, "byteLength": 24 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3",
+                  "min": [0, 0, 0], "max": [1, 1, 1] },
+                { "bufferView": 1, "componentType": 5123, "count": 12, "type": "SCALAR" }
+            ],
+            "meshes": [{ "name": "tetra", "primitives": [{ "attributes": { "POSITION": 0 }, "indices": 1 }] }],
+            "nodes": [{ "name": "tetra", "mesh": 0 }],
+            "scenes": [{ "nodes": [0] }],
+            "scene": 0
+        });
+        let source = dir.join("tetra.gltf");
+        std::fs::write(&source, gltf.to_string()).unwrap();
+        source
+    }
+
+    /// One Apply writes recipe and pose changes; Undo walks them back newest first, and leaves
+    /// a project edit made elsewhere in the meantime alone.
+    #[test]
+    fn apply_and_undo_cover_recipe_and_pose_edits_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("scenes")).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../playground/project/scenes/milestone1.jsonc"),
+            dir.path().join("scenes/milestone1.jsonc"),
+        )
+        .unwrap();
+        let mut editor = Editor::default();
+        editor.apply(Command::Open(dir.path().into()));
+        let source = tetrahedron(dir.path());
+        let mut ready = Ready::new(PrepSession::open(&source, Blender::default()).unwrap());
+        ready.pose.definition = "characters/player".into();
+        ready.pose.rig_name = "humanoid".into();
+        ready.pose.load(&editor);
+
+        let mut draft = ready.draft.clone();
+        draft.collision.trimesh_ratio = 0.5;
+        ready.set_draft(draft.clone());
+        ready.preview = Some(ready.session.preview(&draft).unwrap());
+        ready.pose.targets.poses.insert(
+            "aim".into(),
+            BasePose {
+                joints: vec![JointPose::rotation("head", Vec3::new(0.0, 30.0, 0.0))],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            pending(&ready),
+            ["collision settings", "poses of characters/player"]
+        );
+        apply_all(&mut ready, &mut editor);
+        assert!(pending(&ready).is_empty(), "{:?}", ready.error);
+        assert_eq!(
+            ready.order,
+            [
+                ToolEdit::Recipe,
+                ToolEdit::Project("Pose targets for characters/player".into())
+            ]
+        );
+        let player = dir.path().join("characters/player/entity.jsonc");
+        let has_poses = || {
+            std::fs::read_to_string(&player)
+                .unwrap()
+                .contains("PoseTargets")
+        };
+        assert!(has_poses());
+        assert_eq!(read_recipe(&source).unwrap(), Some(draft));
+
+        undo_tool(&mut ready, &mut editor);
+        assert!(!has_poses());
+        assert!(ready.pose.targets.poses.is_empty());
+        undo_tool(&mut ready, &mut editor);
+        assert_eq!(read_recipe(&source).unwrap(), None);
+        redo_tool(&mut ready, &mut editor);
+        redo_tool(&mut ready, &mut editor);
+        assert!(has_poses() && read_recipe(&source).unwrap().is_some());
+
+        // Another edit lands on the project: the tool's pose edit is no longer its latest.
+        editor
+            .project
+            .as_mut()
+            .unwrap()
+            .edit(struction_editor::EditRequest::Set {
+                file: "characters/player/entity.jsonc".into(),
+                path: ["components", "Attack", "duration"]
+                    .map(|key| struction_editor::Field::Key(key.into()))
+                    .into(),
+                value: serde_json::json!(0.7),
+                label: "Elsewhere".into(),
+                group: None,
+                revision: None,
+            })
+            .unwrap();
+        undo_tool(&mut ready, &mut editor);
+        assert!(has_poses());
+        assert!(
+            ready
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("main window"))
+        );
     }
 }
