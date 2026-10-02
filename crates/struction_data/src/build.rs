@@ -153,6 +153,18 @@ impl Builder<'_> {
             .ok_or_else(|| DataError::at(ErrorKind::UnsupportedType(ty.path().into()), span))
     }
 
+    // Collection insertion constructs a new concrete value; Bevy's list/map apply can panic
+    // if handed an incomplete dynamic struct. Finish each entry before it reaches apply.
+    fn collection_value(&self, node: &Node, info: &'static TypeInfo) -> Built {
+        let partial = self.build(node, info)?;
+        match self.registry.get(info.type_id()) {
+            Some(registration) => self
+                .finish(registration, partial, node)
+                .map(|v| v.into_partial_reflect()),
+            None => Ok(partial),
+        }
+    }
+
     fn build(&self, node: &Node, info: &'static TypeInfo) -> Built {
         let name = display_name(info);
         match info {
@@ -220,7 +232,7 @@ impl Builder<'_> {
                 let mut out = DynamicList::default();
                 out.set_represented_type(Some(info));
                 for item in items {
-                    out.push_box(self.build(item, item_info)?);
+                    out.push_box(self.collection_value(item, item_info)?);
                 }
                 Ok(Box::new(out))
             }
@@ -244,7 +256,7 @@ impl Builder<'_> {
                 let item_info = self.info_of(ai.item_ty(), ai.item_info(), &node.span)?;
                 let built = items
                     .iter()
-                    .map(|item| self.build(item, item_info))
+                    .map(|item| self.collection_value(item, item_info))
                     .collect::<Result<Vec<_>, _>>()?;
                 let mut out = DynamicArray::new(built.into_boxed_slice());
                 out.set_represented_type(Some(info));
@@ -263,7 +275,7 @@ impl Builder<'_> {
                 for member in members {
                     out.insert_boxed(
                         Box::new(member.key.clone()),
-                        self.build(&member.value, value_info)?,
+                        self.collection_value(&member.value, value_info)?,
                     );
                 }
                 Ok(Box::new(out))

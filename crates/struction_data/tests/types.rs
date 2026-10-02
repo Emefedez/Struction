@@ -19,6 +19,9 @@ struct Kitchen {
     letter: char,
     maybe: Option<Vec3>,
     nested: Option<Faction>,
+    entries: Vec<Stats>,
+    objects: HashMap<String, Stats>,
+    defaults: Vec<Health>,
 }
 
 #[derive(Component, Reflect, Debug, PartialEq)]
@@ -160,4 +163,32 @@ fn shape_errors_inside_containers() {
     assert!(result.unwrap_err()[0].contains("expected single-character string"));
     let (result, _) = load(r#""Kitchen": { "tags": { "a": 300 } }"#);
     assert!(result.unwrap_err()[0].contains("invalid value for u8: 300 is out of range"));
+}
+
+#[test]
+fn incomplete_collection_entries_report_source_errors_instead_of_panicking() {
+    for field in [
+        r#""entries": [{"strength": 4}]"#,
+        r#""objects": {"first": {"strength": 4}}"#,
+    ] {
+        let (result, _) = load(&format!(r#""Kitchen": {{{field}}}"#));
+        assert_eq!(
+            result.unwrap_err(),
+            ["a/entity.jsonc:1: missing field agility in Stats"]
+        );
+    }
+    let (result, store) = load(r#""Kitchen": {"defaults": [{"current": 7}]}"#);
+    result.unwrap();
+    assert_eq!(
+        store
+            .get("a")
+            .unwrap()
+            .component::<Kitchen>()
+            .unwrap()
+            .defaults,
+        [Health {
+            current: 7.0,
+            max: 0.0
+        }]
+    );
 }
