@@ -243,13 +243,20 @@ stays in the tool. The UV mode shows a selected part's UV triangles over a check
 can generate missing coordinates through the existing preparation recipe, and opens the
 selected object in Blender's **UV Editing** workspace for seams/repacking/re-unwrapping.
 
-**Poses** selects a definition using that model, then a named target and joint. XYZ angles
-are absolute local joint rotations in degrees. The model previews the target; labels
-identify Rolling's `roll`, Attacking's `swing_raise`/`swing_strike`, and other solver targets.
-Apply writes sparse `PoseTargets` on that definition through normal validated source edits
-and project undo. Engine definitions get project overrides. Runtime rigs merge those
-poses with the default library when targets change; simulation movement logic is unchanged.
-The preview displays the target itself, not a recording of the procedural transition.
+**Poses** selects a definition using that model and edits its overrides of the rig's pose
+library ([pose sequences](moves.md#pose-sequences)); every name, description and use it shows
+comes from that data and the definition. **Key poses** lists the library's poses with their
+`doc` and the sequences that play them. Pick a joint from the list or by clicking the model:
+the chosen joint's parts glow and the skeleton overlay marks it. XYZ angles are absolute local
+rotations in degrees; a joint can be left to the body again, and a pose can be added as a copy.
+**Sequences** lists the library's sequences and what plays them on this definition (a move's
+`sequence` such as `Attack.sequence`, or a state rule's `PlaySequence`). Keys can be added,
+removed, reordered and retimed; looping, length, takeover, fades, events and the pelvis tumble
+are editable; Play, Repeat and the phase slider preview it on the model over the standing base,
+as the runtime blends it. Apply checks the overrides against the rig, then writes sparse
+`PoseTargets { poses, sequences }` as one validated, undoable source edit (the JSONL `edit`
+command does the same); engine definitions get project overrides. Runtime rigs merge them with
+the library when they change, and the swing's `strike` event times its hit.
 
 **Materials** identifies each mesh part and material slot and opens Blender **Shading**
 with that object and slot active. The configured Blender executable is used for these

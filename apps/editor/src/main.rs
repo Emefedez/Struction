@@ -82,7 +82,9 @@ fn main() {
         }
         return;
     }
-    if play { editor.apply(Command::StartPlay); }
+    if play {
+        editor.apply(Command::StartPlay);
+    }
     let mut toolbox = Toolbox::default();
     if let Some(executable) = blender
         && let Err(error) = toolbox.programs.select(executable, false)

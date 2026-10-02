@@ -560,7 +560,7 @@ fn caption(ctx: &egui::Context, mode: Mode, ready: Option<&Ready>, at: egui::Pos
         return;
     };
     let text = match mode {
-        Mode::Poses => "State target pose · edit joint angles in the sidebar".into(),
+        Mode::Poses => "Click a part to pick its joint · drag to orbit · wheel to zoom".into(),
         Mode::Uvs => "UV layout · selected mesh".into(),
         Mode::Materials => "Material slots · select a part to edit in Blender".into(),
         Mode::Inspect => "Drag to orbit · middle-drag to pan · wheel to zoom".to_owned(),

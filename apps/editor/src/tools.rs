@@ -28,7 +28,7 @@ use crate::state::Editor;
 use crate::viewport::zoom_factor;
 
 /// Render layer of the mesh tool's preview, kept out of the scene view and vice versa.
-const TOOL_LAYER: usize = 1;
+pub const TOOL_LAYER: usize = 1;
 /// Settings must hold still this long before a new preview starts.
 const PREVIEW_DELAY: Duration = Duration::from_millis(120);
 
@@ -185,7 +185,8 @@ struct Shown {
     revision: u64,
     mode: Mode,
     view: ViewOptions,
-    pose: crate::pose_tool::PoseDraft,
+    /// The pose view's rig, whose parts follow the draft every frame.
+    rig: Option<String>,
 }
 
 impl Ready {
@@ -418,19 +419,24 @@ pub struct ToolboxPlugin;
 
 impl Plugin for ToolboxPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Toolbox>().add_systems(
-            Update,
-            (
-                scan_assets,
-                handle_requests,
-                close_windows,
-                poll_tool,
-                refresh_tool_on_focus,
-                orbit_tool,
-                show_preview,
-            )
-                .chain(),
-        );
+        app.init_resource::<Toolbox>()
+            .init_gizmo_group::<crate::pose_tool::PoseGizmos>()
+            .add_systems(Startup, crate::pose_tool::configure_gizmos)
+            .add_systems(
+                Update,
+                (
+                    scan_assets,
+                    handle_requests,
+                    close_windows,
+                    poll_tool,
+                    refresh_tool_on_focus,
+                    crate::pose_tool::pick_joint,
+                    orbit_tool,
+                    show_preview,
+                    crate::pose_tool::animate_preview,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -884,7 +890,7 @@ fn show_preview(
         revision: ready.revision,
         mode,
         view: ready.view,
-        pose: ready.pose.clone(),
+        rig: (mode == Mode::Poses).then(|| ready.pose.rig_name.clone()),
     };
     if tool.shown.as_ref() == Some(&want) {
         return;
@@ -893,40 +899,33 @@ fn show_preview(
         commands.entity(entity).despawn();
     }
     let bundle = &preview.bundle;
-    let placements = if mode == Mode::Poses {
-        ready
-            .pose
-            .rig(&editor)
-            .map(|rig| {
-                let transforms = ready.pose.transforms(&rig);
-                bundle
-                    .nodes
-                    .iter()
-                    .flat_map(|node| {
-                        let joint = rig
-                            .skeleton
-                            .joint_id(node.name.split('.').next().unwrap_or(&node.name))
-                            .ok();
-                        let transforms = &transforms;
-                        node.meshes.iter().filter_map(move |&mesh| {
-                            joint.map(|joint| (mesh as usize, transforms[joint]))
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_else(|| placements(bundle))
-    } else {
-        placements(bundle)
+    // In the pose view each part follows its joint; `pose_tool::animate_preview` moves them.
+    let posed = (mode == Mode::Poses)
+        .then(|| ready.pose.rig(&editor))
+        .flatten()
+        .map(|rig| {
+            let transforms = ready.pose.transforms(&rig);
+            crate::pose_tool::parts(bundle, &rig)
+                .into_iter()
+                .map(|(mesh, joint)| (mesh, transforms[joint], joint))
+                .collect::<Vec<_>>()
+        });
+    let placements = match &posed {
+        Some(posed) => posed.iter().map(|&(mesh, at, _)| (mesh, at)).collect(),
+        None => placements(bundle),
     };
     let layer = RenderLayers::layer(TOOL_LAYER);
-    let mut spawn = |mesh: Mesh, look: Look, transform: Transform| {
-        commands.spawn((
+    let mut spawn = |mesh: Mesh, look: Look, transform: Transform, joint: Option<usize>| {
+        let mut part = commands.spawn((
             ToolPreview,
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(materials.add(material(look))),
             transform,
             layer.clone(),
         ));
+        if let Some(joint) = joint {
+            part.insert(crate::pose_tool::PosedPart { joint });
+        }
     };
 
     let bounds = scene_bounds(bundle, &placements);
@@ -954,7 +953,8 @@ fn show_preview(
         Mode::Lods if lod > 0 => vec![(0, -0.6 * width), (lod, 0.6 * width)],
         _ => vec![(0, 0.0)],
     };
-    for &(index, transform) in &placements {
+    for (part, &(index, transform)) in placements.iter().enumerate() {
+        let joint = posed.as_ref().map(|posed| posed[part].2);
         let mesh = &bundle.meshes[index];
         for &(level, offset) in &copies {
             let Some(chosen) = mesh.lods.get(level.min(mesh.lods.len() - 1)) else {
@@ -966,7 +966,7 @@ fn show_preview(
                 look.color = look.color.with_alpha(0.25);
                 look.alpha = true;
             }
-            spawn(lod_mesh(chosen), look, placed);
+            spawn(lod_mesh(chosen), look, placed, joint);
             if view.wireframe && !matches!(mode, Mode::Collision | Mode::Poses | Mode::Materials) {
                 let triangles = chosen.indices.as_chunks::<3>().0.iter().copied();
                 spawn(
@@ -978,6 +978,7 @@ fn show_preview(
                         under_lines: false,
                     },
                     placed,
+                    None,
                 );
             }
         }
@@ -1004,8 +1005,14 @@ fn show_preview(
                 wire_mesh(&hull.points, hull.faces.iter().copied()),
                 line(HULL),
                 transform,
+                None,
             );
-            spawn(solid_mesh(&hull.points, &hull.faces), fill(HULL), transform);
+            spawn(
+                solid_mesh(&hull.points, &hull.faces),
+                fill(HULL),
+                transform,
+                None,
+            );
         }
         if view.trimesh {
             let trimesh = &collision.trimesh;
@@ -1013,6 +1020,7 @@ fn show_preview(
                 wire_mesh(&trimesh.vertices, trimesh.triangles.iter().copied()),
                 line(TRIMESH),
                 transform,
+                None,
             );
         }
         if view.parts {
@@ -1022,11 +1030,13 @@ fn show_preview(
                     wire_mesh(&hull.points, hull.faces.iter().copied()),
                     line(color),
                     transform,
+                    None,
                 );
                 spawn(
                     solid_mesh(&hull.points, &hull.faces),
                     fill(color),
                     transform,
+                    None,
                 );
             }
         }
