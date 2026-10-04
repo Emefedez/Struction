@@ -113,7 +113,7 @@ Camera attachment is still a host system, it is intended to be able to easily ad
 ## Follow-ups
 
 - Extensors: suggestions only come from requirements; there are no generator previews beyond listing supplied components. `blocked_while` lists use `struction_character`'s closed `CharacterCondition` list, while `states` sections already name registry states; state rules only apply to characters, and two rules changing the same component restore in reverse order.
-- Pose sequences: one global `BasePoseSet` (the humanoid's) serves every rig, and the swing's strike reads it; a second rig needs per-rig libraries in `struction_scene::Rigs`. The pose tool's clicks, playback and saving were exercised headlessly; click through it natively.
+- Pose sequences: one global `BasePoseSet` (the humanoid's) serves every rig, and the swing's strike reads it; a second rig needs per-rig libraries in `struction_scene::Rigs`. Its pose and sequence names are still free strings in a schema, so editor clients cannot offer them yet, unlike states and packages. The pose tool's clicks, playback and saving were exercised headlessly; click through it natively.
 - Moves: the roll, the swing and the guarding sentry still need a native look; there is no health, so `combat/hit` only knocks back unless a definition reacts to it.
 - Brain arguments use tagged values (`{ "Float": 0.25 }`); switch to plain JSON values typed by the condition/action parameter metadata.
 - Animation looks: foot roll, hip sway, arm swing, longer strides (~110 steps/min), knee limits, turning in place.
