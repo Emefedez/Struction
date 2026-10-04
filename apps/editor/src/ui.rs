@@ -16,7 +16,7 @@ use struction_editor::{Diagnostic, EntityEntry, ExtensorWhy, Field, HierarchyNod
 use crate::inspector_fields::{FieldTarget, value_editor};
 use crate::state::{Command, Editor, Extensors, Inspection, Selected, definition_file};
 use crate::theme;
-use crate::tools::{self, Mode, Request, Toolbox};
+use crate::tools::{self, Mode, Request, Toolbox, Workspace};
 use crate::viewport::SceneCamera;
 
 /// Text fields that must survive between passes.
@@ -301,11 +301,11 @@ fn top_bar(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut V
             for asset in toolbox.assets.clone() {
                 ui.menu_button(asset.rsplit('/').next().unwrap_or(&asset), |ui| {
                     ui.label(RichText::new(&asset).small().color(theme::MUTED));
-                    for mode in Mode::ALL {
-                        if ui.button(mode.label()).clicked() {
+                    for workspace in Workspace::ALL {
+                        if ui.button(workspace.label()).clicked() {
                             toolbox.requests.push(Request::Open {
                                 asset: asset.clone(),
-                                mode,
+                                mode: workspace.mode(),
                             });
                             ui.close();
                         }
@@ -882,11 +882,19 @@ fn inspector_header(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox) {
     ui.label(RichText::new(path).small().monospace().color(theme::MUTED));
     if let Selected::Asset(asset) = selected {
         ui.horizontal_wrapped(|ui| {
-            for mode in Mode::ALL {
-                if ui.small_button(mode.label()).clicked() {
+            for workspace in Workspace::ALL {
+                if ui
+                    .small_button(workspace.label())
+                    .on_hover_text(match workspace {
+                        Workspace::Prepare => "Inspect the model and prepare LODs and collision",
+                        Workspace::Surface => "Edit UVs and materials for the selected part",
+                        Workspace::Poses => "Edit poses and animation sequences",
+                    })
+                    .clicked()
+                {
                     toolbox.requests.push(Request::Open {
                         asset: asset.clone(),
-                        mode,
+                        mode: workspace.mode(),
                     });
                 }
             }
@@ -921,45 +929,11 @@ fn asset_inspector(ui: &mut Ui, asset: &str, editor: &Editor, toolbox: &mut Tool
             ui.end_row();
         });
     ui.add_space(8.0);
-    let (mut open, mut external) = (None, false);
-    ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-        if ui
-            .button("Inspect mesh…")
-            .on_hover_text("Open the mesh tool: bounds, counts and a 3D preview")
-            .clicked()
-        {
-            open = Some(Mode::Inspect);
-        }
-        if ui
-            .button("Generate LODs…")
-            .on_hover_text("Preview levels of detail from presets, then apply")
-            .clicked()
-        {
-            open = Some(Mode::Lods);
-        }
-        if ui
-            .button("Generate collision…")
-            .on_hover_text("Preview hull, trimesh and convex parts from presets, then apply")
-            .clicked()
-        {
-            open = Some(Mode::Collision);
-        }
-        ui.add_space(4.0);
-        if ui
-            .button(tools::open_in_label(&source))
-            .on_hover_text("Edit the source in its full application")
-            .clicked()
-        {
-            external = true;
-        }
-    });
-    if let Some(mode) = open {
-        toolbox.requests.push(Request::Open {
-            asset: asset.to_owned(),
-            mode,
-        });
-    }
-    if external {
+    if ui
+        .button(tools::open_in_label(&source))
+        .on_hover_text("Edit the source in its full application")
+        .clicked()
+    {
         toolbox
             .requests
             .push(Request::OpenExternally(asset.to_owned()));

@@ -47,6 +47,8 @@ For read-modify-write clients, pass the opaque `revision` returned by `read` in 
 | `source_location` | `target: {kind: "definition" or "entity", path: "…"}` | Absolute file, line and column for a definition, spawn or spawner; library definitions resolve to their real files |
 | `field_options` | `file`, `path` | Schema fragment (with `$defs`), effective value and locally authored value for a definition field or spawn override |
 | `add_field` | `file`, `path` (parent), `key`, optional `value` | Add a field absent from this source; defaults to the effective value or a schema-generated starting value |
+| `edit_field` | `file`, `path`, `value`, optional `group` | Edit an effective field, materializing an inherited list before changing an entry; preserves sibling entries |
+| `remove_entry` | `file`, `path` (list), `index` | Remove one entry, preserving inherited siblings and neighboring authored comments; fixed-size arrays refuse removal |
 | `add_entry` | `file`, `path` (list), optional `value` | Append a schema-guided entry, preserving inherited entries; fixed-size arrays refuse extra entries |
 | `inspect_definition` | `path` | Lineage, resolved authored data and reflected components including defaults, plus extensors: those in use with their reason (`named_by`, `owns`, `required_by`) and supplied components, dropped ones, suggested ones and the rest available |
 | `add_extensor` | `path`, `extensor` | Name an extensor in the definition's own source (or remove its own `"-name"` drop); validated and undoable |
@@ -100,7 +102,7 @@ Without an argument the editor asks for a project directory. The UI is egui (`be
 
 - **Scene**: switch between **Masters & wards** (`masterIs`) and **Placement** (zones, spawners, named spawns). Definitions form a separate inheritance tree (`descendsFrom`). **New actor (instance)** chooses a definition, placement spawner and optional master from the hierarchy; the created actor appears beneath its master and can be undone. New definitions descend from the selected definition; the parent is shown explicitly.
 - **Colors**: blue instances, gold masters, green wards, purple definitions and peach assets; role labels and indentation carry the same meaning. Source problems are red, rejected operations amber, and locally authored fields have amber dots.
-- **Inspector**: an entity's definition, source `file:line`, StableId, master selector and placement; its authored components are edited as scene `overrides` on the spawn. A definition shows its lineage, its **Extensors** (in use and why, dropped ones with Restore, suggestions as `+` buttons and an **Add extensor…** menu, each calling `add_extensor`/`remove_extensor`) and resolved components; edits write its own file. Amber dots mark values set in that source; ↺ removes them to inherit again. Drags on a number form one undo group.
+- **Inspector**: an entity's definition, source `file:line`, StableId, master selector and placement; its authored components are edited as scene `overrides` on the spawn. A definition shows its lineage, its **Extensors** (in use and why, dropped ones with Restore, suggestions as `+` buttons and an **Add extensor…** menu, each calling `add_extensor`/`remove_extensor`) and resolved components; edits write its own file. **Reset** removes a local field override to reveal its inherited/default value. Drags on a number form one undo group.
 - **Viewport**: instances as capsules, zones and spawners as gizmos. Click selects; dragging a named spawn moves it on the ground (Shift: height) through `move_spawn`, one undo step per drag. Right-drag orbits, middle-drag pans, the wheel zooms, F frames the selection.
 - **Problems**: `validate` diagnostics and the last rejected operation without duplicating identical diagnostics. Broken definitions stay listed and show their original source with an **Open source in editor…** action; definition locations select their definition.
 - **Narrow windows**: Scene, Inspector and Viewport become tabs; selecting an object opens its inspector. Problems stays across the bottom and toolbar controls wrap.
@@ -159,14 +161,28 @@ and `{column}` placeholders, and quote executable paths with spaces. Without `{f
 path is appended. Commands launch directly without shell expansion; terminal editors need
 a terminal launcher in the template. Saving either program preserves the other setting.
 
-Object sections offer **Add field…** for fields not yet authored here, including inherited
-or default fields already displayed. Lists offer **Add entry…**, with choices for enums and
-an editable JSON draft for structured values. Nested objects and list entries expand into
-editable controls. Map fields allow a new key. These controls use the reflected schema,
-so new component fields appear without editor-specific handling. Fixed-size vectors cannot
-grow. Additions validate before writing, are disabled during Play and undo as a single step;
-appending to an inherited list preserves its existing entries. Appending to an authored
-list preserves comments on its existing entries.
+Inspector controls follow the registered schema. Known values such as movement states and
+cancellation actions use dropdowns, flags use checkboxes, and numbers use draggable numeric
+inputs (sliders only when the schema supplies both bounds). Fixed-size vectors keep their
+length. Optional values can be enabled or cleared. A numeric drag is one undo step.
+
+Object sections offer **Add field…** for missing fields; map sections also accept a new key.
+Inherited/default fields already shown can be edited directly. **Add entry…** opens a typed
+form: a `cancel_into` entry has an action dropdown and an `after` number, rather than a JSON
+text box. Nested objects and list entries expose the same controls. List size limits from
+the schema constrain additions and removals.
+
+**Remove entry** deletes one list element; **Clear list** explicitly overrides the list with
+an empty one. **Reset** removes a locally authored field, revealing inherited/default data
+if present. Resetting a list restores inheritance; clearing it leaves it empty. Required
+fields inside list entries cannot be individually removed: edit the entry, remove it, or
+reset its owning list. All edits validate before writing and are disabled during Play.
+Editing inherited entries first materializes their list so siblings survive. Authored
+entry removals preserve neighboring comments; undo restores the exact previous source.
+
+The main Toolbox menu and asset inspector open the same three workspaces as the mesh tool:
+**Prepare** (model inspection, LODs and collision), **Surface** (UVs and materials), and
+**Poses** (poses and sequences).
 
 The same operations are available over JSONL:
 
@@ -175,7 +191,10 @@ The same operations are available over JSONL:
 {"id":2,"command":{"op":"field_options","file":"characters/player/entity.jsonc","path":["components","Roll"]}}
 {"id":3,"command":{"op":"add_field","file":"characters/player/entity.jsonc","path":["components","Roll"],"key":"cancel_into","value":[]}}
 {"id":4,"command":{"op":"add_entry","file":"characters/player/entity.jsonc","path":["components","Roll","blocked_while"],"value":"Attacking"}}
-{"id":5,"command":{"op":"undo"}}
+{"id":5,"command":{"op":"add_entry","file":"characters/player/entity.jsonc","path":["components","Roll","cancel_into"],"value":{"action":"Attack","after":0.25}}}
+{"id":6,"command":{"op":"edit_field","file":"characters/player/entity.jsonc","path":["components","Roll","cancel_into",0,"action"],"value":"Jump"}}
+{"id":7,"command":{"op":"remove_entry","file":"characters/player/entity.jsonc","path":["components","Roll","cancel_into"],"index":0}}
+{"id":8,"command":{"op":"undo"}}
 ```
 
 Scene override paths begin with `spawnerList`, the spawner name, `spawns`, the spawn name,

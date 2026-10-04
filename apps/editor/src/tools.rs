@@ -47,26 +47,6 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub const ALL: [Self; 6] = [
-        Self::Inspect,
-        Self::Lods,
-        Self::Collision,
-        Self::Poses,
-        Self::Uvs,
-        Self::Materials,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Inspect => "Inspect",
-            Self::Lods => "LODs",
-            Self::Collision => "Collision",
-            Self::Poses => "Poses",
-            Self::Uvs => "UVs",
-            Self::Materials => "Materials",
-        }
-    }
-
     pub fn workspace(self) -> Workspace {
         match self {
             Self::Inspect | Self::Lods | Self::Collision => Workspace::Prepare,

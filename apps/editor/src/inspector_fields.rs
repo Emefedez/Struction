@@ -177,7 +177,7 @@ fn reset_button(ui: &mut Ui, field: &[Field], target: &FieldTarget, commands: &m
         .on_hover_text(if nested {
             "Reset the owning list to inherit it again, or remove this entry."
         } else {
-            "Remove this source's override and restore the inherited/default value."
+            "Remove this field from this source; inherited/default values become visible if present."
         })
         .clicked()
     {
@@ -335,15 +335,20 @@ fn live(
             }
             if !fixed_array(schema) {
                 ui.horizontal(|ui| {
-                    ui.menu_button("Add entry…", |ui| {
-                        if let Some(value) = addition(ui, target.schema, &schema["items"]) {
-                            commands.push(Command::AddEntry {
-                                file: target.file.clone(),
-                                path: target.path(field),
-                                value,
-                            });
-                            ui.close();
-                        }
+                    let can_add = schema["maxItems"]
+                        .as_u64()
+                        .is_none_or(|max| items.len() < max as usize);
+                    ui.add_enabled_ui(can_add, |ui| {
+                        ui.menu_button("Add entry…", |ui| {
+                            if let Some(value) = addition(ui, target.schema, &schema["items"]) {
+                                commands.push(Command::AddEntry {
+                                    file: target.file.clone(),
+                                    path: target.path(field),
+                                    value,
+                                });
+                                ui.close();
+                            }
+                        });
                     });
                     if !items.is_empty()
                         && schema["minItems"].as_u64().unwrap_or(0) == 0
@@ -442,6 +447,8 @@ fn form(ui: &mut Ui, value: &mut Value, root: &Value, raw: &Value, depth: usize)
         }
         Value::Array(items) => {
             let mut remove = None;
+            let removable = !fixed_array(schema)
+                && items.len() > schema["minItems"].as_u64().unwrap_or(0) as usize;
             for (index, item) in items.iter_mut().enumerate() {
                 ui.push_id(index, |ui| {
                     let s = schema
@@ -456,8 +463,7 @@ fn form(ui: &mut Ui, value: &mut Value, root: &Value, raw: &Value, depth: usize)
                             (index + 1).to_string()
                         });
                         changed |= form(ui, item, root, s, depth + 1);
-                        if !fixed_array(schema)
-                            && ui.small_button("×").on_hover_text("Remove entry").clicked()
+                        if removable && ui.small_button("×").on_hover_text("Remove entry").clicked()
                         {
                             remove = Some(index);
                         }
@@ -469,6 +475,9 @@ fn form(ui: &mut Ui, value: &mut Value, root: &Value, raw: &Value, depth: usize)
                 changed = true;
             }
             if !fixed_array(schema)
+                && schema["maxItems"]
+                    .as_u64()
+                    .is_none_or(|max| items.len() < max as usize)
                 && ui.small_button("Add entry").clicked()
                 && let Some(value) = initial_value(root, &schema["items"])
             {
