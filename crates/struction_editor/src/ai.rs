@@ -41,6 +41,8 @@ pub struct Tool {
     pub input_schema: Value,
     /// Starts, drives or stops isolated play, which a GUI host may track itself.
     pub play: bool,
+    /// Only looks: never changes sources, history or play.
+    pub read_only: bool,
     command: Builder,
 }
 
@@ -130,8 +132,30 @@ fn tool(name: &'static str, description: &'static str, input_schema: Value) -> T
         description,
         input_schema,
         play: false,
+        read_only: READS.contains(&name),
         command: Builder::Command,
     }
+}
+
+const READS: [&str; 13] = [
+    "validate",
+    "definitions",
+    "definition_hierarchy",
+    "inspect_definition",
+    "entities",
+    "master_hierarchy",
+    "inspect_entity",
+    "read",
+    "source_location",
+    "field_options",
+    "actions",
+    "schema",
+    "history",
+];
+
+/// Whether a successful call to `name` may have changed the project.
+pub fn changes(name: &str) -> bool {
+    !READS.contains(&name)
 }
 
 /// Every tool, read-only ones first.

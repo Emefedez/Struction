@@ -7,7 +7,10 @@
 //! `--screenshot` saves `editor.png` (and `mesh-tool.png`) there once everything has drawn, then
 //! quits, for checking the GUI without a person at the screen. `--headless` serves the JSONL
 //! authoring protocol on stdin/stdout and `--mcp` the same operations as a Model Context Protocol
-//! server, both without a window.
+//! server, both without a window; `--mcp-http` serves MCP on localhost without a window.
+//!
+//! The editor itself serves its open project over MCP at `http://127.0.0.1:47100/mcp` (or the
+//! next free port, or `--mcp-port`) unless started with `--no-mcp`; see `assistant`.
 
 mod assistant;
 mod game;
@@ -35,7 +38,7 @@ use bevy_egui::{EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryE
 use crate::state::{Command, Editor};
 use crate::tools::{Mode, Request, Toolbox};
 
-const USAGE: &str = "struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision|poses|uvs|materials]] [--screenshot <directory>] [--blender <executable>] [--headless | --mcp] [--play]";
+const USAGE: &str = "struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision|poses|uvs|materials]] [--screenshot <directory>] [--blender <executable>] [--headless | --mcp | --mcp-http] [--mcp-port <port>] [--no-mcp] [--play]";
 
 fn main() {
     let mut editor = Editor::default();
@@ -43,6 +46,11 @@ fn main() {
     let mut blender = None;
     let mut headless = false;
     let mut mcp = false;
+    let mut mcp_http = false;
+    let mut mcp_port = std::env::var("STRUCTION_MCP_PORT")
+        .ok()
+        .and_then(|port| port.parse().ok());
+    let mut serve_mcp = true;
     let mut play = false;
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
@@ -50,6 +58,16 @@ fn main() {
         match arg.to_str() {
             Some("--headless") => headless = true,
             Some("--mcp") => mcp = true,
+            Some("--mcp-http") => mcp_http = true,
+            Some("--no-mcp") => serve_mcp = false,
+            Some("--mcp-port") => {
+                mcp_port = Some(
+                    value()
+                        .to_str()
+                        .and_then(|port| port.parse().ok())
+                        .unwrap_or_else(|| exit_with_usage()),
+                )
+            }
             Some("--play") => play = true,
             Some("--blender") => blender = Some(std::path::PathBuf::from(value())),
             Some("--mesh") => mesh = Some(value().to_string_lossy().into_owned()),
@@ -70,14 +88,26 @@ fn main() {
             _ => exit_with_usage(),
         }
     }
-    if headless || mcp {
+    if headless || mcp || mcp_http {
         let Some(project) = editor.project.as_mut() else {
-            eprintln!("--headless and --mcp require a project directory");
+            eprintln!("--headless, --mcp and --mcp-http require a project directory");
             if let Some(rejection) = &editor.rejection {
                 eprintln!("{}", rejection.message);
             }
             std::process::exit(2);
         };
+        if mcp_http {
+            let port = mcp_port.unwrap_or(struction_editor::mcp::DEFAULT_PORT);
+            let endpoint = struction_editor::mcp::Endpoint::bind(port, 10).unwrap_or_else(|e| {
+                eprintln!("MCP endpoint: {e}");
+                std::process::exit(1)
+            });
+            eprintln!("Serving MCP at {}", endpoint.url());
+            loop {
+                endpoint.answer(Some(project));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
         let (input, output) = (std::io::stdin().lock(), std::io::stdout().lock());
         let served = if mcp {
             struction_editor::mcp::serve(project, input, output)
@@ -138,7 +168,10 @@ fn main() {
             struction_scene::render::SceneVisualsPlugin,
             viewport::ViewportPlugin,
             tools::ToolboxPlugin,
-            assistant::AssistantPlugin,
+            assistant::AssistantPlugin {
+                mcp_port: serve_mcp
+                    .then(|| mcp_port.unwrap_or(struction_editor::mcp::DEFAULT_PORT)),
+            },
         ))
         .insert_resource(toolbox)
         .add_systems(Startup, ui_camera)

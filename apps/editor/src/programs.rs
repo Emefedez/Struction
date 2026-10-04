@@ -211,7 +211,7 @@ pub fn installed_ides() -> Vec<(&'static str, String)> {
         .collect()
 }
 
-fn on_path(program: &str) -> bool {
+pub(crate) fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| {
         std::env::split_paths(&paths).any(|dir| {
             std::fs::metadata(dir.join(program)).is_ok_and(|meta| {

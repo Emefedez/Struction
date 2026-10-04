@@ -389,6 +389,7 @@ fn top_bar(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut V
                     toolbox.programs.blender.executable.display()
                 ));
             });
+        crate::assistant::header_buttons(ui, &mut toolbox.assistant);
     });
     let Some(project) = &editor.project else {
         ui.label(RichText::new("No project open").color(theme::MUTED));

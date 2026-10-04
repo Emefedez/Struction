@@ -128,6 +128,8 @@ pub struct Toolbox {
     /// Closed from inside the tool's own egui pass, which still holds its context; despawned
     /// on the next update.
     closed: Vec<MeshTool>,
+    /// The header's MCP and Assistant buttons, beside Toolbox and Programs.
+    pub assistant: crate::assistant::Header,
 }
 
 impl Toolbox {
