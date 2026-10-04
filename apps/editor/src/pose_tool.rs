@@ -71,6 +71,7 @@ pub struct PoseDraft {
     duration_edit: Option<(String, f32)>,
     new_pose: String,
     new_sequence: String,
+    insert_pose: String,
     new_event: String,
     error: Option<String>,
 }
@@ -96,6 +97,7 @@ impl Default for PoseDraft {
             duration_edit: None,
             new_pose: String::new(),
             new_sequence: String::new(),
+            insert_pose: String::new(),
             new_event: String::new(),
             error: None,
         }
@@ -237,6 +239,122 @@ impl PoseDraft {
         self.library().sequences.get(&self.sequence).cloned()
     }
 
+    pub fn select_sequence(&mut self, name: String) {
+        self.sequence = name;
+        self.playback = default();
+        self.key = None;
+        self.solo = false;
+        self.select_key(0);
+    }
+
+    /// Choosing a pose while editing a key replaces that key; browsing without a key is solo.
+    pub fn select_pose(&mut self, name: String) {
+        self.pose = name.clone();
+        if let Some(index) = self.key
+            && self
+                .current_sequence()
+                .is_some_and(|s| index < s.keys.len())
+        {
+            self.sequence_mut().keys[index].pose = name;
+            self.select_key(index);
+        } else {
+            self.key = None;
+            self.solo = true;
+            self.playback.playing = false;
+        }
+    }
+
+    pub fn add_key(&mut self, pose: String) {
+        if self.current_sequence().is_none() || !self.library().poses.contains_key(&pose) {
+            return;
+        }
+        let at = self.phase();
+        let sequence = self.sequence_mut();
+        let index = sequence.keys.partition_point(|key| key.at <= at);
+        sequence.keys.insert(index, SequenceKey::new(pose, at));
+        self.select_key(index);
+    }
+
+    pub fn remove_key(&mut self, index: usize) {
+        let Some(sequence) = self.current_sequence() else {
+            return;
+        };
+        if sequence.keys.len() <= 1 || index >= sequence.keys.len() {
+            return;
+        }
+        self.sequence_mut().keys.remove(index);
+        self.select_key(index.min(sequence.keys.len() - 2));
+    }
+
+    pub fn create_sequence(&mut self, name: String, copy: bool) {
+        let sequence =
+            if copy { self.current_sequence() } else { None }.unwrap_or_else(|| PoseSequence {
+                keys: vec![SequenceKey::new(self.pose.clone(), 0.0)],
+                ..default()
+            });
+        self.targets.sequences.insert(name.clone(), sequence);
+        self.players.clear();
+        self.select_sequence(name);
+    }
+
+    pub fn assign_move(&mut self, editor: &mut Editor, component: &str) -> Result<(), String> {
+        self.apply(editor)?;
+        let label = format!("{component}.sequence for {}", self.definition);
+        self.edit(
+            editor,
+            &[component, "sequence"],
+            self.sequence.clone().into(),
+            &label,
+        )?;
+        self.players = sequence_players(
+            &editor
+                .project
+                .as_ref()
+                .ok_or("No project")?
+                .inspect_definition(&self.definition)
+                .map_err(|e| e.to_string())?,
+            &self.sequence,
+        );
+        if let Some(index) = self.key {
+            self.select_key(index);
+        }
+        Ok(())
+    }
+
+    pub fn assign_state(&mut self, editor: &mut Editor, state: &str) -> Result<(), String> {
+        self.apply(editor)?;
+        let label = format!("{state}.PlaySequence for {}", self.definition);
+        let request = EditRequest::Set {
+            file: format!("{}/entity.jsonc", self.definition),
+            path: ["states", state, "enable", "PlaySequence", "sequence"]
+                .into_iter()
+                .map(|key| Field::Key(key.into()))
+                .collect(),
+            value: self.sequence.clone().into(),
+            label: label.clone(),
+            group: None,
+            revision: None,
+        };
+        editor
+            .project
+            .as_mut()
+            .ok_or("No project")?
+            .edit(request)
+            .map_err(|e| e.to_string())?;
+        editor.apply(Command::Refresh);
+        self.applied.push(label);
+        self.players = sequence_players(
+            &editor
+                .project
+                .as_ref()
+                .ok_or("No project")?
+                .inspect_definition(&self.definition)
+                .map_err(|e| e.to_string())?,
+            &self.sequence,
+        );
+        Ok(())
+    }
+
     /// Seconds the sequence lasts: a loop's cycle, or the duration of the move playing it.
     pub fn length(&self, sequence: &PoseSequence) -> f32 {
         let moving = self.players.iter().find_map(|player| player.duration);
@@ -297,10 +415,7 @@ impl PoseDraft {
 
     /// Whether the view shows the pose alone rather than the sequence at the playhead.
     pub fn shows_pose(&self) -> bool {
-        self.solo
-            || self
-                .current_sequence()
-                .is_none_or(|sequence| !sequence.keys.iter().any(|key| key.pose == self.pose))
+        self.solo || self.current_sequence().is_none()
     }
 
     /// The rig's standing base with `pose` on it.
@@ -554,7 +669,9 @@ pub fn pose_users(library: &BasePoseSet, pose: &str) -> Vec<String> {
                 .iter()
                 .enumerate()
                 .filter(|(_, key)| key.pose == pose)
-                .map(move |(index, key)| format!("{name}, key {} at {:.2}", index + 1, key.at))
+                .map(move |(index, key)| {
+                    format!("{name}, key {} at {:.0}%", index + 1, key.at * 100.0)
+                })
         })
         .collect()
 }
@@ -1026,13 +1143,17 @@ pub fn timeline(ui: &mut Ui, draft: &mut PoseDraft) {
         ui.horizontal(|ui| {
             muted(
                 ui,
-                "No sequence: the view shows the key pose. Choose a sequence in the sidebar to play it here.",
+                "Pose library preview. Choose an animation in the sidebar to add pose keys and play it.",
             );
         });
         return;
     };
     let length = draft.length(&sequence);
     let width = ui.available_width();
+    ui.horizontal_wrapped(|ui| {
+        ui.label(theme::section(&format!("Animation: {}", draft.sequence)));
+        muted(ui, "◆ pose key · ▲ gameplay event");
+    });
     ui.horizontal_wrapped(|ui| {
         let label = if draft.playback.playing {
             "⏸ Pause"
@@ -1045,8 +1166,14 @@ pub fn timeline(ui: &mut Ui, draft: &mut PoseDraft) {
         if !sequence.looping {
             ui.checkbox(&mut draft.playback.repeat, "Repeat");
         }
-        ui.checkbox(&mut draft.solo, "Key pose alone")
-            .on_hover_text("Show the selected pose by itself instead of the sequence");
+        if ui
+            .checkbox(&mut draft.solo, "Key pose alone")
+            .on_hover_text("Show the selected pose by itself instead of the animation")
+            .changed()
+            && draft.solo
+        {
+            draft.playback.playing = false;
+        }
         ui.checkbox(&mut draft.ghosts, "Ghosts")
             .on_hover_text("Faint skeletons of the keys the playhead is between");
         let source = if sequence.gait {
@@ -1077,6 +1204,33 @@ pub fn timeline(ui: &mut Ui, draft: &mut PoseDraft) {
     if draft.playback.playing {
         ui.ctx().request_repaint();
     }
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Add pose:");
+        let names: Vec<_> = draft.library().poses.keys().cloned().collect();
+        if !names.contains(&draft.insert_pose) {
+            draft.insert_pose = draft.pose.clone();
+        }
+        egui::ComboBox::from_id_salt("insert_pose")
+            .selected_text(&draft.insert_pose)
+            .show_ui(ui, |ui| {
+                for name in &names {
+                    ui.selectable_value(&mut draft.insert_pose, name.clone(), name);
+                }
+            });
+        if ui.button("Add pose at playhead").clicked() {
+            draft.add_key(draft.insert_pose.clone());
+        }
+        if ui.add_enabled(draft.key.is_some() && sequence.keys.len() > 1,
+            egui::Button::new("Remove selected key"))
+            .on_hover_text("Removes this occurrence; the pose stays in the library. An animation needs at least one key.")
+            .clicked()
+            && let Some(index) = draft.key
+        {
+            draft.remove_key(index);
+        }
+    });
+    let sequence = draft.current_sequence().expect("selected animation");
 
     let (rect, track) =
         ui.allocate_exact_size(egui::vec2(width, 70.0), egui::Sense::click_and_drag());
@@ -1173,9 +1327,9 @@ pub fn timeline(ui: &mut Ui, draft: &mut PoseDraft) {
             },
         );
         marker.on_hover_text(format!(
-            "Key {} at {:.2}: click to edit its pose, drag to retime",
+            "Pose key {} at {:.2} s: click to edit its pose, drag to retime",
             index + 1,
-            edited.keys[index].at
+            edited.keys[index].at * length
         ));
     }
     let names: Vec<String> = edited.events.keys().cloned().collect();
@@ -1195,6 +1349,7 @@ pub fn timeline(ui: &mut Ui, draft: &mut PoseDraft) {
         } else if marker.clicked() {
             draft.playback.playing = false;
             draft.playback.time = at * length;
+            draft.solo = false;
         }
         painter.add(egui::Shape::convex_polygon(
             vec![
@@ -1213,8 +1368,8 @@ pub fn timeline(ui: &mut Ui, draft: &mut PoseDraft) {
             theme::WARD,
         );
         marker.on_hover_text(format!(
-            "Event {name} at {:.2}: drag to retime",
-            edited.events[&name]
+            "Gameplay event {name} at {:.2} s: drag to retime. An event signals game logic; it is not a pose.",
+            edited.events[&name] * length
         ));
     }
     let head = x(draft.phase());
@@ -1307,8 +1462,13 @@ pub fn panel(ui: &mut Ui, draft: &mut PoseDraft, editor: &mut Editor, asset: &st
     }
 
     ui.add_space(4.0);
-    ui.label(theme::section("Sequence"));
+    ui.label(theme::section("Animation"));
     sequence_section(ui, draft, editor);
+    if !draft.sequence.is_empty() {
+        ui.add_space(6.0);
+        ui.label(theme::section("Pose keys"));
+        keys_section(ui, draft);
+    }
     ui.add_space(6.0);
     ui.label(theme::section("Key pose"));
     pose_section(ui, draft);
@@ -1317,7 +1477,7 @@ pub fn panel(ui: &mut Ui, draft: &mut PoseDraft, editor: &mut Editor, asset: &st
     joint_section(ui, draft, &rig);
     if !draft.sequence.is_empty() {
         ui.add_space(6.0);
-        egui::CollapsingHeader::new(theme::section("Sequence settings"))
+        egui::CollapsingHeader::new(theme::section("Playback, blending & events"))
             .id_salt("sequence_settings")
             .show(ui, |ui| settings_section(ui, draft));
     }
@@ -1346,7 +1506,7 @@ fn add_copy(ui: &mut Ui, what: &str, names: &[String], new_name: &mut String) ->
         let name = new_name.trim().to_owned();
         let valid = !name.is_empty() && !names.contains(&name);
         if ui
-            .add_enabled(valid, egui::Button::new("Add as copy"))
+            .add_enabled(valid, egui::Button::new(format!("Copy {what}")))
             .on_hover_text(format!("A new {what} starting from the selected one"))
             .clicked()
         {
@@ -1376,37 +1536,59 @@ fn sequence_section(ui: &mut Ui, draft: &mut PoseDraft, editor: &mut Editor) {
     let names: Vec<String> = library.sequences.keys().cloned().collect();
     let before = draft.sequence.clone();
     let shown = if draft.sequence.is_empty() {
-        "None"
+        "Pose library only"
     } else {
         draft.sequence.as_str()
     };
     egui::ComboBox::from_id_salt("sequence")
         .selected_text(shown)
         .show_ui(ui, |ui| {
-            ui.selectable_value(&mut draft.sequence, String::new(), "None");
+            ui.selectable_value(&mut draft.sequence, String::new(), "Pose library only");
             for name in &names {
                 ui.selectable_value(&mut draft.sequence, name.clone(), name);
             }
         });
-    if let Some(name) = add_copy(ui, "sequence", &names, &mut draft.new_sequence) {
-        let copy = library
-            .sequences
-            .get(&draft.sequence)
-            .cloned()
-            .unwrap_or_else(|| PoseSequence {
-                keys: vec![SequenceKey::new(draft.pose.clone(), 0.0)],
-                ..default()
-            });
-        draft.targets.sequences.insert(name.clone(), copy);
-        draft.sequence = name;
-    }
     if before != draft.sequence {
-        draft.playback = default();
-        draft.key = None;
-        draft.solo = false;
-        return;
+        draft.players = editor
+            .project
+            .as_ref()
+            .and_then(|project| project.inspect_definition(&draft.definition).ok())
+            .map(|definition| sequence_players(&definition, &draft.sequence))
+            .unwrap_or_default();
+        draft.select_sequence(draft.sequence.clone());
     }
-    let Some(sequence) = library.sequences.get(&draft.sequence) else {
+    ui.horizontal_wrapped(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut draft.new_sequence)
+                .hint_text("New animation name")
+                .desired_width(140.0),
+        );
+        let name = draft.new_sequence.trim().to_owned();
+        let valid = !name.is_empty() && !names.contains(&name);
+        let new = ui
+            .add_enabled(valid, egui::Button::new("New animation"))
+            .on_hover_text(
+                "Start with one key using the current pose; add more poses at the playhead",
+            )
+            .clicked();
+        let copy = ui
+            .add_enabled(
+                valid && draft.current_sequence().is_some(),
+                egui::Button::new("Copy animation"),
+            )
+            .on_hover_text("Duplicate this animation, including keys, events and blending")
+            .clicked();
+        if new || copy {
+            draft.create_sequence(name, copy);
+            draft.players.clear();
+            draft.new_sequence.clear();
+        }
+    });
+    let Some(sequence) = draft.current_sequence() else {
+        muted(
+            ui,
+            "A pose is a body configuration. An animation plays a list of pose keys over time.",
+        );
         return;
     };
     if !sequence.doc.is_empty() {
@@ -1415,8 +1597,42 @@ fn sequence_section(ui: &mut Ui, draft: &mut PoseDraft, editor: &mut Editor) {
     if draft.players.is_empty() {
         muted(
             ui,
-            "Nothing on this definition plays it. Name it in a move's `sequence`, or enable a `PlaySequence` from a state.",
+            "Available to preview. Not assigned to gameplay on this definition.",
         );
+    }
+    if let Some(definition) = editor
+        .project
+        .as_ref()
+        .and_then(|project| project.inspect_definition(&draft.definition).ok())
+    {
+        for (path, value) in &definition.components {
+            let component = path.rsplit("::").next().unwrap_or(path);
+            if !sequence.looping && value.get("duration").is_some()
+                && let Some(current) = value.get("sequence").and_then(Value::as_str)
+                && current != draft.sequence
+                && ui.button(format!("Use for {component}"))
+                    .on_hover_text(format!("Save pending poses and replace {component}.sequence ({current}) with {}. Undo restores the assignment.", draft.sequence))
+                    .clicked()
+            {
+                draft.error = draft.assign_move(editor, component).err();
+            }
+        }
+        if sequence.looping
+            && let Some(states) = definition.resolved.get("states").and_then(Value::as_object)
+        {
+            for (state, rule) in states {
+                if let Some(current) = rule.get("enable")
+                    .and_then(|enable| enable.get("PlaySequence"))
+                    .and_then(|player| player.get("sequence")).and_then(Value::as_str)
+                    && current != draft.sequence
+                    && ui.button(format!("Use while {state}"))
+                        .on_hover_text(format!("Save pending poses and replace the animation played while {state}: {current}"))
+                        .clicked()
+                {
+                    draft.error = draft.assign_state(editor, state).err();
+                }
+            }
+        }
     }
     for index in 0..draft.players.len() {
         let player = draft.players[index].clone();
@@ -1466,21 +1682,31 @@ fn pose_section(ui: &mut Ui, draft: &mut PoseDraft) {
         draft.pose = name;
     }
     if before != draft.pose {
-        // Editing another pose leaves the key it came from.
-        let keyed = draft.key.and_then(|key| {
-            let sequence = draft.current_sequence()?;
-            (sequence.keys.get(key)?.pose == draft.pose).then_some(key)
-        });
-        draft.key = keyed;
+        draft.select_pose(draft.pose.clone());
     }
     if let (Some(key), Some(sequence)) = (draft.key, draft.current_sequence())
         && let Some(at) = sequence.keys.get(key).map(|key| key.at)
     {
         ui.colored_label(
             theme::ACCENT,
-            format!("Key {} of {} at {at:.2}", key + 1, draft.sequence),
+            format!(
+                "Editing key {} of {} at {:.2} s",
+                key + 1,
+                draft.sequence,
+                at * draft.length(&sequence)
+            ),
+        );
+        muted(
+            ui,
+            "Choosing another pose replaces this key. Copy the pose before changing joints to keep other keys unchanged.",
+        );
+    } else {
+        muted(
+            ui,
+            "Editing a library pose. Use Add pose at playhead to put it in the animation.",
         );
     }
+    let library = draft.library();
     let Some(pose) = library.poses.get(&draft.pose) else {
         return;
     };
@@ -1491,10 +1717,10 @@ fn pose_section(ui: &mut Ui, draft: &mut PoseDraft) {
     if users.is_empty() {
         muted(
             ui,
-            "No sequence plays it; constraints and solvers may still name it.",
+            "Available to add to an animation; it may also be used by body constraints.",
         );
     } else {
-        muted(ui, format!("Played by {}", users.join(" · ")));
+        muted(ui, format!("Used by {}", users.join(" · ")));
     }
     if draft.targets.poses.contains_key(&draft.pose)
         && overridden(ui, draft.defaults.poses.contains_key(&draft.pose))
@@ -1577,7 +1803,7 @@ fn joint_section(ui: &mut Ui, draft: &mut PoseDraft, rig: &Rig) {
     });
 }
 
-fn settings_section(ui: &mut Ui, draft: &mut PoseDraft) {
+fn keys_section(ui: &mut Ui, draft: &mut PoseDraft) {
     let Some(sequence) = draft.current_sequence() else {
         return;
     };
@@ -1586,9 +1812,24 @@ fn settings_section(ui: &mut Ui, draft: &mut PoseDraft) {
     let count = edited.keys.len();
     let mut remove = None;
     let mut swap = None;
+    let mut selected = draft.key;
+    let length = draft.length(&sequence);
     for (index, key) in edited.keys.iter_mut().enumerate() {
+        let low = if index == 0 {
+            0.0
+        } else {
+            sequence.keys[index - 1].at
+        };
+        let high = sequence.keys.get(index + 1).map_or(1.0, |key| key.at);
         ui.horizontal(|ui| {
-            ui.label(format!("{}", index + 1));
+            if ui
+                .selectable_label(draft.key == Some(index), format!("{}", index + 1))
+                .on_hover_text("Select this key to edit its pose's joints")
+                .clicked()
+            {
+                selected = Some(index);
+            }
+            let before = key.pose.clone();
             egui::ComboBox::from_id_salt(("key_pose", index))
                 .selected_text(&key.pose)
                 .width(130.0)
@@ -1597,12 +1838,22 @@ fn settings_section(ui: &mut Ui, draft: &mut PoseDraft) {
                         ui.selectable_value(&mut key.pose, name.clone(), name);
                     }
                 });
-            ui.add(
-                egui::DragValue::new(&mut key.at)
-                    .speed(0.005)
-                    .range(0.0..=1.0)
-                    .prefix("at "),
-            );
+            let mut seconds = key.at * length;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut seconds)
+                        .speed(0.005)
+                        .range(low * length..=high * length)
+                        .suffix(" s"),
+                )
+                .changed()
+            {
+                key.at = seconds / length;
+                selected = Some(index);
+            }
+            if before != key.pose {
+                selected = Some(index);
+            }
             if ui
                 .add_enabled(index > 0, egui::Button::new("↑").small())
                 .clicked()
@@ -1627,23 +1878,36 @@ fn settings_section(ui: &mut Ui, draft: &mut PoseDraft) {
         // Reordering swaps the poses; the times stay in order.
         let pose = edited.keys[index].pose.clone();
         edited.keys[index].pose = std::mem::replace(&mut edited.keys[index + 1].pose, pose);
+        selected = selected.map(|key| match key {
+            key if key == index => index + 1,
+            key if key == index + 1 => index,
+            key => key,
+        });
     }
     if let Some(index) = remove {
         edited.keys.remove(index);
-        draft.key = None;
+        selected = Some(index.min(edited.keys.len() - 1));
     }
-    if ui
-        .button("Add key")
-        .on_hover_text("The key pose being edited, at the playhead")
-        .clicked()
+    let changed = edited != sequence;
+    if changed {
+        *draft.sequence_mut() = edited;
+    }
+    if (changed || selected != draft.key)
+        && let Some(index) = selected
     {
-        let at = draft.phase();
-        let index = edited.keys.partition_point(|key| key.at <= at);
-        edited
-            .keys
-            .insert(index, SequenceKey::new(draft.pose.clone(), at));
-        draft.key = Some(index);
+        draft.select_key(index);
     }
+    muted(
+        ui,
+        "Add poses beneath the timeline. Times are when each pose is reached; transitions are eased between keys.",
+    );
+}
+
+fn settings_section(ui: &mut Ui, draft: &mut PoseDraft) {
+    let Some(sequence) = draft.current_sequence() else {
+        return;
+    };
+    let mut edited = sequence.clone();
     ui.checkbox(&mut edited.looping, "Loop").on_hover_text(
         "Repeat while the state playing it holds; one-shots last their move's duration",
     );
@@ -1669,12 +1933,17 @@ fn settings_section(ui: &mut Ui, draft: &mut PoseDraft) {
             "preview length without a move"
         });
     });
-    ui.add(egui::Slider::new(&mut edited.takeover, 0.0..=1.0).text("takeover"))
+    ui.add(egui::Slider::new(&mut edited.takeover, 0.0..=1.0).text("Override walking"))
         .on_hover_text("1 replaces walking, feet and constraints; 0 leaves the legs walking");
     if !edited.looping {
         ui.add(egui::Slider::new(&mut edited.fade_in, 0.0..=1.0).text("fade in"));
         ui.add(egui::Slider::new(&mut edited.fade_out, 0.0..=1.0).text("fade out"));
     }
+    ui.label(theme::section("Gameplay events"));
+    muted(
+        ui,
+        "Markers signal game logic; they do not move the model. Attack reads strike to time its hit. Other names need a handler in game code.",
+    );
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut draft.new_event)
@@ -1710,6 +1979,7 @@ fn settings_section(ui: &mut Ui, draft: &mut PoseDraft) {
     if let Some(name) = dropped {
         edited.events.remove(&name);
     }
+    ui.label(theme::section("Procedural pelvis turn"));
     let mut tumbles = edited.tumble.is_some();
     if ui.checkbox(&mut tumbles, "Tumble the pelvis").changed() {
         edited.tumble = tumbles.then(Tumble::default);
@@ -1791,6 +2061,169 @@ mod tests {
             .unwrap()
             .inspect_definition("characters/player")
             .unwrap()
+    }
+
+    #[test]
+    fn playback_and_scrubbing_ignore_an_unrelated_library_pose() {
+        let rig = struction_anim::humanoid::rig();
+        let mut draft = PoseDraft {
+            defaults: struction_anim::humanoid::base_poses(),
+            pose: "idle".into(),
+            sequence: "swing".into(),
+            ..default()
+        };
+        draft.toggle_play();
+        draft.advance(0.3);
+        assert!(!draft.shows_pose());
+        let before = draft.preview_pose(&rig);
+        draft.advance(0.25);
+        let after = draft.preview_pose(&rig);
+        let hand = rig.skeleton.joint_id("upper_arm_r").unwrap();
+        assert_ne!(before.locals[hand].rotation, after.locals[hand].rotation);
+
+        draft.select_pose("seated".into());
+        assert!(draft.shows_pose());
+        assert!(!draft.playback.playing);
+        draft.toggle_play();
+        assert!(
+            !draft.shows_pose(),
+            "Play must always preview the animation"
+        );
+        draft.select_sequence("swing".into());
+        assert_eq!(draft.pose, "swing_raise");
+        assert_eq!(draft.key, Some(0));
+    }
+
+    #[test]
+    fn timeline_buttons_add_and_remove_the_chosen_pose_without_removing_it_from_the_library() {
+        fn frame(
+            ctx: &egui::Context,
+            draft: &mut PoseDraft,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 400.0),
+                    )),
+                    events,
+                    ..default()
+                },
+                |ui| timeline(ui, draft),
+            );
+            output.textures_delta.clear();
+            output
+        }
+        fn position(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().find_map(|shape| position(shape, label))
+                }
+                _ => None,
+            }
+        }
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut draft = PoseDraft {
+            defaults: struction_anim::humanoid::base_poses(),
+            insert_pose: "aim".into(),
+            ..default()
+        };
+        draft.select_sequence("swing".into());
+        draft.playback.time = 0.4;
+        frame(&ctx, &mut draft, vec![]);
+        for label in ["Add pose at playhead", "Remove selected key"] {
+            let output = frame(&ctx, &mut draft, vec![]);
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|shape| position(&shape.shape, label))
+                .unwrap();
+            frame(&ctx, &mut draft, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame(
+                    &ctx,
+                    &mut draft,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+            if label == "Add pose at playhead" {
+                assert_eq!(draft.current_sequence().unwrap().keys.len(), 3);
+                assert_eq!(draft.pose, "aim");
+                assert_eq!(draft.key, Some(1));
+            }
+        }
+        assert_eq!(draft.current_sequence().unwrap().keys.len(), 2);
+        assert!(draft.library().poses.contains_key("aim"));
+    }
+
+    #[test]
+    fn added_and_replaced_pose_keys_save_assign_and_undo() {
+        let (dir, mut editor) = open_playground();
+        let source = "// Keep these animation notes.\n{}\n";
+        let file = dir.path().join("characters/player/entity.jsonc");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, source).unwrap();
+        editor.apply(Command::Refresh);
+        let mut draft = player(&editor);
+        draft.select_sequence("swing".into());
+        draft.create_sequence("test_swing".into(), true);
+        draft.select_pose("aim".into());
+        assert_eq!(draft.current_sequence().unwrap().keys[0].pose, "aim");
+        assert_eq!(
+            draft.defaults.sequences["swing"].keys[0].pose,
+            "swing_raise"
+        );
+        draft.playback.time = 0.4;
+        draft.add_key("fist".into());
+        assert_eq!(draft.key, Some(1));
+        assert_eq!(draft.pose, "fist");
+        assert_eq!(draft.current_sequence().unwrap().keys.len(), 3);
+        draft.remove_key(2);
+        draft.assign_move(&mut editor, "Attack").unwrap();
+        assert_eq!(
+            sequence_players(&inspect(&editor), "test_swing")[0].label,
+            "Attack.sequence"
+        );
+        assert_eq!(draft.targets.sequences["test_swing"].keys.len(), 2);
+
+        editor.apply(Command::StartPlay);
+        editor.project.as_mut().unwrap().step_play(2).unwrap();
+        let world = editor.project.as_ref().unwrap().play_world().unwrap();
+        assert!(world.iter_entities().any(|entity| {
+            entity
+                .get::<struction_character::Attack>()
+                .is_some_and(|attack| attack.sequence == "test_swing")
+        }));
+        assert!(world.iter_entities().any(|entity| {
+            entity
+                .get::<struction_anim::base_pose::RigPoseSet>()
+                .is_some_and(|set| set.0.sequences["test_swing"].keys[0].pose == "aim")
+        }));
+        editor.apply(Command::StopPlay);
+        editor.apply(Command::Undo);
+        assert_eq!(
+            sequence_players(&inspect(&editor), "swing")[0].label,
+            "Attack.sequence"
+        );
+        editor.apply(Command::Undo);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), source);
+
+        draft.select_sequence("swing".into());
+        draft.create_sequence("one_pose".into(), false);
+        assert_eq!(draft.current_sequence().unwrap().keys.len(), 1);
+        assert!(draft.current_sequence().unwrap().events.is_empty());
+        draft.remove_key(0);
+        assert_eq!(draft.current_sequence().unwrap().keys.len(), 1);
     }
 
     #[test]
@@ -1882,23 +2315,14 @@ mod tests {
         assert!(draft.phase() < 0.2);
 
         // A state rule plays it while walking; the data layer accepts the rule.
-        editor
-            .project
-            .as_mut()
-            .unwrap()
-            .edit(EditRequest::Set {
-                file: "characters/player/entity.jsonc".into(),
-                path: ["states", "Walking", "enable", "PlaySequence"]
-                    .map(|key| Field::Key(key.into()))
-                    .into(),
-                value: serde_json::json!({ "sequence": "march" }),
-                label: "Walk with the march".into(),
-                group: None,
-                revision: None,
-            })
-            .unwrap();
+        draft.assign_state(&mut editor, "Walking").unwrap();
         assert_eq!(
             sequence_players(&inspect(&editor), "march")[0].label,
+            "While Walking (PlaySequence)"
+        );
+        editor.apply(Command::Undo);
+        assert_eq!(
+            sequence_players(&inspect(&editor), "arm_swing")[0].label,
             "While Walking (PlaySequence)"
         );
 

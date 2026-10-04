@@ -156,6 +156,26 @@ A definition overrides poses and sequences for its actors (and their descendants
 from the library. Unknown poses in a sequence, keys out of order or outside 0..1 and the like are
 reported with the sequence's name.
 
+In the mesh tool's **Poses** workspace, **Animation** chooses a sequence. `swing` is the
+name of the overhead attack animation, not an extra kind of timeline item: its diamond pose
+keys are `swing_raise` and `swing_strike`. The triangle named `strike` is a gameplay event
+that times the hit; it does not move a joint. Other event names need game code to handle them.
+
+Choose a pose in **Add pose** beneath the timeline, scrub to its destination time and press
+**Add pose at playhead**. Click a diamond or its numbered sidebar row to edit it. Choosing
+another **Key pose** replaces that key; changing joints edits the named pose everywhere it
+is used, so **Copy pose** first to make a variation for just this key. **Remove selected key**
+removes an occurrence, keeping its pose in the library and at least one key in the animation.
+**New animation** starts with one key; **Copy animation** also copies events and blending.
+
+An unassigned animation still previews. **Use for Attack** or **Use for Roll** saves pending
+pose edits and assigns it to an existing move; looping animations offer **Use while Walking**
+for existing state-driven `PlaySequence` assignments, as above.
+**Apply** saves the pose library changes as validated, undoable definition overrides. Preview
+plays over a standing body: it shows pose transitions and the pelvis turn, without running
+the character's walking, collisions or attack hits. **Key pose alone** isolates a pose;
+**Play** and scrubbing return to the animation preview.
+
 `--smoke-test` rolls at three seconds and attacks at four and a half. `--trace FILE.jsonl` records
 `Rolling`, `Attacking` and `CharacterMove` alongside position, velocity and grounding. Headless
 tests cover input latching, timing and recovery, direction capture, jumps, `blocked_while`,
