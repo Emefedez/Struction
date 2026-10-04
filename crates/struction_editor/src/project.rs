@@ -18,7 +18,7 @@ use struction_world::{
 };
 
 use crate::extensors::{DroppedEntry, ExtensorEntry, SuggestedExtensor};
-use crate::session::{Applied, EditRequest, EditSession, Field, SessionError};
+use crate::session::{Applied, EditRequest, EditSession, SessionError};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Diagnostic {
@@ -404,10 +404,23 @@ impl AuthoringProject {
         edits: Vec<(Vec<struction_data::edit::PathSegment>, Option<Value>)>,
         created: Option<String>,
     ) -> Result<Applied, SessionError> {
+        self.edit_fields_grouped(file, label, edits, created, None)
+    }
+
+    fn edit_fields_grouped(
+        &mut self,
+        file: &str,
+        label: &str,
+        edits: Vec<(Vec<struction_data::edit::PathSegment>, Option<Value>)>,
+        created: Option<String>,
+        group: Option<&str>,
+    ) -> Result<Applied, SessionError> {
         let world = self.preview.world();
-        let applied = self
-            .session
-            .apply_fields_checked(file, label, edits, |sources| validate(world, sources));
+        let applied =
+            self.session
+                .apply_fields_grouped_checked(file, label, edits, group, |sources| {
+                    validate(world, sources)
+                });
         self.finish_override(created, applied)
     }
 
@@ -516,12 +529,57 @@ impl AuthoringProject {
         position: Vec3,
         group: Option<String>,
     ) -> Result<Applied, SessionError> {
+        self.change_spawn_transform(path, Some(position), None, None, group)
+    }
+
+    /// Sets world-space orientation while keeping the instance's world position and scale.
+    pub fn rotate_spawn(
+        &mut self,
+        path: &str,
+        rotation: Quat,
+        group: Option<String>,
+    ) -> Result<Applied, SessionError> {
+        self.change_spawn_transform(path, None, Some(rotation), None, group)
+    }
+
+    /// Sets world-space scale on this instance; the definition and other instances stay shared.
+    pub fn scale_spawn(
+        &mut self,
+        path: &str,
+        scale: Vec3,
+        group: Option<String>,
+    ) -> Result<Applied, SessionError> {
+        self.change_spawn_transform(path, None, None, Some(scale), group)
+    }
+
+    fn change_spawn_transform(
+        &mut self,
+        path: &str,
+        position: Option<Vec3>,
+        rotation: Option<Quat>,
+        scale: Option<Vec3>,
+        group: Option<String>,
+    ) -> Result<Applied, SessionError> {
         if self.session.is_playing() {
             return Err(SessionError::Playing);
         }
-        if !position.is_finite() {
+        if position.is_some_and(|p| !p.is_finite()) {
             return Err(SessionError::InvalidOperation(
                 "position must be finite".into(),
+            ));
+        }
+        if rotation.is_some_and(|r| {
+            !r.is_finite()
+                || !r.length_squared().is_finite()
+                || r.length_squared() < f32::MIN_POSITIVE
+        }) {
+            return Err(SessionError::InvalidOperation(
+                "rotation must be a finite, nonzero quaternion".into(),
+            ));
+        }
+        if scale.is_some_and(|s| !s.is_finite() || s.min_element() <= 0.0) {
+            return Err(SessionError::InvalidOperation(
+                "scale must have finite, positive axes".into(),
             ));
         }
         self.refresh()?;
@@ -544,33 +602,77 @@ impl AuthoringProject {
             .resource::<DefinitionStore>()
             .instantiate(&spawn.definition, spawn.overrides.as_ref(), &types)
             .map_err(SessionError::Validation)?;
-        let definition_offset = resolved
+        let local = resolved
             .component::<Transform>()
-            .map_or(Vec3::ZERO, |t| t.translation);
+            .copied()
+            .unwrap_or_default();
         let parent = spawner.world_transform(&scenes.zone_transform(&spawner.zone));
-        let offset = parent.compute_affine().inverse().transform_point3(position)
-            - spawn.rotation * definition_offset;
-        let request = EditRequest::Set {
-            file: spawn.source.file.to_string(),
-            path: [
-                "spawnerList",
-                &spawner.name,
-                "spawns",
-                &spawn.name,
-                "offset",
-            ]
+        let current = spawner
+            .spawn_transform(&scenes.zone_transform(&spawner.zone), spawn)
+            .mul_transform(local);
+        if !local.translation.is_finite()
+            || !local.rotation.is_finite()
+            || !local.rotation.is_normalized()
+        {
+            return Err(SessionError::InvalidOperation(
+                "the definition's transform must have a finite position and unit rotation".into(),
+            ));
+        }
+        let new_rotation = rotation.map_or(spawn.rotation, |r| {
+            (parent.rotation.inverse() * r.normalize() * local.rotation.inverse()).normalize()
+        });
+        let file = spawn.source.file.to_string();
+        let base: Vec<_> = ["spawnerList", &spawner.name, "spawns", &spawn.name]
             .into_iter()
-            .map(|key| Field::Key(key.into()))
-            .collect(),
-            value: json!(offset.to_array()),
-            label: "Move spawn".into(),
-            group,
-            revision: Some(crate::session::revision(
-                &self.session.read(&spawn.source.file)?,
-            )),
+            .map(|key| struction_data::edit::PathSegment::Key(key.into()))
+            .collect();
+        let mut edits = Vec::new();
+        let mut set = |keys: &[&str], value: Value| {
+            let mut at = base.clone();
+            at.extend(
+                keys.iter()
+                    .map(|key| struction_data::edit::PathSegment::Key((*key).into())),
+            );
+            edits.push((at, Some(value)));
+        };
+        if position.is_some() || rotation.is_some() {
+            // Rotating the placement also turns the definition's translation. Adjust the
+            // offset in the same transaction so rotation holds the displayed origin still.
+            let offset = parent
+                .compute_affine()
+                .inverse()
+                .transform_point3(position.unwrap_or(current.translation))
+                - new_rotation * local.translation;
+            if !offset.is_finite() {
+                return Err(SessionError::InvalidOperation(
+                    "the resulting offset must be finite".into(),
+                ));
+            }
+            set(&["offset"], json!(offset.to_array()));
+        }
+        if rotation.is_some() {
+            let (y, x, z) = new_rotation.to_euler(EulerRot::YXZ);
+            set(
+                &["rotation"],
+                json!([x.to_degrees(), y.to_degrees(), z.to_degrees()]),
+            );
+        }
+        if let Some(scale) = scale {
+            let local_scale = scale / parent.scale;
+            set(
+                &["overrides", "transform", "scale"],
+                json!(local_scale.to_array()),
+            );
+        }
+        let label = if rotation.is_some() {
+            "Rotate spawn"
+        } else if scale.is_some() {
+            "Scale spawn"
+        } else {
+            "Move spawn"
         };
         drop(types);
-        self.edit(request)
+        self.edit_fields_grouped(&file, label, edits, None, group.as_deref())
     }
 
     fn inspected_world(&self, playing: bool) -> Result<&World, SessionError> {

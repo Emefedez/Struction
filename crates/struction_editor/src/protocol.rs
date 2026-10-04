@@ -2,7 +2,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use bevy::prelude::Vec3;
+use bevy::prelude::{EulerRot, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -17,7 +17,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Bounds one request's work, so a typo cannot hang the session.
 const MAX_STEP_TICKS: usize = 10_000;
 
-const COMMANDS: [&str; 34] = [
+const COMMANDS: [&str; 36] = [
     "edit_field",
     "remove_entry",
     "field_options",
@@ -41,6 +41,8 @@ const COMMANDS: [&str; 34] = [
     "inspect_entity",
     "edit",
     "move_spawn",
+    "rotate_spawn",
+    "scale_spawn",
     "history",
     "undo",
     "redo",
@@ -148,6 +150,19 @@ pub enum Command {
     MoveSpawn {
         path: String,
         position: [f32; 3],
+        #[serde(default)]
+        group: Option<String>,
+    },
+    RotateSpawn {
+        path: String,
+        /// World-space Euler degrees, [X, Y, Z], with YXZ order like scene rotations.
+        rotation: [f32; 3],
+        #[serde(default)]
+        group: Option<String>,
+    },
+    ScaleSpawn {
+        path: String,
+        scale: [f32; 3],
         #[serde(default)]
         group: Option<String>,
     },
@@ -291,6 +306,22 @@ fn apply(project: &mut AuthoringProject, command: Command) -> Result<Value, Sess
             position,
             group,
         } => json!(project.move_spawn(&path, Vec3::from_array(position), group)?),
+        Command::RotateSpawn {
+            path,
+            rotation: [x, y, z],
+            group,
+        } => {
+            let rotation = Quat::from_euler(
+                EulerRot::YXZ,
+                y.to_radians(),
+                x.to_radians(),
+                z.to_radians(),
+            );
+            json!(project.rotate_spawn(&path, rotation, group)?)
+        }
+        Command::ScaleSpawn { path, scale, group } => {
+            json!(project.scale_spawn(&path, Vec3::from_array(scale), group)?)
+        }
         Command::History {} => {
             let history = project.session().history();
             let stack = |transactions: &[Transaction]| -> Vec<Value> {

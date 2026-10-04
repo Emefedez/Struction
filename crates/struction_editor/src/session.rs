@@ -266,6 +266,18 @@ impl EditSession {
         edits: Vec<(Vec<PathSegment>, Option<Value>)>,
         validate: impl FnOnce(&BTreeMap<String, String>) -> Result<(), Vec<DataError>>,
     ) -> Result<Applied, SessionError> {
+        self.apply_fields_grouped_checked(file, label, edits, None, validate)
+    }
+
+    /// Atomic field edits which can join a drag's existing undo group.
+    pub fn apply_fields_grouped_checked(
+        &mut self,
+        file: &str,
+        label: &str,
+        edits: Vec<(Vec<PathSegment>, Option<Value>)>,
+        group: Option<&str>,
+        validate: impl FnOnce(&BTreeMap<String, String>) -> Result<(), Vec<DataError>>,
+    ) -> Result<Applied, SessionError> {
         if self.playing {
             return Err(SessionError::Playing);
         }
@@ -298,11 +310,14 @@ impl EditSession {
         let sources = BTreeMap::from([(file.to_owned(), SourceChange { before, after })]);
         validate(&candidates(&sources)).map_err(SessionError::Validation)?;
         self.write_sources(&sources)?;
-        self.history.record_transaction(Transaction {
-            label: label.into(),
-            changes,
-            sources,
-        });
+        self.history.record_transaction_grouped(
+            Transaction {
+                label: label.into(),
+                changes,
+                sources,
+            },
+            group,
+        );
         Ok(Applied {
             label: label.into(),
             files: vec![file.into()],

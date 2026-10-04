@@ -123,12 +123,32 @@ impl History {
 
     /// Records a complete transaction, such as several field edits made as one operation.
     pub fn record_transaction(&mut self, transaction: Transaction) {
+        self.record_transaction_grouped(transaction, None);
+    }
+
+    pub fn record_transaction_grouped(&mut self, transaction: Transaction, group: Option<&str>) {
         if transaction.changes.iter().all(Change::is_noop) {
             return;
         }
-        self.close_group();
         self.redo.clear();
+        if let Some(key) = group
+            && self.open_group.as_deref() == Some(key)
+            && let Some(top) = self.undo.last_mut()
+        {
+            for change in transaction.changes {
+                top.merge(change);
+            }
+            for (file, source) in transaction.sources {
+                top.sources
+                    .entry(file)
+                    .and_modify(|saved| saved.after = source.after.clone())
+                    .or_insert(source);
+            }
+            return;
+        }
+        self.close_group();
         self.undo.push(transaction);
+        self.open_group = group.map(str::to_owned);
         if self.undo.len() > self.limit {
             self.undo.remove(0);
         }

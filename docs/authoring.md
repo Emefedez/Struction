@@ -63,6 +63,8 @@ For read-modify-write clients, pass the opaque `revision` returned by `read` in 
 | `inspect_entity` | `target`, optional `playing` | Reflected component values; uninspectable components are reported explicitly |
 | `edit` | `edit` | Validates a `set` or `remove` before writing; returns affected files |
 | `move_spawn` | `path`, `position`, optional `group` | World-space translation converted into an authored spawn offset |
+| `rotate_spawn` | `path`, `rotation` (Euler degrees `[X, Y, Z]`), optional `group` | Set world orientation in YXZ order; preserve the world position and scale |
+| `scale_spawn` | `path`, `scale` (positive `[X, Y, Z]`), optional `group` | Set this instance's world scale through `overrides.transform.scale` |
 | `history` | — | Undo/redo labels and files, grouping and play state |
 | `undo`, `redo` | — | Restore exact source snapshots after validating the candidate project |
 | `end_group` | — | End a drag/group so subsequent edits form a new transaction |
@@ -102,15 +104,29 @@ Without an argument the editor asks for a project directory. The UI is egui (`be
 
 - **Scene**: switch between **Masters & wards** (`masterIs`) and **Placement** (zones, spawners, named spawns). Definitions form a separate inheritance tree (`descendsFrom`). **New actor (instance)** chooses a definition, placement spawner and optional master from the hierarchy; the created actor appears beneath its master and can be undone. New definitions descend from the selected definition; the parent is shown explicitly.
 - **Colors**: blue instances, gold masters, green wards, purple definitions and peach assets; role labels and indentation carry the same meaning. Source problems are red, rejected operations amber, and locally authored fields have amber dots.
-- **Inspector**: an entity's definition, source `file:line`, StableId, master selector and placement; its authored components are edited as scene `overrides` on the spawn. A definition shows its lineage, its **Extensors** (in use and why, dropped ones with Restore, suggestions as `+` buttons and an **Add extensor…** menu, each calling `add_extensor`/`remove_extensor`) and resolved components; edits write its own file. **Reset** removes a local field override to reveal its inherited/default value. Drags on a number form one undo group.
+- **Inspector**: an entity's definition, source `file:line`, StableId, master selector and world-space position, rotation in degrees and scale; its authored components are edited as scene `overrides` on the spawn. A definition shows its lineage, its **Extensors** (in use and why, dropped ones with Restore, suggestions as `+` buttons and an **Add extensor…** menu, each calling `add_extensor`/`remove_extensor`) and resolved components; edits write its own file. **Reset** removes a local field override to reveal its inherited/default value. Drags on a number form one undo group.
 - **Viewport**: instances as capsules, zones and spawners as gizmos. Click selects; dragging a named spawn moves it on the ground (Shift: height) through `move_spawn`, one undo step per drag. Right-drag orbits, middle-drag pans, the wheel zooms, F frames the selection.
 - **Problems**: `validate` diagnostics and the last rejected operation without duplicating identical diagnostics. Broken definitions stay listed and show their original source with an **Open source in editor…** action; definition locations select their definition.
 - **Narrow windows**: Scene, Inspector and Viewport become tabs; selecting an object opens its inspector. Problems stays across the bottom and toolbar controls wrap.
 - **Top bar**: Undo/Redo (Ctrl+Z, Ctrl+Shift+Z), Refresh (also on window focus, for outside edits), Play/Pause/Step/Stop (Ctrl+P). Play steps the separate play world by the game's fixed timestep; the panels then inspect that world read-only.
 
-The editor builds projects with `struction_scene::authoring_app`: every engine package headless, over the engine's base definitions, plus the small example's `Health` behavior. Physics, gravity, character components, moves and game actions are therefore available to preview, validation and isolated play. Engine definitions are listed with the project's and are read-only: the inspector says so, and the first edit (or extensor change) creates the project's override file at the same path, removed again if the edit is rejected. Instances render as markers rather than their meshes, and rotation/scale are read-only, like the backend.
+The editor builds projects with `struction_scene::authoring_app`: every engine package headless, over the engine's base definitions, plus the small example's `Health` behavior. Physics, gravity, character components, moves and game actions are therefore available to preview, validation and isolated play. Engine definitions are listed with the project's and are read-only: the inspector says so, and the first edit (or extensor change) creates the project's override file at the same path, removed again if the edit is rejected. Instances render their authored shapes and rigged models. Named spawns have editable world-space position, rotation and scale; zones, spawners and runtime-only entities are read-only in the Transform section. Rotation keeps the displayed origin still by updating the spawn offset and local rotation atomically. Scale becomes an instance transform override; the shared definition remains inherited. Numeric drags form one undo group, and edits are refused during Play.
 
 The Assets panel reads a project's sibling `assets/` directory when it has one; the engine's models live in `crates/struction_scene/content/assets`. `--mesh` paths are relative to the asset directory shown by this layout.
+
+For example, rotate and resize a spawn through the same operations used by the inspector:
+
+```jsonl
+{"id":1,"command":{"op":"rotate_spawn","path":"Playground/start/player","rotation":[0,90,0],"group":"rotate-1"}}
+{"id":2,"command":{"op":"end_group"}}
+{"id":3,"command":{"op":"scale_spawn","path":"Playground/start/player","scale":[1.2,1.2,1.2]}}
+{"id":4,"command":{"op":"undo"}}
+```
+
+Rotation values are world angles even when the zone and spawner are rotated. The Rust
+`rotate_spawn` API takes a finite, nonzero quaternion and normalizes it. Scale axes must
+be finite and greater than zero. Source comments and unrelated overrides are preserved;
+undo restores the exact scene text before the operation or drag.
 
 ## The VS Code extension
 

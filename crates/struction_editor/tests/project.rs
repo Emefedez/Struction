@@ -346,6 +346,191 @@ fn gizmo_moves_account_for_all_parent_frames_and_keep_identity() {
 }
 
 #[test]
+fn rotation_and_scale_keep_world_origin_identity_and_exact_grouped_undo() {
+    let dir = fixture();
+    let source = std::fs::read_to_string(dir.path().join(SCENE))
+        .unwrap()
+        .replace(
+            "\"offset\":[1,0,0],",
+            "\"offset\":[1,0,0], // Keep this placement note.\n",
+        );
+    std::fs::write(dir.path().join(SCENE), source).unwrap();
+    let mut project = AuthoringProject::open(dir.path(), factory).unwrap();
+    let local_rotation = Quat::from_euler(EulerRot::YXZ, 0.4, 0.2, -0.3);
+    for (file, path, value) in [
+        (
+            GUARD,
+            vec!["transform", "translation"],
+            json!([2.0, 1.0, -0.5]),
+        ),
+        (
+            GUARD,
+            vec!["transform", "rotation"],
+            json!(local_rotation.to_array()),
+        ),
+        (GUARD, vec!["transform", "scale"], json!([1.5, 2.0, 3.0])),
+        (
+            SCENE,
+            vec!["zones", "Court", "rotation"],
+            json!([7.0, 33.0, -10.0]),
+        ),
+        (
+            SCENE,
+            vec![
+                "spawnerList",
+                "guards",
+                "spawns",
+                "ogre",
+                "overrides",
+                "components",
+                "Health",
+                "current",
+            ],
+            json!(32.0),
+        ),
+    ] {
+        project.edit(set(file, &path, value)).unwrap();
+    }
+    let original = project.session().read(SCENE).unwrap();
+    let definition = project.session().read(GUARD).unwrap();
+    let path = "Court/guards/ogre";
+    let before = project.inspect_entity(path, false).unwrap().entity;
+    let boss = project
+        .inspect_entity("Court/guards/boss", false)
+        .unwrap()
+        .entity;
+    for yaw in [0.7, 1.8] {
+        let rotation = Quat::from_euler(EulerRot::YXZ, yaw, -0.4, 0.3);
+        // Hosts may supply a quaternion that has not yet been normalized.
+        project
+            .rotate_spawn(path, rotation * 2.0, Some("rotate".into()))
+            .unwrap();
+        let after = project.inspect_entity(path, false).unwrap().entity;
+        assert!(after.rotation.unwrap().abs_diff_eq(rotation, 1e-5));
+        assert!(
+            after
+                .position
+                .unwrap()
+                .abs_diff_eq(before.position.unwrap(), 1e-4)
+        );
+        assert_eq!(after.scale, before.scale);
+        assert_eq!(after.stable_id, before.stable_id);
+        assert_eq!(health(&project, false), 32.0);
+    }
+    project.end_group();
+    let rotated_source = project.session().read(SCENE).unwrap();
+    assert!(rotated_source.contains("// Keep this placement note."));
+    project.undo().unwrap();
+    assert_eq!(project.session().read(SCENE).unwrap(), original);
+    project.redo().unwrap();
+    assert_eq!(project.session().read(SCENE).unwrap(), rotated_source);
+    let rotated = project.inspect_entity(path, false).unwrap().entity;
+    for scale in [Vec3::splat(2.0), Vec3::new(2.5, 0.75, 4.0)] {
+        project
+            .scale_spawn(path, scale, Some("scale".into()))
+            .unwrap();
+        let after = project.inspect_entity(path, false).unwrap().entity;
+        assert!(after.scale.unwrap().abs_diff_eq(scale, 1e-5));
+        assert_eq!(after.rotation, rotated.rotation);
+        assert_eq!(after.position, rotated.position);
+        assert_eq!(after.stable_id, before.stable_id);
+    }
+    project.end_group();
+    assert_eq!(project.session().read(GUARD).unwrap(), definition);
+    assert_eq!(
+        project
+            .inspect_entity("Court/guards/boss", false)
+            .unwrap()
+            .entity
+            .transform(),
+        boss.transform()
+    );
+    project.undo().unwrap();
+    assert_eq!(project.session().read(SCENE).unwrap(), rotated_source);
+    project.undo().unwrap();
+    assert_eq!(project.session().read(SCENE).unwrap(), original);
+    assert_eq!(
+        project
+            .inspect_entity(path, false)
+            .unwrap()
+            .entity
+            .transform(),
+        before.transform()
+    );
+}
+
+#[test]
+fn transform_operations_reject_bad_values_unknown_targets_and_play_without_writes() {
+    let dir = fixture();
+    let mut project = AuthoringProject::open(dir.path(), factory).unwrap();
+    let original = project.session().read(SCENE).unwrap();
+    let path = "Court/guards/ogre";
+    for rotation in [
+        Quat::from_xyzw(0.0, 0.0, 0.0, 0.0),
+        Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0),
+    ] {
+        assert!(project.rotate_spawn(path, rotation, None).is_err());
+    }
+    for scale in [
+        Vec3::ZERO,
+        Vec3::new(-1.0, 1.0, 1.0),
+        Vec3::NAN,
+        Vec3::splat(f32::INFINITY),
+    ] {
+        assert!(project.scale_spawn(path, scale, None).is_err());
+    }
+    assert!(
+        project
+            .rotate_spawn("Court/guards", Quat::IDENTITY, None)
+            .is_err()
+    );
+    assert!(project.scale_spawn("missing", Vec3::ONE, None).is_err());
+    assert_eq!(project.session().read(SCENE).unwrap(), original);
+    assert!(!project.session().history().can_undo());
+    project.start_play().unwrap();
+    assert!(matches!(
+        project.rotate_spawn(path, Quat::IDENTITY, None),
+        Err(SessionError::Playing)
+    ));
+    assert!(matches!(
+        project.scale_spawn(path, Vec3::splat(2.0), None),
+        Err(SessionError::Playing)
+    ));
+    assert_eq!(project.session().read(SCENE).unwrap(), original);
+}
+
+#[test]
+fn protocol_exposes_world_rotation_degrees_and_instance_scale() {
+    use struction_editor::protocol::{Request, execute};
+    let dir = fixture();
+    let mut project = AuthoringProject::open(dir.path(), factory).unwrap();
+    let original = project.session().read(SCENE).unwrap();
+    let mut run = |command| {
+        execute(
+            &mut project,
+            serde_json::from_value::<Request>(json!({"id":1,"command":command})).unwrap(),
+        )
+    };
+    assert!(run(json!({"op":"rotate_spawn","path":"Court/guards/ogre","rotation":[15,25,35]})).ok);
+    assert!(run(json!({"op":"scale_spawn","path":"Court/guards/ogre","scale":[2,3,4]})).ok);
+    let result = run(json!({"op":"inspect_entity","target":"Court/guards/ogre"}));
+    let actual: Quat =
+        serde_json::from_value(result.result.unwrap()["entity"]["rotation"].clone()).unwrap();
+    assert!(actual.abs_diff_eq(
+        Quat::from_euler(
+            EulerRot::YXZ,
+            25_f32.to_radians(),
+            15_f32.to_radians(),
+            35_f32.to_radians()
+        ),
+        1e-5
+    ));
+    assert!(run(json!({"op":"undo"})).ok);
+    assert!(run(json!({"op":"undo"})).ok);
+    assert_eq!(project.session().read(SCENE).unwrap(), original);
+}
+
+#[test]
 fn command_stream_survives_bad_requests_and_reports_runtime_state() {
     use struction_editor::protocol::serve;
     let dir = fixture();

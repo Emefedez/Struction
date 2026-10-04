@@ -56,6 +56,16 @@ pub enum Command {
         position: Vec3,
         group: Option<String>,
     },
+    Rotate {
+        path: String,
+        rotation: Quat,
+        group: Option<String>,
+    },
+    Scale {
+        path: String,
+        scale: Vec3,
+        group: Option<String>,
+    },
     EndGroup,
     Undo,
     Redo,
@@ -218,6 +228,22 @@ impl Editor {
                 "Move",
                 project
                     .move_spawn(&path, position, group)
+                    .map(|a| Some(a.label)),
+            ),
+            Command::Rotate {
+                path,
+                rotation,
+                group,
+            } => (
+                "Rotate",
+                project
+                    .rotate_spawn(&path, rotation, group)
+                    .map(|a| Some(a.label)),
+            ),
+            Command::Scale { path, scale, group } => (
+                "Scale",
+                project
+                    .scale_spawn(&path, scale, group)
                     .map(|a| Some(a.label)),
             ),
             Command::EndGroup => {
@@ -848,6 +874,44 @@ mod tests {
         assert!(ogre_position(&editor).abs_diff_eq(start + Vec3::X * 3.0, 1e-4));
         editor.apply(Command::Undo);
         assert!(ogre_position(&editor).abs_diff_eq(start, 1e-4));
+        assert!(
+            !editor
+                .project
+                .as_ref()
+                .unwrap()
+                .session()
+                .history()
+                .can_undo()
+        );
+    }
+
+    #[test]
+    fn inspector_rotation_and_scale_commands_are_grouped_and_undoable() {
+        let (_dir, mut editor) = open();
+        let original = editor.entity(OGRE).unwrap().transform().unwrap();
+        let rotation = Quat::from_rotation_y(0.5);
+        for rotation in [Quat::from_rotation_y(0.25), rotation] {
+            editor.apply(Command::Rotate {
+                path: OGRE.into(),
+                rotation,
+                group: Some("rotate".into()),
+            });
+            assert!(editor.rejection.is_none());
+        }
+        editor.apply(Command::EndGroup);
+        editor.apply(Command::Scale {
+            path: OGRE.into(),
+            scale: Vec3::new(2.0, 3.0, 4.0),
+            group: None,
+        });
+        assert!(editor.rejection.is_none());
+        let transformed = editor.entity(OGRE).unwrap().transform().unwrap();
+        assert!(transformed.rotation.abs_diff_eq(rotation, 1e-5));
+        assert_eq!(transformed.translation, original.translation);
+        assert_eq!(transformed.scale, Vec3::new(2.0, 3.0, 4.0));
+        editor.apply(Command::Undo);
+        editor.apply(Command::Undo);
+        assert_eq!(editor.entity(OGRE).unwrap().transform().unwrap(), original);
         assert!(
             !editor
                 .project

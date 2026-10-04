@@ -1111,20 +1111,50 @@ fn inspector(ui: &mut Ui, editor: &mut Editor, toolbox: &mut Toolbox, commands: 
                 if let Some(rotation) = entry.rotation {
                     let (y, x, z) = rotation.to_euler(EulerRot::YXZ);
                     // Rounded, and plus zero, so float noise does not show as -0.000.
-                    let degrees = (Vec3::new(x, y, z) * 180_000.0 / std::f32::consts::PI).round()
-                        / 1000.0
-                        + Vec3::ZERO;
-                    vector_row(ui, "Rotation", degrees, false, 0.0);
+                    let current_degrees =
+                        (Vec3::new(x, y, z) * 180_000.0 / std::f32::consts::PI).round() / 1000.0
+                            + Vec3::ZERO;
+                    if let Some((degrees, done)) =
+                        vector_row(ui, "Rotation °", current_degrees, editable, 0.5)
+                    {
+                        let rotation = Quat::from_euler(
+                            EulerRot::YXZ,
+                            degrees.y.to_radians(),
+                            degrees.x.to_radians(),
+                            degrees.z.to_radians(),
+                        );
+                        if degrees != current_degrees {
+                            commands.push(Command::Rotate {
+                                path: key.to_owned(),
+                                rotation,
+                                group: Some(format!("inspector-rotate:{key}")),
+                            });
+                        }
+                        if done {
+                            commands.push(Command::EndGroup);
+                        }
+                    }
                 }
-                if let Some(scale) = entry.scale {
-                    vector_row(ui, "Scale", scale, false, 0.0);
+                if let Some(scale) = entry.scale
+                    && let Some((edited, done)) = vector_row(ui, "Scale", scale, editable, 0.01)
+                {
+                    if edited != scale {
+                        commands.push(Command::Scale {
+                            path: key.to_owned(),
+                            scale: edited,
+                            group: Some(format!("inspector-scale:{key}")),
+                        });
+                    }
+                    if done {
+                        commands.push(Command::EndGroup);
+                    }
                 }
                 if !editable && !playing {
-                    hint(ui, "Only named spawns can move.");
+                    hint(ui, "Only named spawns have editable placement.");
                 }
             });
 
-            // Placement is the Transform section above; it moves the spawn, not an override.
+            // Instance transforms are edited in the world-space Transform section above.
             let components = components.iter().filter(|(name, _)| name != "Transform");
             for (name, value) in components.clone().filter(|(n, _)| authored.contains(n)) {
                 // Instance edits are scene overrides on this spawn.
