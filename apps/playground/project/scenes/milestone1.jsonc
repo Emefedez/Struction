@@ -49,7 +49,19 @@
         "zone": { "definition": "regions/overhead_camera" },
         "left_post": { "definition": "props/marker_post", "offset": [-5.8, 0, 0] },
         "right_post": { "definition": "props/marker_post", "offset": [5.8, 0, 0] },
-        "middle_post": {"definition": "props/marker_post", "offset": [3,0,0]}
+        "middle_post": {
+          "definition": "props/marker_post",
+          "offset": [3.0893917083740234, 0.0, 0.07469367980957031],
+          "overrides": {
+            "components": {
+              "Shape": {
+                "Box": {
+                  "size": [1.49, 2.0, 0.11999999731779099]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "planet": {

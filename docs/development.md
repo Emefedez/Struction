@@ -69,6 +69,30 @@ cargo run --locked -p struction-smoke-test -- --smoke-test
 
 On the Linux reference machine the renderer log identifies the Apple M1 Max and Honeykrisp/Vulkan; on macOS it should name the Apple GPU and the Metal backend. Initial compilation takes longer than subsequent builds.
 
+## Build storage
+
+Ordinary `cargo build`, `run`, `check` and `test` use compact workspace defaults: no debug symbols and no incremental compilation cache. Dependencies and executable outputs still live in `target/` and are reused; disabling incremental compilation trades slower rebuilds of changed crates for less disk usage. Debug assertions and overflow checks remain enabled. Avoid separate `CARGO_TARGET_DIR`s for routine verification, because they duplicate the dependency build.
+
+Opt in to debugging artifacts when inspecting variables or source-level backtraces:
+
+```bash
+cargo run --profile diagnostic -p struction-playground
+cargo test --profile diagnostic -p struction_character
+```
+
+This profile enables full debug symbols and incremental compilation and writes to `target/diagnostic/`. Cargo configuration or environment overrides (such as `CARGO_INCREMENTAL=1`) can override the compact defaults; use them deliberately.
+
+Remove disposable build outputs and generated web bundles from this checkout with:
+
+```bash
+./tools/clean-artifacts.sh --dry-run
+./tools/clean-artifacts.sh
+```
+
+Cleanup removes only this repository's `target/` and `dist/`, including diagnostic and old alternate build directories nested under `target/`. It preserves authored projects, Blender sources, compiled `.smesh` asset caches, installed dependencies and shared Cargo/Rust installations. Close running applications and finish builds before cleaning. The next Cargo invocation rebuilds what it needs. Cargo can retain obsolete outputs after feature/profile/compiler changes, so repeat cleanup when needed; compact defaults do not impose a disk quota.
+
+Normal game/editor runs do not write trace or screenshot files. Request those explicitly with `--trace FILE.jsonl` or the editor's `--screenshot DIR`; generate a web bundle explicitly with `./tools/build-web.sh`.
+
 ## Playground
 
 Run the physics scene with `cargo run -p struction-playground`. Use WASD to move, Space to jump or swim upward, Left Shift to [roll](moves.md), left click or F to [attack](moves.md), and M to toggle mouse look and cursor grab. V switches between third and first person; the mouse wheel zooms the third-person camera, and zooming in past its closest distance enters first person (zooming out leaves it). Escape releases a grabbed cursor; press it again to quit. The overlay shows contact, swimming, the running move, camera zone, footstep count, and FPS state. Walk over the blue slippery floor toward the gravity planet, or move right into the water pool; hit the orange cube or the knight standing guard to the left to knock them back.
