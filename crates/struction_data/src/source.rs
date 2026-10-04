@@ -276,6 +276,28 @@ pub fn parse_jsonc(file: &str, text: &str) -> Result<Node, DataError> {
     }
 }
 
+/// The prose a file starts with: the block of `//` comments written directly above its root
+/// value, which is how a definition file describes itself.
+pub fn leading_doc(text: &str, root: usize) -> Option<String> {
+    let head = &text[..root];
+    let lines: Vec<&str> = head.lines().collect();
+    let described = |line: &str| {
+        let line = line.trim_start();
+        line.strip_prefix("//").map(|rest| rest.trim().to_owned())
+    };
+    // Only the run of comments against the value is its description; anything further up was
+    // written about something else.
+    let first = lines
+        .iter()
+        .rposition(|line| described(line).is_none())
+        .map_or(0, |above| above + 1);
+    let doc: Vec<String> = lines[first..]
+        .iter()
+        .filter_map(|line| described(line))
+        .collect();
+    (!doc.is_empty()).then(|| doc.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +329,27 @@ mod tests {
         assert!(parse_jsonc("f", "{ \"a\": 0x10 }").is_err());
         assert!(parse_jsonc("f", "{ \"a\": 1 \"b\": 2 }").is_err());
         assert!(parse_jsonc("f", "  // nothing\n").is_err());
+    }
+
+    #[test]
+    fn the_prose_above_a_value_is_its_description() {
+        let text = "// A walking thing.\n// It swings its arms.\n{\n  \"a\": 1\n}\n";
+        assert_eq!(
+            leading_doc(text, text.find('{').unwrap()).as_deref(),
+            Some("A walking thing.\nIt swings its arms.")
+        );
+        // Only the run against the value; a blank line ends it.
+        let apart = "// A heading.\n\n// A field's own note.\n{ \"a\": 1 }\n";
+        assert_eq!(
+            leading_doc(apart, apart.find('{').unwrap()).as_deref(),
+            Some("A field's own note.")
+        );
+        assert_eq!(leading_doc("{ }", 0), None);
+        assert_eq!(leading_doc("// nothing but prose\n", 0), None);
+        assert_eq!(
+            leading_doc("/* not a line comment */\n{ }", 23).as_deref(),
+            None
+        );
     }
 
     #[test]

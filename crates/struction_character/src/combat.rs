@@ -123,8 +123,10 @@ impl Plugin for CombatPlugin {
             app.insert_resource(struction_anim::humanoid::base_poses());
         }
         app.register_type::<Attack>().register_type::<Attacking>();
-        let attacking =
-            crate::states::state(&app.world().resource::<AppTypeRegistry>().read(), "Attacking");
+        let attacking = crate::states::state(
+            &app.world().resource::<AppTypeRegistry>().read(),
+            "Attacking",
+        );
         app.register_extensor(
                 ExtensorMeta::opt_in("combat")
                     .doc("Melee swing that knocks back what it hits (left mouse or F, `combat/attack`)")

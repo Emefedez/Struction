@@ -17,7 +17,10 @@ fn extensors() -> ExtensorRegistry {
         ExtensorMeta::inferred("living")
             .owns::<Health>()
             .requires("physics")
-            .state(ContributedState::new("Resting", "Neither moving nor acting.")),
+            .state(ContributedState::new(
+                "Resting",
+                "Neither moving nor acting.",
+            )),
     );
     extensors.register(
         ExtensorMeta::opt_in("fire")

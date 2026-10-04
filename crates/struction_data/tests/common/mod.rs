@@ -51,8 +51,10 @@ pub struct Stats {
 
 #[derive(Reflect, Default, Debug, PartialEq, Clone, Copy)]
 pub enum DamageKind {
+    /// A blunt impact.
     #[default]
     Physical,
+    /// Burns over time.
     Fire,
 }
 

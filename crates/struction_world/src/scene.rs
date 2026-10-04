@@ -40,6 +40,12 @@ use crate::identity::EntityPath;
 
 pub const SCENES_DIR: &str = "scenes";
 
+/// Whether a project-relative file is a scene this crate reads, by the same rule as
+/// [`SceneCatalog::load_with_sources`]. An editor asks rather than repeating the rule.
+pub fn is_scene_file(rel: &str) -> bool {
+    rel.starts_with(&format!("{SCENES_DIR}/")) && rel.ends_with(".jsonc")
+}
+
 #[derive(Clone, Debug)]
 pub struct ZoneDef {
     pub path: EntityPath,
@@ -128,7 +134,7 @@ impl SceneCatalog {
         files.extend(
             sources
                 .keys()
-                .filter(|file| file.starts_with("scenes/") && file.ends_with(".jsonc"))
+                .filter(|file| is_scene_file(file))
                 .map(|file| (file.clone(), root.join(file))),
         );
         files.sort();

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Range } from 'vscode-json-languageservice';
-import { describeDefinition, engineRange, Features, sourceFile } from './features';
+import { describeDefinition, engineRange, Features } from './features';
 import { Host } from './host';
 import { Snapshot } from './types';
 
@@ -11,6 +11,11 @@ const SELECTOR: vscode.DocumentSelector = [
   { language: 'jsonc', scheme: 'file' },
   { language: 'json', scheme: 'file' },
 ];
+
+/** Which documents may hold engine sources; the host says what each one is. */
+function candidate(file: string): boolean {
+  return /\.jsonc?$/.test(file);
+}
 
 function configured(folder: vscode.WorkspaceFolder, id: string): string | undefined {
   return vscode.workspace.getConfiguration('struction', folder.uri).get<string>(id)?.trim() || undefined;
@@ -137,7 +142,8 @@ class Session implements vscode.Disposable {
   /** The feature set and project-relative file for a document, when this session owns it. */
   resolve(uri: vscode.Uri): { features: Features; file: string } | undefined {
     const file = projectRelative(this.root, uri);
-    return this.features && file ? { features: this.features, file } : undefined;
+    // Only files the engine reads get a service, so nothing else in the project is claimed.
+    return this.features && file && this.features.file(file) ? { features: this.features, file } : undefined;
   }
 
   private analyze(): Promise<void> {
@@ -154,7 +160,7 @@ class Session implements vscode.Disposable {
     const sources: Record<string, string> = {};
     for (const document of vscode.workspace.textDocuments) {
       const file = projectRelative(root, document.uri);
-      if (file && sourceFile(file)) sources[file] = document.getText();
+      if (file && candidate(file)) sources[file] = document.getText();
     }
     this.status.text = '$(sync~spin) Struction';
     const snapshot = await host.request<Snapshot>({ op: 'analyze', sources });

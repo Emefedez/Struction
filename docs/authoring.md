@@ -155,14 +155,18 @@ cargo run -p struction_language --bin struction-language -- apps/playground/proj
 
 `describe` returns `protocol_version` 1 and the supported commands, so a client can refuse a host it does not understand. `analyze` takes every open buffer of a Struction source, keyed by project-relative path, and returns one snapshot:
 
-- `schema`: the JSON Schema generated from the registered types, which drives completions and diagnostics.
+- `schema`: the JSON Schema generated from the registered types, which drives completions and diagnostics. Every section says what it is for, every enum value and contributed state carries the doc comment of the type that declares it, and every field the reflected type documents keeps it.
 - `scene_schema`: the same schema for `scenes/**.jsonc` — `zones`, `spawnerList`, and each spawn's `definition`, `offset`, `rotation`, `masterIs` and `overrides`, with the definition schema placed at override sites. `struction_world::scene` is the authority for that grammar and a test compares the two, so a scene completes and explains itself the way a definition does. Scene *semantics* (references, masters, overrides) stay the backend's: the client does not re-report them.
-- `definitions`: every resolved path with its lineage, resolved data, components, why each extensor is in use, its library and the absolute file it came from.
-- `extensors`: every registered package with its doc, opt-in flag, requirements, contributed states and components.
+- `files`: what each supplied buffer is — a definition, a preset or a scene, with the definition's path or the preset's name — by the same rules the loaders read files with. A client sends every JSONC buffer it has open and serves only the files listed here, so it repeats none of the engine's naming.
+- `definitions`: every resolved path with its lineage, resolved data, components, why each extensor is in use, its library, the absolute file it came from and the prose its own file starts with.
+- `presets`: every preset with the file it came from and the library holding it, so a preset is followed to its source like a definition is.
+- `extensors`: every registered package with its doc, opt-in flag, requirements, contributed states (each with what holds while it does) and components.
 - `actions`: every registered action with its doc, typed parameters and requirements.
 - `diagnostics`: the backend's validation of the project with the supplied buffers. Files are project-relative, except library files, which are absolute so a client can open them.
 
 Buffers replace disk sources for that request only, and the next request without them reads disk again, so nothing reaches the filesystem. A definition that does not resolve is absent from `definitions` but still reported in `diagnostics` with its position; that is how a broken file stays repairable. The extension (`extensions/vscode`, see [development.md](development.md#vs-code-extension)) adds hovers, completions, go-to-definition and problems on top of the snapshot, and its `Struction: Inspect Definition` command renders the same description the hover uses.
+
+The extension resolves a token by asking what the schema allows at its own position and matching the value against the snapshot's registrations, so it holds no vocabulary of its own: hovering `Walking` in a `states` section or in a `blocked_while` list explains what holds while it does, a component name is attributed to the package that owns it wherever it appears, and a value the engine refuses reads as the registered one it was meant to be.
 
 ## Choosing Blender
 

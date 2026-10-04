@@ -347,7 +347,7 @@ impl Default for CharacterState {
 pub enum CharacterCondition {
     /// On walkable ground, not swimming.
     Grounded,
-    /// Grounded and moving along the ground at [`WALKING_SPEED`] or faster.
+    /// Grounded and moving along the ground at `WALKING_SPEED` (0.5 m/s) or faster.
     Walking,
     /// Jumping or falling: neither on walkable ground nor swimming.
     Airborne,
@@ -395,51 +395,52 @@ impl Plugin for CharacterControllerPlugin {
             .register_type::<Vec<CancelInto>>();
         // The states this extensor contributes are the conditions the controller holds itself,
         // read from the reflected type now that it is registered.
-        let states = crate::states::controller_states(&app.world().resource::<AppTypeRegistry>().read());
+        let states =
+            crate::states::controller_states(&app.world().resource::<AppTypeRegistry>().read());
         app.register_extensor(
-                ExtensorMeta::inferred("character")
-                    .doc("A capsule that walks, jumps and swims under local gravity")
-                    .owns::<CharacterController>()
-                    .owns::<PlayerControlled>()
-                    .requires("physics")
-                    .states(states),
+            ExtensorMeta::inferred("character")
+                .doc("A capsule that walks, jumps and swims under local gravity")
+                .owns::<CharacterController>()
+                .owns::<PlayerControlled>()
+                .requires("physics")
+                .states(states),
+        )
+        .configure_sets(
+            FixedPostUpdate,
+            (
+                CharacterSystems::Sense,
+                CharacterSystems::Cancel,
+                CharacterSystems::Moves,
+                CharacterSystems::Control,
             )
-            .configure_sets(
-                FixedPostUpdate,
-                (
-                    CharacterSystems::Sense,
-                    CharacterSystems::Cancel,
-                    CharacterSystems::Moves,
-                    CharacterSystems::Control,
-                )
-                    .chain()
-                    .in_set(PhysicsSystems::Prepare)
-                    .after(EnvironmentSystems::Effects)
-                    .after(PhysicsTransformSystems::TransformToPosition),
-            )
-            .add_systems(
-                FixedPostUpdate,
-                (age_requests, probe_ground, sense_motion)
-                    .chain()
-                    .in_set(CharacterSystems::Sense),
-            )
-            .add_systems(
-                FixedPostUpdate,
-                cancel_moves.in_set(CharacterSystems::Cancel),
-            )
-            .add_systems(
-                FixedPostUpdate,
-                crate::states::apply_state_rules
-                    .after(CharacterSystems::Moves)
-                    .before(CharacterSystems::Control)
-                    .in_set(PhysicsSystems::Prepare),
-            )
-            .add_systems(
-                FixedPostUpdate,
-                (control_characters, hold_on_slopes)
-                    .chain()
-                    .in_set(CharacterSystems::Control),
-            );
+                .chain()
+                .in_set(PhysicsSystems::Prepare)
+                .after(EnvironmentSystems::Effects)
+                .after(PhysicsTransformSystems::TransformToPosition),
+        )
+        .add_systems(
+            FixedPostUpdate,
+            (age_requests, probe_ground, sense_motion)
+                .chain()
+                .in_set(CharacterSystems::Sense),
+        )
+        .add_systems(
+            FixedPostUpdate,
+            cancel_moves.in_set(CharacterSystems::Cancel),
+        )
+        .add_systems(
+            FixedPostUpdate,
+            crate::states::apply_state_rules
+                .after(CharacterSystems::Moves)
+                .before(CharacterSystems::Control)
+                .in_set(PhysicsSystems::Prepare),
+        )
+        .add_systems(
+            FixedPostUpdate,
+            (control_characters, hold_on_slopes)
+                .chain()
+                .in_set(CharacterSystems::Control),
+        );
     }
 }
 

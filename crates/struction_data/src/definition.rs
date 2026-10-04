@@ -53,6 +53,8 @@ impl LayerKind {
 #[derive(Clone, Debug)]
 pub(crate) struct Layer {
     pub root_span: Span,
+    /// The prose written above the file's value, the layer's own description.
+    pub doc: Option<String>,
     pub descends_from: Option<(String, Span)>,
     pub presets: Vec<(String, Span)>,
     pub extensors: Vec<(String, Span)>,
@@ -78,6 +80,7 @@ pub(crate) fn expect<'n>(node: &'n Node, what: &str, ok: bool) -> Result<&'n Nod
 
 pub(crate) fn parse_layer(
     root: Node,
+    doc: Option<String>,
     kind: LayerKind,
     extra_sections: &BTreeSet<String>,
 ) -> Result<Layer, DataError> {
@@ -187,6 +190,7 @@ pub(crate) fn parse_layer(
             value: NodeValue::Object(body),
         },
         root_span,
+        doc,
         descends_from,
         presets,
         extensors,

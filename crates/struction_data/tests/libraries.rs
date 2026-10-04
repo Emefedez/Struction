@@ -138,3 +138,55 @@ fn deleting_an_override_falls_back_to_the_library() {
         10.0
     );
 }
+
+#[test]
+fn a_client_asks_what_a_file_is_instead_of_guessing() {
+    use struction_data::{SourceFile, classify_source};
+
+    assert_eq!(
+        classify_source("creatures/ogre/entity.jsonc"),
+        Some(SourceFile::Definition("creatures/ogre".into()))
+    );
+    assert_eq!(
+        classify_source("presets/burning.jsonc"),
+        Some(SourceFile::Preset("burning".into()))
+    );
+    assert_eq!(classify_source("scenes/yard.jsonc"), None);
+    assert_eq!(classify_source("notes.md"), None);
+
+    let (loaded, dirs) = store(
+        &[],
+        &[
+            (
+                "ogres/chief/entity.jsonc",
+                "// The chief of the yard, who never blinks.\n\
+                 { \"descendsFrom\": \"Actor\", \"presets\": [\"burning\"] }\n",
+            ),
+            (
+                "presets/burning.jsonc",
+                "// Everything here is on fire.\n{ \"components\": { \"Flammable\": {} } }\n",
+            ),
+        ],
+    );
+    // The prose a file starts with is its description, which no schema field can carry.
+    assert_eq!(
+        loaded.doc("ogres/chief"),
+        Some("The chief of the yard, who never blinks.")
+    );
+    assert_eq!(
+        loaded.doc("presets/burning"),
+        None,
+        "presets are layers, not definitions"
+    );
+    assert_eq!(loaded.doc("Actor"), None);
+
+    let (file, library) = loaded.preset_source("burning").unwrap();
+    assert_eq!(file, dirs[1].path().join("presets/burning.jsonc"));
+    assert_eq!(library, None);
+
+    let (loaded, dirs) = store(&ENGINE, &[]);
+    let (file, library) = loaded.preset_source("burning").unwrap();
+    assert_eq!(file, dirs[0].path().join("presets/burning.jsonc"));
+    assert_eq!(library, Some("engine"));
+    assert_eq!(loaded.preset_source("nonexistent"), None);
+}

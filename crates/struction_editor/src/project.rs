@@ -14,7 +14,8 @@ use serde_json::{Value, json};
 use struction_core::{ActionRegistry, Definition, MasterIs, StableId};
 use struction_data::{DataError, DefinitionStore, ErrorKind};
 use struction_world::{
-    EntityPath, PathAliases, SceneCatalog, WorldEntity, link_masters, run_pending_spawners,
+    EntityPath, PathAliases, SceneCatalog, WorldEntity, is_scene_file, link_masters,
+    run_pending_spawners,
 };
 
 use crate::extensors::{DroppedEntry, ExtensorEntry, SuggestedExtensor};
@@ -37,6 +38,19 @@ impl From<&DataError> for Diagnostic {
             column: error.location.as_ref().map(|at| at.column),
         }
     }
+}
+
+/// What a project-relative file is, by the same rules the backend reads sources with. A client
+/// (an editor, a language host) sends whatever JSONC is open and asks what each file is, rather
+/// than repeating the engine's file names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceKind {
+    /// An entity definition file, named by the definition's path.
+    Definition(String),
+    /// A preset file, named by the preset.
+    Preset(String),
+    /// A scene file, which names no definition of its own: it places them.
+    Scene,
 }
 
 type GameFactory = dyn Fn(&Path) -> App;
@@ -207,6 +221,18 @@ impl AuthoringProject {
             .world()
             .resource::<ActionRegistry>()
             .descriptors()
+    }
+
+    /// What a project-relative file is, or `None` when no part of the engine reads it.
+    pub fn source_kind(&self, file: &str) -> Option<SourceKind> {
+        match struction_data::classify_source(file) {
+            Some(struction_data::SourceFile::Definition(path)) => {
+                Some(SourceKind::Definition(path))
+            }
+            Some(struction_data::SourceFile::Preset(name)) => Some(SourceKind::Preset(name)),
+            None if is_scene_file(file) => Some(SourceKind::Scene),
+            None => None,
+        }
     }
     /// Includes broken source definitions so authoring clients can still find and repair them.
     pub fn definitions(&self) -> Vec<String> {

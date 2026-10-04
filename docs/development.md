@@ -147,6 +147,8 @@ cd extensions/vscode && npm install && npm run compile
 
 Open `extensions/vscode` in VS Code and press F5 ("Struction Extension") to launch an extension host against this workspace. Without a workspace setting the extension discovers `project/` or `apps/playground/project/`, looks for `struction-language` on `PATH`, and restarts when `struction.projectRoot`, `struction.hostPath` or `struction.hostArgs` changes. The status bar shows whether a project was found, whether a snapshot is being computed, and how many problems the host reported; the **Struction** output channel carries the host's stderr and any diagnostics without a file.
 
+Every open JSON/JSONC buffer inside the project directory is sent to the host, which answers with what each one is (`files`); a file nothing reads gets no schema, no hover and no diagnostics. The extension itself repeats none of the engine's vocabulary: it reads section and value descriptions from the schema, and resolves a name against the snapshot's definitions, presets, packages, states, actions and components. When the engine gains a package, a state or a section, the extension explains it without a line of TypeScript changing — the only place to update is the snapshot's `types.ts`.
+
 Tests are headless: `npm test` compiles and runs `test/*.test.ts` against the feature layer, which imports no `vscode` module, and `cargo test -p struction_language` covers the snapshots and the JSONL transport. Neither needs VS Code or a running host.
 
 ## WebAssembly

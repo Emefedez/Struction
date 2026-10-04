@@ -10,7 +10,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use struction_core::{ActionRegistry, Participation};
 use struction_data::DefinitionStore;
-use struction_editor::{AuthoringProject, Diagnostic, ExtensorEntry, SessionError, protocol};
+use struction_editor::{
+    AuthoringProject, Diagnostic, ExtensorEntry, SessionError, SourceKind, protocol,
+};
 
 /// Library files are reported as `<package>:<path from the library root>`, which no client can
 /// open; project files stay project-relative because the client knows the root it passed.
@@ -91,6 +93,10 @@ pub fn scene_schema(store: &DefinitionStore, definition_schema: &Value) -> Value
 
 /// An entire project snapshot: every supplied buffer replaces its disk source for this request.
 /// Buffers omitted from the next request are read from disk again. No writes or simulation ticks.
+///
+/// A client sends every JSONC buffer it has open and asks here what each file is, what the
+/// schema allows at a position and what the registrations say about a name, so none of the
+/// engine's own vocabulary has to be repeated on the other side of the wire.
 pub fn analyze(
     project: &mut AuthoringProject,
     sources: &BTreeMap<String, String>,
@@ -126,11 +132,32 @@ pub fn analyze(
                 "path": path,
                 "source": source,
                 "library": store.library_of(path),
+                "doc": store.doc(path),
                 "lineage": resolved.lineage,
                 "resolved": resolved.data(),
                 "extensors": extensors,
                 "components": resolved.components.iter().map(|c| c.type_path).collect::<Vec<_>>(),
             }))
+        })
+        .collect();
+    let presets: Vec<_> = store
+        .preset_names()
+        .filter_map(|name| {
+            let (source, library) = store.preset_source(name)?;
+            Some(json!({ "name": name, "source": source, "library": library }))
+        })
+        .collect();
+    // What each supplied buffer is, so a client serves a file without knowing the engine's
+    // naming rules; a file nothing reads is left out.
+    let files: Vec<_> = sources
+        .keys()
+        .filter_map(|file| {
+            let kind = project.source_kind(file)?;
+            let name = match &kind {
+                SourceKind::Definition(name) | SourceKind::Preset(name) => Some(name.as_str()),
+                SourceKind::Scene => None,
+            };
+            Some(json!({ "path": file, "kind": kind_name(&kind), "name": name }))
         })
         .collect();
     let extensors: Vec<_> = store
@@ -142,7 +169,9 @@ pub fn analyze(
                 "doc": meta.doc,
                 "opt_in": meta.participation == Participation::OptIn,
                 "requires": meta.requires,
-                "states": meta.states,
+                "states": meta.states.iter().map(|state| json!({
+                    "name": state.name, "doc": state.doc,
+                })).collect::<Vec<_>>(),
                 "components": meta.components.iter().map(|c| json!({
                     "name": c.name, "type_path": c.type_path, "supplied": c.supplied,
                 })).collect::<Vec<_>>(),
@@ -163,8 +192,18 @@ pub fn analyze(
     .result;
     Ok(
         json!({ "schema": schema, "scene_schema": scene_schema, "definitions": definitions,
-        "extensors": extensors, "actions": actions, "diagnostics": diagnostics }),
+        "presets": presets, "files": files, "extensors": extensors, "actions": actions,
+        "diagnostics": diagnostics }),
     )
+}
+
+/// The vocabulary a file's name belongs to, in the snapshot's own words.
+fn kind_name(kind: &SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Definition(_) => "definition",
+        SourceKind::Preset(_) => "preset",
+        SourceKind::Scene => "scene",
+    }
 }
 
 #[derive(Deserialize)]

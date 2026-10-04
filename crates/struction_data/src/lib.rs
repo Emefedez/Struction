@@ -42,4 +42,4 @@ pub use extensors::{DroppedExtensor, ExtensorReason, ExtensorUse, Suggestion};
 pub use plugin::{DataPlugin, DefinitionsChanged, reload_definition_file};
 pub use relations::{grants_from_node, reactions_from_node};
 pub use source::{Node, NodeValue, parse_jsonc};
-pub use store::{DefinitionStore, ReloadReport};
+pub use store::{DefinitionStore, ReloadReport, SourceFile, classify_source};

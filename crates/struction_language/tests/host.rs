@@ -1,17 +1,17 @@
 //! Snapshot and transport behavior an editor relies on: unsaved buffers in, structured
 //! registrations out, and nothing written to disk.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 use bevy::prelude::{AppTypeRegistry, *};
 use bevy::reflect::TypePath;
 use serde_json::{Value, json};
 use struction_core::{
-    ActionAppExt, ActionCall, ActionMeta, ActionRegistry, CorePlugin, ExtensorAppExt, ExtensorMeta,
-    ParamType,
+    ActionAppExt, ActionCall, ActionMeta, ActionRegistry, ContributedState, CorePlugin,
+    ExtensorAppExt, ExtensorMeta, ParamType,
 };
 use struction_data::{DataPlugin, DefinitionStore};
 use struction_editor::AuthoringProject;
@@ -43,7 +43,10 @@ fn registrations(app: &mut App) -> &mut App {
                 .doc("Protection that reduces incoming hits")
                 .supplies::<Armor>()
                 .requires("living")
-                .state("Guarded"),
+                .state(ContributedState::new(
+                    "Guarded",
+                    "Standing behind the shield.",
+                )),
         )
         .register_action(
             ActionMeta::new("hurt")
@@ -68,13 +71,23 @@ fn build(data: DataPlugin) -> App {
     app
 }
 
-/// The factory a host is given only receives the project root, so the library root is fixed first.
-static LIBRARY: OnceLock<PathBuf> = OnceLock::new();
+thread_local! {
+    /// The factory a host is given only receives the project root, so the library root a test
+    /// wants built with is left here for it. Each test runs on its own thread.
+    static LIBRARY_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+fn use_library(library: &Path) {
+    LIBRARY_ROOT.with(|root| *root.borrow_mut() = Some(library.to_path_buf()));
+}
 
 fn library_factory(root: &Path) -> App {
+    let library = LIBRARY_ROOT
+        .with(|held| held.borrow().clone())
+        .expect("library root");
     build(
         DataPlugin::new(root)
-            .library("mod", LIBRARY.get().expect("library root"))
+            .library("mod", library)
             .primordial("Actor"),
     )
 }
@@ -243,6 +256,122 @@ fn rejects_unknown_operations_and_paths_without_failing_the_session() {
 }
 
 #[test]
+fn tells_a_client_what_each_open_file_is() {
+    let mut fixture = fixture();
+    std::fs::create_dir_all(fixture.path("scenes")).unwrap();
+    std::fs::write(fixture.path("scenes/yard.jsonc"), "{\n}\n").unwrap();
+    let snapshot = snapshot(
+        &mut fixture.project,
+        &[
+            (OGRE, "{\"descendsFrom\": \"Actor\"}"),
+            ("presets/burning.jsonc", "{ \"components\": {} }"),
+            ("scenes/yard.jsonc", "{ \"zones\": {} }"),
+            // A JSON file in the project that the engine does not read.
+            ("notes.jsonc", "{ \"todo\": \"later\" }"),
+        ],
+    );
+    let file = |path: &str| {
+        snapshot["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == path)
+            .unwrap_or_else(|| panic!("{path} is not classified: {}", snapshot["files"]))
+    };
+    // The client's rule is the engine's rule, so it sends everything and asks here.
+    assert_eq!(file(OGRE)["kind"], "definition");
+    assert_eq!(file(OGRE)["name"], "guards/ogre");
+    assert_eq!(file("presets/burning.jsonc")["kind"], "preset");
+    assert_eq!(file("presets/burning.jsonc")["name"], "burning");
+    assert_eq!(file("scenes/yard.jsonc")["kind"], "scene");
+    assert_eq!(file("scenes/yard.jsonc")["name"], Value::Null);
+    assert!(
+        !snapshot["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["path"] == "notes.jsonc"),
+        "a file nothing reads has no service: {}",
+        snapshot["files"]
+    );
+}
+
+#[test]
+fn reports_the_prose_a_definition_describes_itself_with() {
+    let mut fixture = fixture();
+    let snapshot = snapshot(&mut fixture.project, &[]);
+    assert_eq!(
+        definition(&snapshot, "guards/ogre")["doc"],
+        "The courtyard ogre."
+    );
+    assert_eq!(
+        definition(&snapshot, "guards/ogre_elite")["doc"],
+        Value::Null
+    );
+}
+
+#[test]
+fn reports_every_preset_with_the_file_that_holds_it() {
+    let mut fixture = fixture();
+    std::fs::create_dir_all(fixture.path("presets")).unwrap();
+    std::fs::write(
+        fixture.path("presets/burning.jsonc"),
+        "{ \"components\": { \"Armor\": { \"rating\": 1 } } }",
+    )
+    .unwrap();
+    let snapshot = snapshot(&mut fixture.project, &[]);
+    let preset = snapshot["presets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "burning")
+        .expect("the preset is reported");
+    assert_eq!(
+        preset["source"],
+        fixture
+            .path("presets/burning.jsonc")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(preset["library"], Value::Null);
+    // A preset can be followed to its source, like a definition can.
+    assert_eq!(
+        snapshot["schema"]["properties"]["presets"]["items"]["enum"],
+        json!(["burning"])
+    );
+}
+
+#[test]
+fn library_presets_report_the_library_that_holds_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(library.path().join("presets")).unwrap();
+    std::fs::write(
+        library.path().join("presets/burning.jsonc"),
+        r#"{"components":{"Armor":{"rating":1}}}"#,
+    )
+    .unwrap();
+    use_library(library.path());
+    let mut project = AuthoringProject::open(dir.path(), library_factory).unwrap();
+    let snapshot = struction_language::analyze(&mut project, &BTreeMap::new()).unwrap();
+    let preset = snapshot["presets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "burning")
+        .expect("the library preset is reported");
+    assert_eq!(preset["library"], "mod");
+    assert_eq!(
+        preset["source"],
+        library
+            .path()
+            .join("presets/burning.jsonc")
+            .to_string_lossy()
+            .as_ref()
+    );
+}
+
+#[test]
 fn reports_resolved_definitions_with_their_sources() {
     let mut fixture = fixture();
     let snapshot = snapshot(&mut fixture.project, &[]);
@@ -292,7 +421,11 @@ fn reports_the_registered_packages_and_actions() {
     assert_eq!(armor["opt_in"], true);
     assert_eq!(armor["doc"], "Protection that reduces incoming hits");
     assert_eq!(armor["requires"], json!(["living"]));
-    assert_eq!(armor["states"], json!(["Guarded"]));
+    // A contributed state carries what holds while it does, so a client explains the name.
+    assert_eq!(
+        armor["states"],
+        json!([{ "name": "Guarded", "doc": "Standing behind the shield." }])
+    );
     assert_eq!(
         armor["components"],
         json!([{ "name": "Armor", "type_path": Armor::type_path(), "supplied": true }])
@@ -430,7 +563,7 @@ fn library_definitions_are_read_only_and_labeled() {
         r#"{"descendsFrom":"Actor","components":{"Health":{"max":30}}}"#,
     )
     .unwrap();
-    LIBRARY.set(library.path().to_path_buf()).unwrap();
+    use_library(library.path());
     let mut project = AuthoringProject::open(dir.path(), library_factory).unwrap();
     let snapshot = struction_language::analyze(&mut project, &BTreeMap::new()).unwrap();
 

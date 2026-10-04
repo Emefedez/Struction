@@ -58,10 +58,75 @@ fn top_level_sections_follow_the_canonical_fields() {
         assert!(sections.contains(&key.to_owned()), "{key}");
     }
     assert_eq!(schema["additionalProperties"], json!(false));
-    // Free-form when no project names are given.
+    // Free-form when no project names are given, but still explained.
     assert_eq!(
-        schema["properties"]["descendsFrom"],
-        json!({ "type": "string" })
+        schema["properties"]["descendsFrom"]["type"],
+        json!("string")
+    );
+    assert!(
+        schema["properties"]["descendsFrom"]["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("Inherits"))
+    );
+}
+
+#[test]
+fn every_section_says_what_it_is_for() {
+    // The engine's own vocabulary, which no registered type can describe: a client reads it from
+    // the schema instead of repeating it.
+    let schema = entity_schema(&registry(), &SchemaOptions::default());
+    for (section, expected) in [
+        ("descendsFrom", "Inherits"),
+        ("presets", "Named reusable layers"),
+        ("transform", "folded in as its `Transform`"),
+        ("components", "Registered Rust components"),
+        ("constraints", "no package reads it"),
+        ("extensors", "Packages extending this definition"),
+        ("states", "Components enabled and disabled"),
+        ("reactions", "Instantaneous action hooks"),
+        ("grantsToWards", "Capabilities granted by a master"),
+    ] {
+        assert!(
+            schema["properties"][section]["description"]
+                .as_str()
+                .is_some_and(|text| text.contains(expected)),
+            "{section}: {:?}",
+            schema["properties"][section]["description"]
+        );
+    }
+}
+
+#[test]
+fn values_carry_the_documentation_of_the_type_that_declares_them() {
+    // A doc comment on an enum variant or a contributed state is what a completion or a hover
+    // shows over that value, so it travels with the schema rather than a client repeating it.
+    let schema = entity_schema(
+        &registry(),
+        &SchemaOptions {
+            states: vec![
+                (
+                    "Resting".to_owned(),
+                    "Neither moving nor acting.".to_owned(),
+                ),
+                ("Rolling".to_owned(), String::new()),
+            ],
+            ..SchemaOptions::default()
+        },
+    );
+    let damage = definition(&schema, "Damage");
+    let reference = damage["properties"]["kind"]["$ref"].as_str().unwrap();
+    let kinds = &schema["$defs"][reference.strip_prefix("#/$defs/").unwrap()]["oneOf"][0];
+    assert_eq!(kinds["enum"], json!(["Physical", "Fire"]));
+    assert_eq!(
+        kinds["enumDescriptions"],
+        json!(["A blunt impact.", "Burns over time."])
+    );
+    // States come from the packages that contribute them, docs included.
+    let states = &schema["properties"]["states"]["propertyNames"];
+    assert_eq!(states["enum"], json!(["Resting", "Rolling"]));
+    assert_eq!(
+        states["enumDescriptions"],
+        json!(["Neither moving nor acting.", ""])
     );
 }
 
@@ -145,7 +210,13 @@ fn vectors_are_arrays_or_objects_and_enums_list_their_variants() {
     let damage = definition(&schema, "Damage");
     let kind_ref = damage["properties"]["kind"]["$ref"].as_str().unwrap();
     let kind = &schema["$defs"][kind_ref.strip_prefix("#/$defs/").unwrap()];
-    assert_eq!(kind["oneOf"][0], json!({ "enum": ["Physical", "Fire"] }));
+    assert_eq!(
+        kind["oneOf"][0],
+        json!({
+            "enum": ["Physical", "Fire"],
+            "enumDescriptions": ["A blunt impact.", "Burns over time."]
+        })
+    );
 
     let shape = definition(&schema, "Shape");
     let variants = shape["oneOf"].as_array().unwrap();

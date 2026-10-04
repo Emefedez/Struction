@@ -105,7 +105,8 @@ pub struct DodgePlugin;
 impl Plugin for DodgePlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Roll>().register_type::<Rolling>();
-        let rolling = crate::states::state(&app.world().resource::<AppTypeRegistry>().read(), "Rolling");
+        let rolling =
+            crate::states::state(&app.world().resource::<AppTypeRegistry>().read(), "Rolling");
         app.register_extensor(
                 ExtensorMeta::opt_in("dodge")
                     .doc("Ground roll in the movement direction (Left Shift, `dodge/roll`)")

@@ -178,7 +178,10 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
     );
     properties.insert(
         "constraints".into(),
-        described(json!({ "type": "array" }), "Kept as authored; no package reads it yet."),
+        described(
+            json!({ "type": "array" }),
+            "Kept as authored; no package reads it yet.",
+        ),
     );
 
     // A reaction names two actions and hooks on one of them, so every name is an enum of the

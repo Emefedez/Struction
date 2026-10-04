@@ -25,9 +25,15 @@ use crate::definition::{
 };
 use crate::error::{DataError, ErrorKind, Location};
 use crate::extensors::{self, Named};
-use crate::source::{Node, NodeValue, Span, parse_jsonc};
+use crate::source::{Node, NodeValue, Span, leading_doc, parse_jsonc};
 
 const ENTITY_FILE: &str = "entity.jsonc";
+const PRESETS_DIR: &str = "presets";
+
+/// The project-relative file a preset lives in, the rule [`classify`] reads it back with.
+fn preset_file(name: &str) -> PathBuf {
+    PathBuf::from(format!("{PRESETS_DIR}/{name}.jsonc"))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Dep {
@@ -41,6 +47,17 @@ enum FileKind {
     Preset(String),
 }
 
+/// What a project-relative source file is, by the same rule the loader reads files with. An
+/// editor uses it to tell a definition, a preset and everything else apart without repeating
+/// this crate's file names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceFile {
+    /// A definition file, named by its definition's path.
+    Definition(String),
+    /// A preset file, named by the preset.
+    Preset(String),
+}
+
 impl FileKind {
     fn dep(&self) -> Dep {
         match self {
@@ -48,10 +65,23 @@ impl FileKind {
             FileKind::Preset(name) => Dep::Preset(name.clone()),
         }
     }
+
+    /// The same file as the public vocabulary an editor gets.
+    pub fn source_file(&self) -> SourceFile {
+        match self {
+            FileKind::Entity(id) => SourceFile::Definition(id.clone()),
+            FileKind::Preset(name) => SourceFile::Preset(name.clone()),
+        }
+    }
+}
+
+/// What a project-relative file is, or `None` when this crate does not read it.
+pub fn classify_source(rel: &str) -> Option<SourceFile> {
+    classify(rel).map(|kind| kind.source_file())
 }
 
 fn classify(rel: &str) -> Option<FileKind> {
-    if let Some(rest) = rel.strip_prefix("presets/") {
+    if let Some(rest) = rel.strip_prefix(&format!("{PRESETS_DIR}/")) {
         let name = rest.strip_suffix(".jsonc")?;
         return (!name.is_empty()).then(|| FileKind::Preset(name.to_owned()));
     }
@@ -183,6 +213,28 @@ impl DefinitionStore {
     pub fn library_file(&self, id: &str) -> Option<PathBuf> {
         self.library_entity(id)
             .map(|(library, _)| library.root.join(id).join(ENTITY_FILE))
+    }
+
+    /// The prose a definition's own file starts with, which is its authored description: the
+    /// project's file when there is one, else the library's.
+    pub fn doc(&self, id: &str) -> Option<&str> {
+        self.entities
+            .get(id)
+            .or_else(|| self.library_entity(id).map(|(_, layer)| layer))
+            .and_then(|layer| layer.doc.as_deref())
+    }
+
+    /// The file a preset came from, with the library holding it when it is not the project's.
+    pub fn preset_source(&self, name: &str) -> Option<(PathBuf, Option<&str>)> {
+        if self.presets.contains_key(name) {
+            return Some((self.root.join(preset_file(name)), None));
+        }
+        self.library_preset(name).map(|(library, _)| {
+            (
+                library.root.join(preset_file(name)),
+                Some(library.name.as_str()),
+            )
+        })
     }
 
     /// Every library's name and root, so clients can resolve the files it reports.
@@ -477,13 +529,17 @@ impl DefinitionStore {
                 }),
             )
         })
-        .and_then(|text| parse_jsonc(label, &text))
-        .and_then(|node| {
+        .and_then(|text| {
+            // The prose above the file's value is the layer's own description.
+            let doc = leading_doc(&text, text.find('{').unwrap_or(text.len()));
+            parse_jsonc(label, &text).map(|node| (node, doc))
+        })
+        .and_then(|(node, doc)| {
             let layer_kind = match kind {
                 FileKind::Entity(_) => LayerKind::Entity,
                 FileKind::Preset(_) => LayerKind::Preset,
             };
-            parse_layer(node, layer_kind, &self.extra_sections)
+            parse_layer(node, doc, layer_kind, &self.extra_sections)
         })
     }
 
@@ -608,8 +664,13 @@ impl DefinitionStore {
             dropped: base.dropped_entries.clone(),
         };
         if let Some(overrides) = overrides {
-            let layer = parse_layer(overrides.clone(), LayerKind::Override, &self.extra_sections)
-                .map_err(|e| vec![e])?;
+            let layer = parse_layer(
+                overrides.clone(),
+                None,
+                LayerKind::Override,
+                &self.extra_sections,
+            )
+            .map_err(|e| vec![e])?;
             Resolver::new(self)
                 .apply_layer(&mut merged, &layer, "a scene override", &mut Vec::new())
                 .map_err(|e| vec![e])?;

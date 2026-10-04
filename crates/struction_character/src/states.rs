@@ -8,7 +8,9 @@ use std::sync::Arc;
 use bevy::ecs::reflect::ReflectComponent;
 use bevy::prelude::*;
 use bevy::reflect::TypeRegistry;
-use struction_core::{ContributedState, StateRule, StateRules, documented_state, documented_states};
+use struction_core::{
+    ContributedState, StateRule, StateRules, documented_state, documented_states,
+};
 
 use crate::{CharacterCondition, CharacterMove, CharacterState};
 

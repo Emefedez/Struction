@@ -1,27 +1,38 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { JSONSchema, Position } from 'vscode-json-languageservice';
-import { definitionPath, describeDefinition, engineRange, Features, sourceFile, tokenAt } from '../src/features';
+import { describeDefinition, engineRange, Features, tokenAt } from '../src/features';
 import { Snapshot } from '../src/types';
 
 const schema: JSONSchema = {
   type: 'object',
   properties: {
     $schema: { type: 'string' },
-    descendsFrom: { type: 'string', enum: ['Actor', 'characters/humanoid', 'guards/ogre'] },
-    presets: { type: 'array', items: { type: 'string' } },
+    descendsFrom: { type: 'string', enum: ['Actor', 'characters/humanoid', 'guards/ogre'],
+      description: 'Inherits this definition, its components and named extensors. Every lineage ends in a primordial type.' },
+    presets: { type: 'array', items: { type: 'string', enum: ['swift'] },
+      description: 'Named reusable layers applied before this definition\u2019s own overrides.' },
     extensors: { type: 'array', items: { oneOf: [
       { const: 'living', description: 'Anything that can be hurt' },
       { const: '-living', description: 'Drop the inherited living extensor and its components' },
       { const: 'armor', description: 'Protection' },
       { const: '-armor', description: 'Drop the inherited armor extensor and its components' },
     ] } },
-    components: { type: 'object', properties: {
+    components: { type: 'object', description: 'Registered Rust components. Omitted fields inherit; null removes an inherited component.',
+      properties: {
       Health: { anyOf: [{ $ref: '#/$defs/Health' }, { type: 'null' }], description: 'Object of fields, or null to remove the inherited component.' },
       Armor: { anyOf: [{ $ref: '#/$defs/Armor' }, { type: 'null' }] },
+      Roll: { anyOf: [{ $ref: '#/$defs/Roll' }, { type: 'null' }] },
     }, additionalProperties: false },
-    states: { type: 'object', propertyNames: { type: 'string', enum: ['Rolling', 'Guarded'] },
-      additionalProperties: { type: 'object', properties: {
+    states: { type: 'object', description: 'Components enabled and disabled while a state holds.',
+      propertyNames: { type: 'string', enum: ['Rolling', 'Guarded'], enumDescriptions: ['Tumbling in a ground roll.', 'Standing behind the shield.'],
+        description: 'States packages contribute, each documented by what holds while it does.' },
+      additionalProperties: { type: 'object', additionalProperties: false, properties: {
+        enable: { type: 'object', properties: {
+          Health: { anyOf: [{ $ref: '#/$defs/Health' }, { type: 'null' }], description: 'Object of fields, or null to remove the inherited component.' },
+          Armor: { anyOf: [{ $ref: '#/$defs/Armor' }, { type: 'null' }] },
+          Roll: { anyOf: [{ $ref: '#/$defs/Roll' }, { type: 'null' }] },
+        }, additionalProperties: false, description: 'Registered Rust components. Omitted fields inherit; null removes an inherited component.' },
         disable: { type: 'array', items: { type: 'string' },
           description: 'Component names to disable while the state holds.' },
       } } },
@@ -56,6 +67,15 @@ const schema: JSONSchema = {
   $defs: {
     Health: { type: 'object', description: 'Hit points.', properties: { current: { type: 'number' } }, additionalProperties: false },
     Armor: { type: 'object', description: 'Damage reduction.', properties: { rating: { type: 'number' } }, additionalProperties: false },
+    // A component whose field names a state, so the value reaches a `$ref`'d enum.
+    Roll: { type: 'object', description: 'Roll tuning; its presence is the capability.',
+      properties: {
+        duration: { type: 'number', description: 'Seconds including anticipation and getting back up.' },
+        blocked_while: { type: 'array', items: { $ref: '#/$defs/Condition' },
+          description: 'A roll neither starts nor continues while any of these holds.' },
+      }, additionalProperties: false },
+    Condition: { oneOf: [{ enum: ['Rolling', 'Guarded'], enumDescriptions: ['Tumbling in a ground roll.', 'Standing behind the shield.'] }],
+      description: 'A state of the character that actions can be refused in.' },
   },
 };
 
@@ -99,10 +119,16 @@ const snapshot: Snapshot = {
   schema,
   scene_schema: sceneSchema,
   diagnostics: [],
+  files: [
+    { path: 'guards/ogre/entity.jsonc', kind: 'definition', name: 'guards/ogre' },
+    { path: 'presets/swift.jsonc', kind: 'preset', name: 'swift' },
+    { path: 'scenes/yard.jsonc', kind: 'scene', name: null },
+  ],
   definitions: [{
     path: 'guards/ogre',
     source: '/project/guards/ogre/entity.jsonc',
     library: 'engine',
+    doc: 'The courtyard ogre, which the yard keeps for its wall.',
     lineage: ['Actor'],
     resolved: { components: { Health: { current: 60 } } },
     components: ['test::Health', 'test::Armor'],
@@ -111,17 +137,19 @@ const snapshot: Snapshot = {
     path: 'characters/humanoid',
     source: null,
     library: null,
+    doc: null,
     lineage: ['Actor'],
     resolved: {},
     components: ['test::Health'],
     extensors: [{ name: 'living', reason: { owns: 'Health' }, supplied: [], components: ['Health'] }],
   }],
+  presets: [{ name: 'swift', source: '/project/presets/swift.jsonc', library: null }],
   extensors: [{
     name: 'armor',
     doc: 'Protection that reduces incoming hits',
     opt_in: true,
     requires: ['living'],
-    states: ['Guarded'],
+    states: [{ name: 'Guarded', doc: 'Standing behind the shield.' }],
     components: [{ name: 'Armor', type_path: 'test::Armor', supplied: true }],
   }, {
     name: 'living',
@@ -130,6 +158,13 @@ const snapshot: Snapshot = {
     requires: [],
     states: [],
     components: [{ name: 'Health', type_path: 'test::Health', supplied: false }],
+  }, {
+    name: 'dodge',
+    doc: 'Ground roll in the movement direction',
+    opt_in: true,
+    requires: ['living'],
+    states: [{ name: 'Rolling', doc: 'Tumbling in a ground roll.' }],
+    components: [{ name: 'Roll', type_path: 'test::Roll', supplied: true }],
   }],
   actions: [{
     name: 'hurt',
@@ -178,15 +213,14 @@ async function problems(file: string, text: string): Promise<string[]> {
   return (await features.diagnostics(file, document)).map(diagnostic => String(diagnostic.message));
 }
 
-test('classifies the files the engine reads', () => {
-  assert.equal(sourceFile('guards/ogre/entity.jsonc'), true);
-  assert.equal(sourceFile('presets/swift.jsonc'), true);
-  assert.equal(sourceFile('scenes/yard.jsonc'), true);
-  assert.equal(sourceFile('scenes/yard.json'), false);
-  assert.equal(sourceFile('notes.md'), false);
-  assert.equal(sourceFile('guards/ogre/readme.jsonc'), false);
-  assert.equal(definitionPath('guards/ogre/entity.jsonc'), 'guards/ogre');
-  assert.equal(definitionPath('scenes/yard.jsonc'), undefined);
+test('serves the files the engine says it reads', () => {
+  // The host classifies every buffer it was sent; the extension asks rather than assuming.
+  assert.equal(features.file('guards/ogre/entity.jsonc')?.kind, 'definition');
+  assert.equal(features.file('guards/ogre/entity.jsonc')?.name, 'guards/ogre');
+  assert.equal(features.file('presets/swift.jsonc')?.kind, 'preset');
+  assert.equal(features.file('scenes/yard.jsonc')?.kind, 'scene');
+  assert.equal(features.file('notes.jsonc'), undefined);
+  assert.equal(features.file('guards/ogre/readme.jsonc'), undefined);
 });
 
 test('reports keys and values apart from the cursor', () => {
@@ -218,9 +252,51 @@ test('hovers an extensor with how it is taken and dropped', async () => {
   assert.match(await hover(ENTITY, inferred, '"living"'), /Inferred from owned components/);
 });
 
-test('hovers the state an extensor contributes', async () => {
-  const text = '{\n  "states": {\n    "Guarded": {}\n  }\n}\n';
-  assert.match(await hover(ENTITY, text, '"Guarded"'), /contributed by \*\*armor\*\*/);
+test('hovers the state an extensor contributes, saying what holds it', async () => {
+  const text = '{\n  "states": {\n    "Guarded": {},\n    "Rolling": {}\n  }\n}\n';
+  const shown = await hover(ENTITY, text, '"Guarded"');
+  assert.match(shown, /contributed by \*\*armor\*\*/);
+  // What the state means is the package's own documentation, not this client's words.
+  assert.match(shown, /Standing behind the shield\./);
+  assert.match(await hover(ENTITY, text, '"Rolling"'), /Tumbling in a ground roll\./);
+});
+
+test('explains a state named where the engine refuses actions', async () => {
+  // `blocked_while` values live behind a `$ref` to a reflected enum, so the description of each
+  // value is read through it.
+  const text = '{\n  "components": { "Roll": { "blocked_while": ["Guarded"] } }\n}\n';
+  const shown = await hoverValue(ENTITY, text, '"blocked_while":');
+  // The schema explains the enum; the package that contributes the state comes from the snapshot.
+  assert.match(shown, /Standing behind the shield\./);
+  assert.match(shown, /\*\*Guarded\*\* is contributed by \*\*armor\*\*/);
+  // A state the engine does not accept reads as the one it was meant to be.
+  const typo = '{\n  "components": { "Roll": { "blocked_while": ["Guardd"] } }\n}\n';
+  const wrong = await hoverValue(ENTITY, typo, '"blocked_while":');
+  assert.match(wrong, /\u201cGuarded\u201d is not a registered value/);
+  assert.match(wrong, /Options: Rolling, Guarded\./);
+});
+
+test('names a component wherever the engine reads one', async () => {
+  const enable = '{\n  "states": { "Guarded": { "enable": { "Health": { "current": 3 } } } }\n}\n';
+  const enabled = await hover(ENTITY, enable, '"Health"');
+  assert.match(enabled, /Hit points/);
+  assert.match(enabled, /Package: living\./);
+  assert.match(enabled, /"current": 60/, 'the resolved authored value comes with it');
+  // A name the engine resolves to no component is left to the schema's own error.
+  const disable = '{\n  "states": { "Guarded": { "disable": ["Health"] } }\n}\n';
+  assert.match(await hover(ENTITY, disable, '"Health"'), /Package: living\./);
+});
+
+test('hovers a preset with the layer it is', async () => {
+  const text = '{\n  "presets": ["swift"]\n}\n';
+  const shown = await hoverValue(ENTITY, text, '"presets":');
+  assert.match(shown, /reusable layer/);
+});
+
+test('leads a definition hover with the prose its file starts with', async () => {
+  const shown = await hover(ENTITY, '{\n  "descendsFrom": "guards/ogre"\n}\n', '"guards/ogre"');
+  assert.match(shown, /The courtyard ogre, which the yard keeps for its wall\./);
+  assert.match(shown, /Lineage: Actor/);
 });
 
 test('hovers an action call with its parameters', async () => {
@@ -250,7 +326,7 @@ test('completes definition paths, extensors and component names', async () => {
   const extensors = '{\n  "extensors": [""]\n}\n';
   assert.deepEqual(await labels(ENTITY, extensors, '""]'), ['"living"', '"-living"', '"armor"', '"-armor"']);
   const components = '{\n  "components": { "": {}}\n}\n';
-  assert.deepEqual(await labels(ENTITY, components, '""'), ['Health', 'Armor']);
+  assert.deepEqual(await labels(ENTITY, components, '""'), ['Health', 'Armor', 'Roll']);
 });
 
 test('reports schema violations against the registered types', async () => {
@@ -372,7 +448,8 @@ test('follows a path to the definition or preset it names', () => {
   const component = '{\n  "components": { "Health": { "current": 1 } }\n}\n';
   assert.equal(features.reference(ENTITY, inherits, inherits.indexOf('"guards/ogre"') + 2), '/project/guards/ogre/entity.jsonc');
   assert.equal(features.reference(ENTITY, grant, grant.indexOf('"guards/ogre"') + 2), '/project/guards/ogre/entity.jsonc');
-  assert.equal(features.reference(ENTITY, preset, preset.indexOf('"swift"') + 2), 'presets/swift.jsonc');
+  // A preset is followed to the file the host says holds it, not to a path built here.
+  assert.equal(features.reference(ENTITY, preset, preset.indexOf('"swift"') + 2), '/project/presets/swift.jsonc');
   assert.equal(features.reference(ENTITY, component, component.indexOf('Health') + 1), undefined);
   assert.equal(features.reference(ENTITY, inherits, inherits.indexOf('descendsFrom') + 1), undefined);
 });

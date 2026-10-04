@@ -14,8 +14,8 @@ pub mod session;
 
 pub use extensors::{DroppedEntry, ExtensorEntry, ExtensorWhy, SuggestedExtensor};
 pub use project::{
-    AuthoringProject, DefinitionInspection, Diagnostic, EntityEntry, EntityInspection, SpawnSource,
-    Unavailable,
+    AuthoringProject, DefinitionInspection, Diagnostic, EntityEntry, EntityInspection, SourceKind,
+    SpawnSource, Unavailable,
 };
 pub use session::{Applied, EditRequest, EditSession, Field, SessionError};
 
