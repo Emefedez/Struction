@@ -128,6 +128,21 @@ Rotation values are world angles even when the zone and spawner are rotated. The
 be finite and greater than zero. Source comments and unrelated overrides are preserved;
 undo restores the exact scene text before the operation or drag.
 
+## AI clients: MCP and the editor's assistant
+
+`struction_editor::ai` describes the operations above as tools for language models: a name, a description and a JSON Schema each, plus `INSTRUCTIONS` explaining definitions, scenes, field paths and how to work (inspect, ask `field_options`, edit, read diagnostics, undo). Calls go through `protocol::execute`, so a model's edits are validated against the whole project, refused with source diagnostics and undoable exactly like the GUI's. `edit` is offered as `set` and `remove`; `schema` lists component names, or with `component` returns one component's schema with the `$defs` it uses, since the whole schema is too large for a model's context.
+
+**MCP.** `struction-editor <project> --mcp` serves those tools as a Model Context Protocol server on stdin/stdout (newline-delimited JSON-RPC 2.0: `initialize`, `tools/list`, `tools/call`, `ping`), without a window. Operation failures come back as tool results with `isError` and the diagnostics, so the model can fix the cause. For Claude Code, build once and register it:
+
+```bash
+cargo build -p struction-editor
+claude mcp add struction -- "$PWD/target/debug/struction-editor" "$PWD/apps/playground/project" --mcp
+```
+
+Any MCP client takes the same command. The server has its own project session: edits land in the sources, and an open editor picks them up when it regains focus.
+
+**Assistant.** The editor's **Assistant** button (top right, or `Ctrl+K`) opens a chat with Claude that uses the same tools on the project the editor has open, so its changes appear in the scene tree and inspector at once and the editor's Undo takes each back. The current selection is sent with each message. Play tools are left out; play stays on the editor's controls. The key is read from `ANTHROPIC_API_KEY` or typed in for the session, never saved; the model defaults to `claude-opus-5-5` (`STRUCTION_ASSISTANT_MODEL` overrides it). Requests run on a thread; tool calls run on the editor's project between them, at most 40 rounds per message. **Stop** abandons the unfinished turn and puts the question back in the box; edits already made stay, each undoable.
+
 ## The VS Code extension
 
 `crates/struction_language` is a read-only host for editors, and `extensions/vscode` is the client built on it. The host answers two JSONL commands and never writes a source file:

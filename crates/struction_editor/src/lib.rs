@@ -1,8 +1,10 @@
 //! Headless authoring operations shared by the editor and automation tools.
 
+pub mod ai;
 pub mod extensors;
 pub mod hierarchy;
 pub mod history;
+pub mod mcp;
 pub use hierarchy::HierarchyNode;
 pub mod play;
 pub mod project;

@@ -5,8 +5,11 @@
 //! `struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision|poses|uvs|materials]]
 //! [--screenshot <directory>]`: `--mesh` opens a project-relative source in the mesh tool;
 //! `--screenshot` saves `editor.png` (and `mesh-tool.png`) there once everything has drawn, then
-//! quits, for checking the GUI without a person at the screen.
+//! quits, for checking the GUI without a person at the screen. `--headless` serves the JSONL
+//! authoring protocol on stdin/stdout and `--mcp` the same operations as a Model Context Protocol
+//! server, both without a window.
 
+mod assistant;
 mod game;
 mod inspector_fields;
 mod play_view;
@@ -32,19 +35,21 @@ use bevy_egui::{EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryE
 use crate::state::{Command, Editor};
 use crate::tools::{Mode, Request, Toolbox};
 
-const USAGE: &str = "struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision|poses|uvs|materials]] [--screenshot <directory>] [--blender <executable>] [--headless] [--play]";
+const USAGE: &str = "struction-editor [project-directory] [--mesh <asset> [--mode inspect|lods|collision|poses|uvs|materials]] [--screenshot <directory>] [--blender <executable>] [--headless | --mcp] [--play]";
 
 fn main() {
     let mut editor = Editor::default();
     let (mut mesh, mut mode, mut capture) = (None, Mode::Inspect, None);
     let mut blender = None;
     let mut headless = false;
+    let mut mcp = false;
     let mut play = false;
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| exit_with_usage());
         match arg.to_str() {
             Some("--headless") => headless = true,
+            Some("--mcp") => mcp = true,
             Some("--play") => play = true,
             Some("--blender") => blender = Some(std::path::PathBuf::from(value())),
             Some("--mesh") => mesh = Some(value().to_string_lossy().into_owned()),
@@ -65,19 +70,21 @@ fn main() {
             _ => exit_with_usage(),
         }
     }
-    if headless {
+    if headless || mcp {
         let Some(project) = editor.project.as_mut() else {
-            eprintln!("--headless requires a project directory");
+            eprintln!("--headless and --mcp require a project directory");
             if let Some(rejection) = &editor.rejection {
                 eprintln!("{}", rejection.message);
             }
             std::process::exit(2);
         };
-        if let Err(error) = struction_editor::protocol::serve(
-            project,
-            std::io::stdin().lock(),
-            std::io::stdout().lock(),
-        ) {
+        let (input, output) = (std::io::stdin().lock(), std::io::stdout().lock());
+        let served = if mcp {
+            struction_editor::mcp::serve(project, input, output)
+        } else {
+            struction_editor::protocol::serve(project, input, output)
+        };
+        if let Err(error) = served {
             eprintln!("Authoring protocol: {error}");
             std::process::exit(1);
         }
@@ -131,6 +138,7 @@ fn main() {
             struction_scene::render::SceneVisualsPlugin,
             viewport::ViewportPlugin,
             tools::ToolboxPlugin,
+            assistant::AssistantPlugin,
         ))
         .insert_resource(toolbox)
         .add_systems(Startup, ui_camera)

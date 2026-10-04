@@ -58,6 +58,8 @@ base64 = "0.22"
 twox-hash = { version = "2", default-features = false, features = ["std", "xxhash3_64"] }
 memmap2 = "0.9"
 tempfile = "3"
+# HTTPS for the editor's assistant (blocking, on its own thread).
+ureq = "3"
 
 struction_data = { path = "crates/struction_data" }
 struction_core = { path = "crates/struction_core" }

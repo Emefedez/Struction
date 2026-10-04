@@ -40,6 +40,7 @@ bevy = { workspace = true, features = [
 bevy_egui = { workspace = true }
 serde_json = { workspace = true }
 rfd = { workspace = true }
+ureq = { workspace = true }
 struction_data = { workspace = true }
 struction_editor = { workspace = true }
 struction_core = { workspace = true }
