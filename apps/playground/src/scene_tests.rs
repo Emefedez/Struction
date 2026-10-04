@@ -50,13 +50,45 @@ fn renamed_definitions_keep_save_aliases() {
     assert_eq!(aliases.resolve("terrain/planet"), "terrains/planet");
     assert_eq!(aliases.resolve("gravity/scene"), "regions/scene_gravity");
     assert_eq!(aliases.resolve("Ground"), "Terrain");
+    assert_eq!(aliases.resolve("Gravity"), "Region");
     assert_eq!(aliases.resolve("Region"), "Region");
     assert_eq!(aliases.resolve("Player"), "characters/player");
 }
 
 #[test]
+fn authored_paths_fit_case_insensitive_filesystems() {
+    fn check(directory: &Path) {
+        let mut names = std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().into_string().expect("UTF-8 content path");
+            if let Some(previous) = names.insert(name.to_lowercase(), name.clone()) {
+                panic!(
+                    "{} contains case-colliding paths {previous:?} and {name:?}",
+                    directory.display()
+                );
+            }
+            if entry.file_type().unwrap().is_dir() {
+                check(&entry.path());
+            }
+        }
+    }
+
+    check(&default_project());
+    check(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/struction_scene/content"));
+}
+
+#[test]
 fn spawns_keep_the_milestone_one_layout() {
-    let mut app = scene_app();
+    let dir = tempfile::tempdir().unwrap();
+    copy(&default_project(), dir.path());
+    // The editable project may move the planet; this fixture tests the original layout.
+    scene_field(
+        dir.path(),
+        "spawnerList.planet.spawns.planet.offset",
+        Some(serde_json::json!([0, 0, 0])),
+    );
+    let mut app = scene_app_at(dir.path().to_owned());
     for (path, translation) in [
         ("Playground/floors/stone", Vec3::new(0.0, -0.25, 5.0)),
         ("Playground/floors/slippery", Vec3::new(0.0, -0.25, -7.0)),
@@ -125,8 +157,15 @@ fn authored_player_can_roll_through_the_registered_action() {
     let mut app = scene_app();
     step(&mut app, 60);
     let player = entity(&mut app, "Playground/start/player");
-    // Supplied by the `dodge` extensor the player names.
-    assert_eq!(app.world().get::<Roll>(player), Some(&Roll::default()));
+    // The project can tune the move supplied by its definition's `dodge` extensor.
+    let authored = app
+        .world()
+        .resource::<struction_data::DefinitionStore>()
+        .get("characters/player")
+        .unwrap()
+        .component::<Roll>();
+    assert_eq!(app.world().get::<Roll>(player), authored);
+    assert!(authored.is_some());
     let start = app.world().get::<Position>(player).unwrap().0;
     app.world_mut()
         .resource_mut::<ActionQueue>()
@@ -157,8 +196,8 @@ fn actors_share_the_humanoid_shape_and_opt_into_moves() {
     assert_eq!(world.get::<Shape>(player), Some(&model));
     assert_eq!(world.get::<Shape>(sentry), Some(&model));
     assert!(world.get::<CharacterController>(sentry).is_some());
-    // The sentry names no extensors, so it can neither roll nor attack.
-    assert!(world.get::<Roll>(sentry).is_none());
+    // The project enables dodge on the sentry; combat remains absent.
+    assert!(world.get::<Roll>(sentry).is_some());
     assert!(world.get::<Attack>(sentry).is_none());
     assert!(world.get::<Attack>(player).is_some());
 
@@ -194,6 +233,12 @@ fn actors_share_the_humanoid_shape_and_opt_into_moves() {
         explain("characters/sentry"),
         [
             (
+                "dodge".into(),
+                ExtensorReason::Named {
+                    by: "characters/sentry".into()
+                }
+            ),
+            (
                 "character".into(),
                 ExtensorReason::Owns("CharacterController".into())
             ),
@@ -222,11 +267,37 @@ fn edit(path: &Path, from: &str, to: &str) {
     std::fs::write(path, text.replace(from, to)).unwrap();
 }
 
+fn scene_field(root: &Path, path: &str, value: Option<serde_json::Value>) {
+    let file = root.join("scenes/milestone1.jsonc");
+    let source = std::fs::read_to_string(&file).unwrap();
+    let path = struction_data::edit::parse_path(path);
+    if value.is_none()
+        && struction_data::edit::get_value(&source, &path)
+            .unwrap()
+            .is_none()
+    {
+        return;
+    }
+    let edited = match value {
+        Some(value) => struction_data::edit::set_value(&source, &path, value),
+        None => struction_data::edit::remove_value(&source, &path),
+    }
+    .unwrap();
+    std::fs::write(file, edited.text).unwrap();
+}
+
 #[test]
 fn saved_edits_reach_the_running_scene() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("project");
     copy(&default_project(), &root);
+    // A scene override intentionally masks definition edits. Let this fixture inherit Shape
+    // so the test exercises a saved change to the engine definition's project override.
+    scene_field(
+        &root,
+        "spawnerList.planet.spawns.planet.overrides.components.Shape",
+        None,
+    );
     let mut app = scene_app_at(root.clone());
     let stone = entity(&mut app, "Playground/floors/stone");
     let planet = entity(&mut app, "Playground/planet/planet");
@@ -237,7 +308,7 @@ fn saved_edits_reach_the_running_scene() {
         r#""offset": [0, 0, 6]"#,
     );
     // The planet is an engine definition: a project file at its path overrides it.
-    let planet_override = root.join("terrain/planet/entity.jsonc");
+    let planet_override = root.join("terrains/planet/entity.jsonc");
     std::fs::create_dir_all(planet_override.parent().unwrap()).unwrap();
     std::fs::write(
         &planet_override,

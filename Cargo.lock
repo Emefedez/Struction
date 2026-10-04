@@ -5628,6 +5628,7 @@ name = "struction-playground"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "serde_json",
  "struction_anim",
  "struction_assets",
  "struction_camera",
