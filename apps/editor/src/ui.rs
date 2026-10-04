@@ -317,63 +317,78 @@ fn top_bar(ui: &mut Ui, editor: &Editor, toolbox: &mut Toolbox, commands: &mut V
                 toolbox.rescan();
             }
         });
-        ui.menu_button("Programs…", |ui| {
-            ui.set_min_width(360.0);
-            ui.label(RichText::new("IDE command").strong());
-            ui.add(TextEdit::singleline(&mut toolbox.programs.ide_input).desired_width(360.0));
-            hint(ui, "Example: code --goto {file}:{line}:{column}");
-            hint(
-                ui,
-                "Quote paths with spaces. No shell expansion. A missing {file} is appended.",
-            );
-            if ui.button("Save IDE command").clicked()
-                && let Err(error) = toolbox.programs.save_ide()
-            {
-                toolbox.programs.error = Some(error);
-            }
-            ui.separator();
-            ui.label(RichText::new("Blender executable").strong());
-            ui.add(TextEdit::singleline(&mut toolbox.programs.input).desired_width(360.0));
-            ui.horizontal(|ui| {
-                if ui.button("Browse…").clicked()
-                    && let Some(path) = crate::programs::picker(&toolbox.programs.input)
-                {
-                    toolbox.programs.input = path.to_string_lossy().into_owned();
+        // Clicking into its text fields must not close it.
+        let config = egui::containers::menu::MenuConfig::new()
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        egui::containers::menu::MenuButton::new("Programs…")
+            .config(config)
+            .ui(ui, |ui| {
+                ui.set_min_width(360.0);
+                ui.label(RichText::new("IDE command").strong());
+                let installed = crate::programs::installed_ides();
+                if !installed.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        for (name, command) in installed {
+                            if ui.button(name).on_hover_text(&command).clicked() {
+                                toolbox.programs.ide_input = command;
+                            }
+                        }
+                    });
                 }
-                if ui
-                    .add_enabled(toolbox.tool.is_none(), egui::Button::new("Save"))
-                    .clicked()
-                {
-                    let path = PathBuf::from(toolbox.programs.input.trim());
-                    if let Err(error) = toolbox.programs.select(path, true) {
-                        toolbox.programs.error = Some(error);
-                    }
-                }
-                if ui.button("Detect").clicked() {
-                    toolbox.programs.input = struction_assets::Blender::default()
-                        .executable
-                        .to_string_lossy()
-                        .into_owned();
-                }
-            });
-            hint(ui, "Used for mesh import, preparation and Open in Blender.");
-            if toolbox.tool.is_some() {
+                ui.add(TextEdit::singleline(&mut toolbox.programs.ide_input).desired_width(360.0));
+                hint(ui, "Example: code --goto {file}:{line}:{column}");
                 hint(
                     ui,
-                    "Close the mesh tool before saving a different executable.",
+                    "Quote paths with spaces. No shell expansion. A missing {file} is appended.",
                 );
-            }
-            if let Some(error) = &toolbox.programs.error {
-                ui.colored_label(ui.visuals().error_fg_color, error);
-            }
-            if let Some(status) = &toolbox.programs.status {
-                ui.colored_label(theme::WARD, status);
-            }
-            ui.label(format!(
-                "Current: {}",
-                toolbox.programs.blender.executable.display()
-            ));
-        });
+                if ui.button("Save IDE command").clicked()
+                    && let Err(error) = toolbox.programs.save_ide()
+                {
+                    toolbox.programs.error = Some(error);
+                }
+                ui.separator();
+                ui.label(RichText::new("Blender executable").strong());
+                ui.add(TextEdit::singleline(&mut toolbox.programs.input).desired_width(360.0));
+                ui.horizontal(|ui| {
+                    if ui.button("Browse…").clicked()
+                        && let Some(path) = crate::programs::picker(&toolbox.programs.input)
+                    {
+                        toolbox.programs.input = path.to_string_lossy().into_owned();
+                    }
+                    if ui
+                        .add_enabled(toolbox.tool.is_none(), egui::Button::new("Save"))
+                        .clicked()
+                    {
+                        let path = PathBuf::from(toolbox.programs.input.trim());
+                        if let Err(error) = toolbox.programs.select(path, true) {
+                            toolbox.programs.error = Some(error);
+                        }
+                    }
+                    if ui.button("Detect").clicked() {
+                        toolbox.programs.input = struction_assets::Blender::default()
+                            .executable
+                            .to_string_lossy()
+                            .into_owned();
+                    }
+                });
+                hint(ui, "Used for mesh import, preparation and Open in Blender.");
+                if toolbox.tool.is_some() {
+                    hint(
+                        ui,
+                        "Close the mesh tool before saving a different executable.",
+                    );
+                }
+                if let Some(error) = &toolbox.programs.error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                if let Some(status) = &toolbox.programs.status {
+                    ui.colored_label(theme::WARD, status);
+                }
+                ui.label(format!(
+                    "Current: {}",
+                    toolbox.programs.blender.executable.display()
+                ));
+            });
     });
     let Some(project) = &editor.project else {
         ui.label(RichText::new("No project open").color(theme::MUTED));

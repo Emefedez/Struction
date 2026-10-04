@@ -176,15 +176,77 @@ impl Programs {
     }
 }
 
-fn default_ide() -> String {
-    std::env::var("VISUAL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            std::env::var("EDITOR")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
+/// Graphical IDEs the editor knows how to open at a line, by program name: their arguments
+/// after the program. Terminal editors (`$EDITOR` is often one) cannot open without a terminal.
+const KNOWN_IDES: [(&str, &str, &str); 8] = [
+    ("code", "VS Code", "--goto {file}:{line}:{column}"),
+    ("codium", "VSCodium", "--goto {file}:{line}:{column}"),
+    ("code-oss", "Code - OSS", "--goto {file}:{line}:{column}"),
+    (
+        "code-insiders",
+        "VS Code Insiders",
+        "--goto {file}:{line}:{column}",
+    ),
+    ("cursor", "Cursor", "--goto {file}:{line}:{column}"),
+    ("zed", "Zed", "{file}:{line}:{column}"),
+    ("subl", "Sublime Text", "{file}:{line}:{column}"),
+    (
+        "rustrover",
+        "RustRover",
+        "--line {line} --column {column} {file}",
+    ),
+];
+
+fn known_ide(program: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
+    let name = Path::new(program).file_name()?.to_str()?;
+    KNOWN_IDES.iter().find(|(known, ..)| *known == name)
+}
+
+/// Known IDEs on this machine, as (name, command template), for one-click choices.
+pub fn installed_ides() -> Vec<(&'static str, String)> {
+    KNOWN_IDES
+        .iter()
+        .filter(|(program, ..)| on_path(program))
+        .map(|(program, label, args)| (*label, format!("{program} {args}")))
+        .collect()
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| {
+            std::fs::metadata(dir.join(program)).is_ok_and(|meta| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    meta.is_file() && meta.permissions().mode() & 0o111 != 0
+                }
+                #[cfg(not(unix))]
+                meta.is_file()
+            })
         })
+    })
+}
+
+/// `$VISUAL` or `$EDITOR` when it names a known IDE, else the first IDE installed, else either
+/// variable as it is.
+fn default_ide() -> String {
+    let variables: Vec<String> = ["VISUAL", "EDITOR"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .filter(|value| !value.trim().is_empty())
+        .collect();
+    let program = |value: &String| shlex::split(value).and_then(|args| args.into_iter().next());
+    variables
+        .iter()
+        .find(|value| program(value).is_some_and(|p| known_ide(&p).is_some()))
+        .cloned()
+        .or_else(|| {
+            installed_ides()
+                .into_iter()
+                .next()
+                .map(|(_, command)| command)
+        })
+        .or_else(|| variables.first().cloned())
         .unwrap_or_else(|| "code --goto {file}:{line}:{column}".into())
 }
 
@@ -196,6 +258,12 @@ fn ide_arguments(
     let mut args = shlex::split(template).ok_or("Unclosed quotes in IDE command")?;
     if args.first().is_none_or(String::is_empty) {
         return Err("Choose an IDE command, for example code --goto {file}:{line}".into());
+    }
+    // A known IDE named without placeholders still opens at the line.
+    if args.len() == 1
+        && let Some((.., goto)) = known_ide(&args[0])
+    {
+        args.extend(goto.split(' ').map(str::to_owned));
     }
     let has_file = args.iter().any(|s| s.contains("{file}"));
     for arg in &mut args {
@@ -292,6 +360,17 @@ mod tests {
             location.file.to_str().unwrap()
         );
         assert!(ide_arguments("'broken", &location).is_err());
+        assert_eq!(
+            ide_arguments("/usr/bin/code", &location).unwrap()[1..],
+            [
+                "--goto",
+                "/tmp/project with spaces/$(touch nope){line}.jsonc:12:3"
+            ]
+        );
+        assert_eq!(
+            ide_arguments("zed", &location).unwrap()[1],
+            "/tmp/project with spaces/$(touch nope){line}.jsonc:12:3"
+        );
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("programs.json");
         let mut programs = Programs::load(Some(config.clone()));
