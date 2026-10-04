@@ -82,7 +82,7 @@ all = { level = "warn", priority = -1 }
 
 [profile.dev]
 opt-level = 1
-debug = 0
+debug = 1
 incremental = false
 
 [profile.dev.package."*"]

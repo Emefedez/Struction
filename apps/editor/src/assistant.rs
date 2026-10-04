@@ -178,6 +178,11 @@ impl Agent {
                 command
                     .args(["--json", "--skip-git-repo-check"])
                     .args(["-c", &format!("mcp_servers.struction.url={url:?}")])
+                    // This editor's validated, undoable tools are the assistant's edit channel.
+                    .args([
+                        "-c",
+                        "mcp_servers.struction.default_tools_approval_mode=\"approve\"",
+                    ])
                     .args(["-c", "sandbox_mode=\"read-only\""])
                     .args(["-c", "approval_policy=\"never\""]);
                 if !model.is_empty() {
@@ -748,24 +753,56 @@ fn assistant_ui(
         ctx.request_repaint_after(Duration::from_millis(100));
     }
 
+    let provider = &assistant.providers[assistant.agent];
+    let blocker = if editor.project.is_none() {
+        Some("Open a project first".to_owned())
+    } else if url.is_none() {
+        Some("The editor's MCP endpoint is off".to_owned())
+    } else if !provider.installed {
+        Some(format!("{} is not installed", provider.agent.label()))
+    } else {
+        None
+    };
     let mut open = true;
+    if assistant_window(ctx, assistant, blocker.as_deref(), &mut open)
+        && let (Some(url), Some(root)) = (&url, &editor.root)
+    {
+        let text = std::mem::take(&mut assistant.draft).trim().to_owned();
+        assistant.send(text, editor.selected.as_ref(), url, root);
+    }
+    toolbox.assistant.open = open;
+    Ok(())
+}
+
+fn assistant_window(
+    ctx: &egui::Context,
+    assistant: &mut Assistant,
+    blocker: Option<&str>,
+    open: &mut bool,
+) -> bool {
+    let mut send_requested = false;
     egui::Window::new("Assistant")
-        .open(&mut open)
-        .default_size([420.0, 560.0])
+        .id(egui::Id::new("struction assistant window"))
+        .open(open)
+        .default_size([460.0, 560.0])
+        .min_size([360.0, 360.0])
+        .resizable(true)
         .pivot(egui::Align2::RIGHT_TOP)
         .default_pos(ctx.content_rect().right_top() + egui::vec2(-12.0, 60.0))
-        // Above the viewport's overlays.
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             let busy = assistant.run.is_some();
             agent_choice(ui, assistant, busy);
             ui.separator();
 
-            let input_height = 86.0;
+            let input_height = 110.0;
+            let transcript_height = (ui.available_height() - input_height).max(80.0);
             egui::ScrollArea::vertical()
+                .id_salt("assistant transcript")
                 .auto_shrink(false)
                 .stick_to_bottom(true)
-                .max_height((ui.available_height() - input_height).max(80.0))
+                .max_height(transcript_height)
+                .min_scrolled_height(transcript_height)
                 .show(ui, |ui| {
                     if assistant.transcript.is_empty() {
                         ui.label(
@@ -778,8 +815,9 @@ fn assistant_ui(
                             .color(theme::MUTED),
                         );
                     }
-                    for entry in &assistant.transcript {
-                        transcript_entry(ui, entry);
+                    for (index, entry) in assistant.transcript.iter().enumerate() {
+                        // Identical calls still need independent expansion/selection state.
+                        ui.push_id(index, |ui| transcript_entry(ui, entry));
                     }
                     if busy {
                         ui.horizontal(|ui| {
@@ -790,35 +828,12 @@ fn assistant_ui(
                 });
             ui.separator();
 
-            let provider = &assistant.providers[assistant.agent];
-            let blocker = if editor.project.is_none() {
-                Some("Open a project first".to_owned())
-            } else if url.is_none() {
-                Some("The editor's MCP endpoint is off".to_owned())
-            } else if !provider.installed {
-                Some(format!("{} is not installed", provider.agent.label()))
-            } else {
-                None
-            };
-            let response = ui.add_enabled(
-                !busy,
-                egui::TextEdit::multiline(&mut assistant.draft)
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Message (Enter sends, Shift+Enter breaks the line)"),
-            );
-            let entered = response.has_focus()
-                && ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift);
+            let entered = composer(ui, &mut assistant.draft, !busy);
             ui.horizontal(|ui| {
                 let ready = !busy && blocker.is_none();
                 let send = ui.add_enabled(ready, egui::Button::new("Send")).clicked();
-                if (send || entered)
-                    && ready
-                    && !assistant.draft.trim().is_empty()
-                    && let (Some(url), Some(root)) = (&url, &editor.root)
-                {
-                    let text = std::mem::take(&mut assistant.draft).trim().to_owned();
-                    assistant.send(text, editor.selected.as_ref(), url, root);
+                if (send || entered) && ready && !assistant.draft.trim().is_empty() {
+                    send_requested = true;
                 }
                 if busy && ui.button("Stop").clicked() {
                     assistant.stop();
@@ -832,8 +847,36 @@ fn assistant_ui(
                 }
             });
         });
-    toolbox.assistant.open = open;
-    Ok(())
+    send_requested
+}
+
+fn composer(ui: &mut egui::Ui, draft: &mut String, enabled: bool) -> bool {
+    let id = ui.make_persistent_id("assistant draft");
+    // Consume Send before TextEdit can insert a newline or give up focus.
+    let entered = enabled
+        && ui.memory(|memory| memory.has_focus(id))
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    ui.add_enabled_ui(enabled, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("assistant composer scroll")
+            .auto_shrink(false)
+            .max_height(62.0)
+            .min_scrolled_height(62.0)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(draft)
+                        .id(id)
+                        .desired_rows(3)
+                        .desired_width(ui.available_width())
+                        .return_key(egui::KeyboardShortcut::new(
+                            egui::Modifiers::SHIFT,
+                            egui::Key::Enter,
+                        ))
+                        .hint_text("Message (Enter sends, Shift+Enter adds a line)"),
+                );
+            });
+    });
+    entered
 }
 
 fn agent_choice(ui: &mut egui::Ui, assistant: &mut Assistant, busy: bool) {
@@ -841,6 +884,8 @@ fn agent_choice(ui: &mut egui::Ui, assistant: &mut Assistant, busy: bool) {
         ui.horizontal(|ui| {
             let current = &assistant.providers[assistant.agent];
             egui::ComboBox::from_id_salt("assistant agent")
+                .width(145.0)
+                .truncate()
                 .selected_text(current.agent.label())
                 .show_ui(ui, |ui| {
                     for (index, provider) in assistant.providers.iter().enumerate() {
@@ -866,6 +911,7 @@ fn agent_choice(ui: &mut egui::Ui, assistant: &mut Assistant, busy: bool) {
             if provider.models.is_empty() {
                 ui.add(
                     egui::TextEdit::singleline(&mut assistant.model)
+                        .id_salt("assistant model text")
                         .hint_text("default model")
                         .desired_width(150.0),
                 );
@@ -876,6 +922,8 @@ fn agent_choice(ui: &mut egui::Ui, assistant: &mut Assistant, busy: bool) {
                     .find(|(id, _)| *id == assistant.model)
                     .map_or("Default model", |(_, name)| name.as_str());
                 egui::ComboBox::from_id_salt("assistant model")
+                    .width(150.0)
+                    .truncate()
                     .selected_text(name)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut assistant.model, String::new(), "Default model");
@@ -977,6 +1025,158 @@ pub fn header_buttons(ui: &mut egui::Ui, header: &mut Header) {
     }
 }
 
+fn reply_text(ui: &mut egui::Ui, text: &str) {
+    let mut fence = None;
+    let mut block = String::new();
+    let mut show = |text: &str, code: bool| {
+        if text.is_empty() {
+            return;
+        }
+        if code {
+            code_text(ui, text);
+        } else {
+            let mut job = egui::text::LayoutJob::default();
+            for (index, part) in text.split('`').enumerate() {
+                let inline = index % 2 == 1;
+                job.append(
+                    part,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: if inline {
+                            egui::TextStyle::Monospace.resolve(ui.style())
+                        } else {
+                            egui::TextStyle::Body.resolve(ui.style())
+                        },
+                        color: if inline {
+                            theme::WARD
+                        } else {
+                            ui.visuals().text_color()
+                        },
+                        ..default()
+                    },
+                );
+            }
+            ui.add(egui::Label::new(job).wrap().selectable(true));
+        }
+    };
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let marker = ["```", "~~~"]
+            .into_iter()
+            .find(|marker| trimmed.starts_with(marker));
+        if let Some(marker) = marker
+            && (fence.is_none() || fence == Some(marker))
+        {
+            show(&block, fence.is_some());
+            block.clear();
+            fence = if fence.is_some() { None } else { Some(marker) };
+        } else {
+            block.push_str(line);
+        }
+    }
+    // An unfinished fence is common while a reply streams in.
+    show(&block, fence.is_some());
+}
+
+fn code_text(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::new()
+        .fill(theme::BASE)
+        .corner_radius(4.0)
+        .inner_margin(6.0)
+        .show(ui, |ui| {
+            let job = syntax_job(text, ui.visuals().text_color());
+            ui.add(egui::Label::new(job).wrap().selectable(true));
+        });
+}
+
+/// Lightweight token colors for the JSON/JSONC and code snippets agents show; no grammar loads.
+fn syntax_job(text: &str, plain: egui::Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        let first = remaining.chars().next().unwrap();
+        let (length, color) = if remaining.starts_with("//") || first == '#' {
+            (
+                remaining.find('\n').unwrap_or(remaining.len()),
+                theme::MUTED,
+            )
+        } else if remaining.starts_with("/*") {
+            (
+                remaining.find("*/").map_or(remaining.len(), |end| end + 2),
+                theme::MUTED,
+            )
+        } else if matches!(first, '"' | '\'') {
+            let mut length = first.len_utf8();
+            let mut escaped = false;
+            for character in remaining[length..].chars() {
+                length += character.len_utf8();
+                if !escaped && character == first {
+                    break;
+                }
+                escaped = !escaped && character == '\\';
+            }
+            (length, theme::WARD)
+        } else if first.is_ascii_digit() {
+            let length = remaining
+                .find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_'))
+                .unwrap_or(remaining.len());
+            (length, theme::ASSET)
+        } else if first.is_alphabetic() || first == '_' {
+            let length = remaining
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(remaining.len());
+            let word = &remaining[..length];
+            let keyword = matches!(
+                word,
+                "true"
+                    | "false"
+                    | "null"
+                    | "None"
+                    | "True"
+                    | "False"
+                    | "fn"
+                    | "let"
+                    | "mut"
+                    | "pub"
+                    | "struct"
+                    | "enum"
+                    | "impl"
+                    | "use"
+                    | "if"
+                    | "else"
+                    | "match"
+                    | "for"
+                    | "while"
+                    | "return"
+                    | "self"
+                    | "Self"
+                    | "const"
+                    | "async"
+                    | "await"
+                    | "def"
+                    | "class"
+                    | "import"
+                    | "from"
+                    | "in"
+            );
+            (length, if keyword { theme::DEFINITION } else { plain })
+        } else {
+            (first.len_utf8(), plain)
+        };
+        job.append(
+            &remaining[..length],
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::monospace(12.5),
+                color,
+                ..default()
+            },
+        );
+        remaining = &remaining[length..];
+    }
+    job
+}
+
 fn transcript_entry(ui: &mut egui::Ui, entry: &Entry) {
     match entry {
         Entry::User(text) => {
@@ -990,7 +1190,7 @@ fn transcript_entry(ui: &mut egui::Ui, entry: &Entry) {
                 });
         }
         Entry::Reply(text) => {
-            ui.add(egui::Label::new(text.as_str()).selectable(true));
+            reply_text(ui, text);
         }
         Entry::Tool {
             name,
@@ -1008,7 +1208,7 @@ fn transcript_entry(ui: &mut egui::Ui, entry: &Entry) {
                     .small()
                     .color(color),
             )
-            .id_salt((name, summary.as_str(), input.to_string().len()))
+            .id_salt("tool details")
             .show(ui, |ui| {
                 let mut shown = |text: String| {
                     let mut text = text;
@@ -1016,12 +1216,9 @@ fn transcript_entry(ui: &mut egui::Ui, entry: &Entry) {
                         text.truncate(text.floor_char_boundary(2000));
                         text.push('…');
                     }
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(text).small().monospace())
-                            .selectable(true),
-                    );
+                    code_text(ui, &text);
                 };
-                shown(input.to_string());
+                shown(serde_json::to_string_pretty(input).unwrap_or_default());
                 if let Some((_, output)) = result {
                     shown(output.clone());
                 }
@@ -1052,6 +1249,167 @@ fn summarize(input: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn enter(modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn composer_sends_on_enter_and_only_shift_enter_inserts_a_line() {
+        let ctx = egui::Context::default();
+        let mut draft = "Hello".to_owned();
+        let mut frame = |events: Vec<egui::Event>| {
+            let mut sent = false;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..default()
+                },
+                |ui| {
+                    let id = ui.make_persistent_id("assistant draft");
+                    ui.memory_mut(|memory| memory.request_focus(id));
+                    sent = composer(ui, &mut draft, true);
+                },
+            );
+            output.textures_delta.clear();
+            sent
+        };
+        frame(vec![]);
+        assert!(frame(vec![enter(egui::Modifiers::NONE)]));
+        assert!(!frame(vec![
+            egui::Event::ModifiersChanged(egui::Modifiers::SHIFT),
+            enter(egui::Modifiers::SHIFT)
+        ]));
+        assert_eq!(draft, "Hello\n");
+    }
+
+    #[test]
+    fn colored_code_preserves_unicode_escapes_and_comments() {
+        let text =
+            "{\"name\": \"niño \\\"hi\\\"\", \"enabled\": true, \"n\": 42} // comment\n/* more */";
+        let job = syntax_job(text, egui::Color32::WHITE);
+        assert_eq!(job.text, text);
+        for (token, color) in [
+            ("true", theme::DEFINITION),
+            ("42", theme::ASSET),
+            ("// comment", theme::MUTED),
+        ] {
+            assert!(job.sections.iter().any(|section| {
+                &job.text[section.byte_range.start.0..section.byte_range.end.0] == token
+                    && section.format.color == color
+            }));
+        }
+    }
+
+    fn painted_text(shapes: &[egui::epaint::ClippedShape]) -> String {
+        fn collect(shape: &egui::epaint::Shape, text: &mut String) {
+            match shape {
+                egui::epaint::Shape::Text(shape) => {
+                    text.push_str(shape.galley.text());
+                    text.push('\n');
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        for shape in shapes {
+            collect(&shape.shape, &mut text);
+        }
+        text
+    }
+
+    #[test]
+    fn identical_tools_have_independent_ids_and_content_does_not_resize_the_window() {
+        let ctx = egui::Context::default();
+        let mut assistant = Assistant::default();
+        let frame = |assistant: &mut Assistant| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 900.0),
+                    )),
+                    ..default()
+                },
+                |_| {
+                    assistant_window(&ctx, assistant, None, &mut true);
+                },
+            );
+            output.textures_delta.clear();
+            let text = painted_text(&output.shapes);
+            assert!(
+                !text.contains("use of widget ID") && !text.contains("use of collapsing"),
+                "{text}"
+            );
+            ctx.memory(|memory| memory.area_rect(egui::Id::new("struction assistant window")))
+                .unwrap()
+        };
+        for _ in 0..4 {
+            frame(&mut assistant);
+        }
+        let initial = frame(&mut assistant);
+        for _ in 0..2 {
+            assistant.transcript.push(Entry::Tool {
+                name: "validate".into(),
+                input: json!({}),
+                result: Some((true, "ok".into())),
+            });
+        }
+        for _ in 0..3 {
+            frame(&mut assistant);
+        }
+        assistant.transcript.push(Entry::Reply(format!(
+            "```json\n{{\"long\": \"{}\"}}\n```",
+            "word".repeat(500)
+        )));
+        assistant.draft = "A long draft\n".repeat(100);
+        for _ in 0..3 {
+            frame(&mut assistant);
+        }
+        let after = frame(&mut assistant);
+        assert!(
+            (initial.width() - after.width()).abs() < 1.0,
+            "{initial:?} -> {after:?}"
+        );
+        assert!(
+            (initial.height() - after.height()).abs() < 1.0,
+            "{initial:?} -> {after:?}"
+        );
+    }
+
+    #[test]
+    fn codex_turns_trust_only_the_editors_mcp_tools_in_a_read_only_sandbox() {
+        for session in [None, Some("previous-session")] {
+            let command = Agent::Codex.command(
+                Path::new("codex"),
+                "",
+                session,
+                "http://127.0.0.1:47100/mcp",
+                "hello",
+            );
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_str().unwrap())
+                .collect();
+            assert!(
+                args.contains(&"mcp_servers.struction.default_tools_approval_mode=\"approve\"")
+            );
+            assert!(args.contains(&"sandbox_mode=\"read-only\""));
+            assert!(args.contains(&"approval_policy=\"never\""));
+            assert!(!args.iter().any(|arg| arg.contains("dangerously")));
+        }
+    }
 
     #[test]
     fn each_agents_output_becomes_the_same_transcript_events() {

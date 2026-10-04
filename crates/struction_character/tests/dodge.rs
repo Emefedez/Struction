@@ -412,3 +412,115 @@ fn a_refused_press_is_dropped_after_the_input_buffer() {
             .jump_requested
     );
 }
+
+#[test]
+fn a_cancel_window_locks_jump_even_when_rolling_is_not_in_its_block_list() {
+    let (mut app, body, _) = scene();
+    app.world_mut().get_mut::<Roll>(body).unwrap().cancel_into = vec![CancelInto {
+        action: CharacterAction::Jump,
+        after: 0.4,
+    }];
+    app.world_mut()
+        .get_mut::<CharacterController>(body)
+        .unwrap()
+        .jump_blocked_while
+        .clear();
+    request(&mut app, body);
+    step(&mut app, 1);
+    while app.world().get::<Rolling>(body).unwrap().elapsed < 0.3 {
+        step(&mut app, 1);
+    }
+    app.world_mut()
+        .get_mut::<CharacterIntent>(body)
+        .unwrap()
+        .jump_requested = true;
+    for _ in 0..12 {
+        let before = app.world().get::<Rolling>(body).unwrap().elapsed;
+        step(&mut app, 1);
+        if before < 0.4 {
+            assert!(app.world().get::<Rolling>(body).is_some());
+            assert!(
+                app.world().get::<LinearVelocity>(body).unwrap().y < 0.5,
+                "jump escaped its locked interval at {before}"
+            );
+        } else {
+            assert!(app.world().get::<Rolling>(body).is_none());
+            assert!(app.world().get::<LinearVelocity>(body).unwrap().y > 1.0);
+            assert_eq!(
+                app.world().get::<CharacterMove>(body).unwrap().recovery,
+                0.0
+            );
+            return;
+        }
+    }
+    panic!("cancel window did not accept the buffered jump");
+}
+
+#[test]
+fn a_fresh_press_refreshes_the_buffer_until_a_cancel_window_opens() {
+    let (mut app, body, _) = scene();
+    app.world_mut().entity_mut(body).insert(PlayerControlled);
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.world_mut().get_mut::<Roll>(body).unwrap().cancel_into = vec![CancelInto {
+        action: CharacterAction::Jump,
+        after: 0.35,
+    }];
+    request(&mut app, body);
+    step(&mut app, 6);
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .press(KeyCode::Space);
+    step(&mut app, 1);
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .clear();
+    while app.world().get::<Rolling>(body).unwrap().elapsed < 0.24 {
+        step(&mut app, 1);
+    }
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.release(KeyCode::Space);
+        keys.press(KeyCode::Space);
+    }
+    step(&mut app, 1);
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .clear();
+    for _ in 0..12 {
+        step(&mut app, 1);
+        if app.world().get::<Rolling>(body).is_none() {
+            assert!(app.world().get::<LinearVelocity>(body).unwrap().y > 1.0);
+            return;
+        }
+    }
+    panic!("the fresh press inherited the old press's expiry instead of cancelling");
+}
+
+#[test]
+fn an_unreached_cancel_window_stops_blocking_when_the_roll_finishes() {
+    let (mut app, body, _) = scene();
+    app.world_mut().get_mut::<Roll>(body).unwrap().cancel_into = vec![CancelInto {
+        action: CharacterAction::Jump,
+        after: 1.0,
+    }];
+    request(&mut app, body);
+    step(&mut app, 1);
+    while app.world().get::<Rolling>(body).unwrap().elapsed < 0.55 {
+        step(&mut app, 1);
+    }
+    app.world_mut()
+        .get_mut::<CharacterIntent>(body)
+        .unwrap()
+        .request(CharacterAction::Jump);
+    for _ in 0..10 {
+        step(&mut app, 1);
+        if app.world().get::<Rolling>(body).is_none() {
+            assert!(
+                app.world().get::<LinearVelocity>(body).unwrap().y > 1.0,
+                "the ended move's timed lock must not delay the buffered jump"
+            );
+            return;
+        }
+    }
+    panic!("the roll never finished");
+}

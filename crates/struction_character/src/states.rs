@@ -5,9 +5,9 @@
 use std::any::TypeId;
 use std::sync::Arc;
 
-use bevy::ecs::reflect::ReflectComponent;
+use bevy::ecs::reflect::{AppTypeRegistry, ReflectComponent};
 use bevy::prelude::*;
-use struction_core::{StateRule, StateRules};
+use struction_core::{ContributedState, StateRule, StateRules, documented_state, documented_states};
 
 use crate::{CharacterCondition, CharacterMove, CharacterState};
 
@@ -24,6 +24,35 @@ impl CharacterCondition {
             _ => return None,
         })
     }
+}
+
+/// The states the controller's own extensor contributes; the moves' are theirs to add.
+pub const CONTROLLER_STATES: [&str; 5] = [
+    "Grounded",
+    "Walking",
+    "Airborne",
+    "Swimming",
+    "Recovering",
+];
+
+/// `name` as a contributed state, documented by the [`CharacterCondition`] that holds it: the
+/// state a definition switches on and the condition a move is refused in are the same rule, so
+/// both are described by one doc comment.
+pub fn state(app: &App, name: &str) -> ContributedState {
+    let registry = app
+        .world()
+        .get_resource_or_init::<AppTypeRegistry>()
+        .read();
+    documented_state::<CharacterCondition>(&registry, name)
+}
+
+/// The same for every state the controller contributes.
+pub fn controller_states(app: &App) -> Vec<ContributedState> {
+    let registry = app
+        .world()
+        .get_resource_or_init::<AppTypeRegistry>()
+        .read();
+    documented_states::<CharacterCondition>(&registry, &CONTROLLER_STATES)
 }
 
 /// A component a rule changed: the rule, the component and its value before (`None`: absent).

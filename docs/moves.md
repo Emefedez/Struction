@@ -58,17 +58,29 @@ that is authored: removing `Rolling` from `Attack` lets a character swing mid-ro
 Jumps have the same list on the controller, `CharacterController.jump_blocked_while`
 (`["Rolling", "Attacking"]`), besides needing ground and not swimming.
 
-`cancel_into` (empty by default) opens cancel windows: `[{ "action": "Jump", "after": 0.3 }]` on
-a roll lets a jump end it from 0.3 s in; `[{ "action": "Roll", "after": 0.1 }]` on an attack is an
-attack cancel into a roll. Actions are `Jump`, `Roll` and `Attack`. A cancelled move ends without
-recovery, in the `Cancel` stage before any move starts, so the action happens in the same tick,
-still subject to its own `blocked_while`.
+`cancel_into` (empty by default) locks a listed action until `after` seconds have elapsed, then
+lets it replace the running move: `[{ "action": "Jump", "after": 0.3 }]` on a roll blocks jumping
+for its first 0.3 seconds and allows a jump cancel afterwards. Keep `Rolling` in
+`CharacterController.jump_blocked_while`: an accepted cancel removes that state before the jump,
+so the two settings work together. Removing that block also cannot bypass the timed lock.
+`[{ "action": "Roll", "after": 0.1 }]` on an attack similarly allows an attack cancel into a roll.
+Actions are `Jump`, `Roll` and `Attack`; `after` is seconds from the move's start, not a fraction
+or a delay from pressing the button. A threshold later than the move's duration never opens.
+
+Cancellation only happens when the replacement action can start: it needs its capability,
+valid tuning and no other blocking conditions (a jump still needs ground). An unavailable or
+blocked action leaves the move running. A successful cancel ends its source without recovery
+in the `Cancel` stage, and reserves that tick for the chosen action, preventing another buffered
+press from restarting the cancelled move. Simultaneous eligible cancels prefer Roll, Attack,
+then Jump, matching the normal start order. When authored moves overlap, every cancel window
+for the chosen action must be open; unrelated moves and recovery still count as blockers.
 
 A refused press is not lost at once: jump, roll and attack requests wait up to
 `CharacterController.input_buffer` seconds (0.15 by default; 0 drops them immediately) for
 whatever refuses them to end, so a jump pressed just before a roll ends, before its cancel window
 opens or before landing still happens. Presses a character has no move for, or whose tuning is
-invalid, are dropped at once.
+invalid, are dropped at once. A fresh press refreshes that action's buffer; holding a button
+does not repeatedly request it.
 
 `validate()` on either component reports the invalid field: durations must be finite and
 positive, everything else finite and nonnegative. Invalid tuning refuses the move and logs why.

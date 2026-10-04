@@ -267,7 +267,7 @@ fn live(
                 .filter(|(k, _)| !members.contains_key(*k))
                 .collect();
             if !absent.is_empty() {
-                ui.menu_button("Add field…", |ui| {
+                addition_menu(ui, "Add field…", |ui| {
                     for (key, prop) in absent {
                         ui.menu_button(key.replace('_', " "), |ui| {
                             if let Some(value) = addition(ui, target.schema, prop) {
@@ -284,7 +284,7 @@ fn live(
                 });
             }
             if let Some(prop) = schema.get("additionalProperties").filter(|s| s.is_object()) {
-                ui.menu_button("Add field…", |ui| {
+                addition_menu(ui, "Add field…", |ui| {
                     let id = ui.id().with("key");
                     let mut key = ui
                         .data_mut(|d| d.get_temp::<String>(id))
@@ -339,7 +339,7 @@ fn live(
                         .as_u64()
                         .is_none_or(|max| items.len() < max as usize);
                     ui.add_enabled_ui(can_add, |ui| {
-                        ui.menu_button("Add entry…", |ui| {
+                        addition_menu(ui, "Add entry…", |ui| {
                             if let Some(value) = addition(ui, target.schema, &schema["items"]) {
                                 commands.push(Command::AddEntry {
                                     file: target.file.clone(),
@@ -389,11 +389,78 @@ fn enum_picker(ui: &mut Ui, value: &mut Value, choices: &[Value]) -> bool {
 
 /// A temporary typed form. Its values only reach the project after Add is pressed.
 fn addition(ui: &mut Ui, root: &Value, schema: &Value) -> Option<Value> {
-    let id = ui.id().with("new-value");
-    let Some(mut value) = ui
-        .data_mut(|d| d.get_temp::<Value>(id))
-        .or_else(|| initial_value(root, schema))
+    let templates = entry_templates(root, schema);
+    if templates.is_empty() {
+        return addition_form(ui, root, schema, initial_value(root, schema));
+    }
+    let mut added = None;
+    for (name, value) in templates {
+        if value.is_object() || value.is_array() {
+            ui.menu_button(name, |ui| {
+                added = addition_form(ui, root, schema, Some(value));
+            });
+        } else if ui.button(name).clicked() {
+            added = Some(value);
+        }
+    }
+    added
+}
+
+fn addition_menu(ui: &mut Ui, label: &str, body: impl FnOnce(&mut Ui)) {
+    egui::containers::menu::MenuButton::new(label)
+        .config(
+            egui::containers::menu::MenuConfig::new()
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+        )
+        .ui(ui, body);
+}
+
+/// Offer the enum or a struct's action/state up front, rather than adding its first default.
+fn entry_templates(root: &Value, schema: &Value) -> Vec<(String, Value)> {
+    let variants = choices(root, schema);
+    if !variants.is_empty() {
+        return variants
+            .into_iter()
+            .map(|value| (choice_label(&value), value))
+            .collect();
+    }
+    let schema = shape(root, schema, None);
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return vec![];
+    };
+    let Some((key, variants)) = ["action", "state", "condition", "kind"]
+        .into_iter()
+        .filter_map(|key| {
+            properties
+                .get(key)
+                .map(|schema| (key, choices(root, schema)))
+        })
+        .find(|(_, variants)| !variants.is_empty())
     else {
+        return vec![];
+    };
+    let Some(base) = initial_value(root, schema) else {
+        return vec![];
+    };
+    variants
+        .into_iter()
+        .map(|variant| {
+            let name = choice_label(&variant);
+            let mut value = base.clone();
+            value[key] = variant;
+            (name, value)
+        })
+        .collect()
+}
+
+fn addition_form(
+    ui: &mut Ui,
+    root: &Value,
+    schema: &Value,
+    initial: Option<Value>,
+) -> Option<Value> {
+    let id = ui.id().with("new-value");
+    let Some(mut value) = ui.data_mut(|d| d.get_temp::<Value>(id)).or(initial) else {
         ui.weak("No editable schema is registered for this field.");
         return None;
     };
@@ -543,6 +610,88 @@ fn form(ui: &mut Ui, value: &mut Value, root: &Value, raw: &Value, depth: usize)
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn entries_offer_every_state_and_cancel_action_before_configuring() {
+        let schema = json!({
+            "$defs": {
+                "Action": {"enum": ["Jump", "Roll", "Attack"]},
+                "State": {"enum": ["Grounded", "Airborne", "Swimming", "Rolling", "Attacking"]}
+            },
+            "type": "object",
+            "properties": {
+                "action": {"$ref": "#/$defs/Action"},
+                "after": {"type": "number"}
+            }
+        });
+        assert_eq!(
+            entry_templates(&schema, &schema),
+            vec![
+                ("Jump".into(), json!({"action":"Jump", "after":0})),
+                ("Roll".into(), json!({"action":"Roll", "after":0})),
+                ("Attack".into(), json!({"action":"Attack", "after":0})),
+            ]
+        );
+        let states = entry_templates(&schema, &json!({"$ref":"#/$defs/State"}));
+        assert_eq!(states.len(), 5);
+        assert_eq!(states[3], ("Rolling".into(), json!("Rolling")));
+    }
+
+    #[test]
+    fn entry_menu_stays_open_while_configuring_and_adds_the_chosen_action() {
+        let ctx = egui::Context::default();
+        let schema = json!({"type":"object","properties":{
+            "action":{"enum":["Jump","Roll","Attack"]}, "after":{"type":"number"}
+        }});
+        let mut added = None;
+        let mut draw = |events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    addition_menu(ui, "Add entry…", |ui| {
+                        if let Some(value) = addition(ui, &schema, &schema) {
+                            added = Some(value);
+                            ui.close();
+                        }
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        let output = draw(vec![]);
+        let mut click = |position| {
+            draw(vec![egui::Event::PointerMoved(position)]);
+            draw(vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            draw(vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            draw(vec![])
+        };
+        let output = click(text_position(&output, "Add entry…"));
+        text_position(&output, "Jump");
+        text_position(&output, "Roll");
+        let output = click(text_position(&output, "Attack"));
+        let output = click(text_position(&output, "after"));
+        text_position(&output, "after");
+        click(text_position(&output, "Add"));
+        assert_eq!(added, Some(json!({"action":"Attack","after":0})));
+    }
 
     #[test]
     fn state_choices_follow_refs_and_tagged_variants_keep_their_payload() {

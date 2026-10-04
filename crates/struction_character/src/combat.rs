@@ -12,10 +12,8 @@ use struction_core::{
 use struction_gravity::LocalUp;
 
 use crate::{
-    CancelInto, CharacterCondition, CharacterController, CharacterIntent, CharacterLook,
-    CharacterMove, CharacterState, CharacterSystems,
-    controller::{cancel_opened, transport},
-    dodge,
+    CancelInto, CharacterAction, CharacterCondition, CharacterController, CharacterIntent,
+    CharacterLook, CharacterMove, CharacterState, CharacterSystems, controller::transport, dodge,
 };
 
 /// Melee tuning; its presence is the capability.
@@ -84,6 +82,9 @@ impl Attack {
                 return Err(error);
             }
         }
+        for window in &self.cancel_into {
+            window.validate()?;
+        }
         Ok(())
     }
 }
@@ -127,7 +128,7 @@ impl Plugin for CombatPlugin {
                     .doc("Melee swing that knocks back what it hits (left mouse or F, `combat/attack`)")
                     .supplies::<Attack>()
                     .requires("character")
-                    .state("Attacking"),
+                    .state(crate::states::state(app, "Attacking")),
             )
             .register_action(
                 ActionMeta::new("combat/attack")
@@ -145,32 +146,14 @@ impl Plugin for CombatPlugin {
             )
             .add_systems(
                 FixedPostUpdate,
-                (
-                    cancel_attack.in_set(CharacterSystems::Cancel),
-                    attack
-                        .in_set(CharacterSystems::Moves)
-                        .after(dodge::roll),
-                ),
+                attack.in_set(CharacterSystems::Moves).after(dodge::roll),
             );
-    }
-}
-
-/// Ends swings an asked-for action may cut short, without recovery.
-fn cancel_attack(
-    mut commands: Commands,
-    mut characters: Query<(Entity, &CharacterIntent, &Attacking, &mut CharacterMove)>,
-) {
-    for (entity, intent, swing, mut moving) in &mut characters {
-        if cancel_opened(intent, &swing.tuning.cancel_into, swing.elapsed) {
-            moving.end(CharacterCondition::Attacking, 0.0);
-            commands.entity(entity).remove::<Attacking>();
-        }
     }
 }
 
 fn request_attack(In(call): In<ActionCall>, mut characters: Query<&mut CharacterIntent>) {
     if let Ok(mut intent) = characters.get_mut(call.target) {
-        intent.attack_requested = true;
+        intent.request(CharacterAction::Attack);
     }
 }
 
@@ -234,7 +217,7 @@ fn attack(
         if tuning.is_none() {
             intent.attack_requested = false;
         }
-        let requested = intent.attack_requested;
+        let requested = intent.attack_requested && moving.allows_request(CharacterAction::Attack);
         let mut swing = match attacking {
             Some(swing)
                 if swing.phase() >= 1.0
@@ -339,5 +322,15 @@ mod tests {
             .contains("knockback")
         );
         assert!(Attack::default().validate().is_ok());
+        assert!(
+            invalid(Attack {
+                cancel_into: vec![CancelInto {
+                    action: CharacterAction::Roll,
+                    after: -0.1
+                }],
+                ..default()
+            })
+            .contains("cancel_into.after")
+        );
     }
 }

@@ -345,3 +345,111 @@ fn states_switch_components_while_they_hold() {
     assert!(app.world().get::<GravityField>(body).is_none());
     assert_eq!(app.world().get::<Attack>(body), Some(&Attack::default()));
 }
+
+#[test]
+fn an_unavailable_invalid_or_blocked_attack_does_not_cancel_a_roll() {
+    for reason in ["missing", "invalid", "blocked"] {
+        let (mut app, body) = scene();
+        app.world_mut().get_mut::<Roll>(body).unwrap().cancel_into = vec![CancelInto {
+            action: CharacterAction::Attack,
+            after: 0.1,
+        }];
+        match reason {
+            "missing" => {
+                app.world_mut().entity_mut(body).remove::<Attack>();
+            }
+            "invalid" => app.world_mut().get_mut::<Attack>(body).unwrap().duration = 0.0,
+            _ => app
+                .world_mut()
+                .get_mut::<Attack>(body)
+                .unwrap()
+                .blocked_while
+                .push(CharacterCondition::Grounded),
+        }
+        intent(&mut app, body).roll_requested = true;
+        step(&mut app, 12);
+        intent(&mut app, body).attack_requested = true;
+        step(&mut app, 1);
+        assert!(
+            app.world().get::<Rolling>(body).is_some(),
+            "{reason} attack ended the roll"
+        );
+        assert!(app.world().get::<Attacking>(body).is_none());
+        assert_eq!(
+            app.world().get::<CharacterMove>(body).unwrap().active,
+            [CharacterCondition::Rolling]
+        );
+    }
+}
+
+#[test]
+fn cancelling_into_jump_cannot_restart_roll_from_another_buffered_press() {
+    let (mut app, body) = scene();
+    app.world_mut().get_mut::<Roll>(body).unwrap().cancel_into = vec![CancelInto {
+        action: CharacterAction::Jump,
+        after: 0.2,
+    }];
+    intent(&mut app, body).roll_requested = true;
+    step(&mut app, 15);
+    {
+        let mut intent = intent(&mut app, body);
+        intent.roll_requested = true;
+        intent.jump_requested = true;
+    }
+    step(&mut app, 1);
+    assert!(app.world().get::<Rolling>(body).is_none());
+    assert!(app.world().get::<LinearVelocity>(body).unwrap().y > 1.0);
+    assert!(
+        app.world()
+            .get::<CharacterMove>(body)
+            .unwrap()
+            .active
+            .is_empty()
+    );
+}
+
+#[test]
+fn cancelling_overlapping_moves_checks_all_their_windows_and_other_blocks() {
+    let (mut app, body) = scene();
+    {
+        let mut roll = app.world_mut().get_mut::<Roll>(body).unwrap();
+        roll.blocked_while.clear();
+        roll.cancel_into = vec![CancelInto {
+            action: CharacterAction::Jump,
+            after: 0.3,
+        }];
+    }
+    {
+        let mut attack = app.world_mut().get_mut::<Attack>(body).unwrap();
+        attack.blocked_while.clear();
+        attack.cancel_into = vec![CancelInto {
+            action: CharacterAction::Jump,
+            after: 0.1,
+        }];
+    }
+    intent(&mut app, body).roll_requested = true;
+    intent(&mut app, body).attack_requested = true;
+    step(&mut app, 12);
+    intent(&mut app, body).jump_requested = true;
+    step(&mut app, 1);
+    assert!(app.world().get::<Rolling>(body).is_some());
+    assert!(app.world().get::<Attacking>(body).is_some());
+    app.world_mut()
+        .get_mut::<CharacterController>(body)
+        .unwrap()
+        .jump_blocked_while
+        .push(CharacterCondition::Grounded);
+    step(&mut app, 8);
+    intent(&mut app, body).request(CharacterAction::Jump);
+    step(&mut app, 1);
+    assert!(app.world().get::<Rolling>(body).is_some());
+    assert!(app.world().get::<Attacking>(body).is_some());
+    app.world_mut()
+        .get_mut::<CharacterController>(body)
+        .unwrap()
+        .jump_blocked_while = vec![CharacterCondition::Rolling, CharacterCondition::Attacking];
+    step(&mut app, 1);
+    assert!(app.world().get::<Rolling>(body).is_none());
+    assert!(app.world().get::<Attacking>(body).is_none());
+    assert!(app.world().get::<LinearVelocity>(body).unwrap().y > 1.0);
+}

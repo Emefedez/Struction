@@ -220,9 +220,15 @@ fn send_player_intent(
         intent.jump_held = actions.jump.held;
         // Edges and look deltas are latched: several frames can pass between fixed ticks, and
         // the simulation clears them when it consumes them.
-        intent.jump_requested |= actions.jump.pressed;
-        intent.roll_requested |= actions.roll.pressed;
-        intent.attack_requested |= actions.attack.pressed;
+        for (action, pressed) in [
+            (crate::CharacterAction::Jump, actions.jump.pressed),
+            (crate::CharacterAction::Roll, actions.roll.pressed),
+            (crate::CharacterAction::Attack, actions.attack.pressed),
+        ] {
+            if pressed {
+                intent.request(action);
+            }
+        }
         intent.look += actions.look;
     }
 }

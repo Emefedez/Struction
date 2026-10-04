@@ -4,7 +4,7 @@ use struction_core::{ExtensorAppExt, ExtensorMeta};
 use struction_gravity::{LocalGravity, LocalUp};
 use struction_physics::{EnvironmentSystems, Submersion, Surface};
 
-use crate::PlayerControlled;
+use crate::{Attack, Attacking, PlayerControlled, Roll, Rolling};
 
 /// Speed (m/s) away from the ground above which a character counts as airborne even if the
 /// ground probe still reaches: it is leaving the ground, not standing on it.
@@ -130,13 +130,21 @@ impl CharacterAction {
     pub const ALL: [CharacterAction; 3] = [Self::Jump, Self::Roll, Self::Attack];
 }
 
-/// A move's cancel window: from `after` seconds into it, asking for `action` ends the move
-/// without recovery, so the action starts in the same tick (still subject to its own
-/// `blocked_while`).
+/// Locks `action` until `after` seconds into a move, then lets it replace the move without
+/// recovery. Other blocking conditions and the target's capability still have to allow it.
 #[derive(Reflect, Clone, Copy, Debug, PartialEq)]
 pub struct CancelInto {
     pub action: CharacterAction,
     pub after: f32,
+}
+
+impl CancelInto {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.after.is_finite() || self.after < 0.0 {
+            return Err("cancel_into.after must be finite and nonnegative (seconds)");
+        }
+        Ok(())
+    }
 }
 
 /// Whether an asked-for action opens one of a running move's cancel windows.
@@ -147,6 +155,16 @@ pub fn cancel_opened(intent: &CharacterIntent, windows: &[CancelInto], elapsed: 
 }
 
 impl CharacterIntent {
+    /// Latches a fresh press and refreshes its buffer, including when an older press is waiting.
+    pub fn request(&mut self, action: CharacterAction) {
+        *self.request_mut(action) = true;
+        self.waited[match action {
+            CharacterAction::Jump => 0,
+            CharacterAction::Roll => 1,
+            CharacterAction::Attack => 2,
+        }] = 0.0;
+    }
+
     /// Whether `action` was asked for and not yet consumed.
     pub fn requests(&self, action: CharacterAction) -> bool {
         match action {
@@ -226,9 +244,26 @@ pub struct CharacterMove {
     pub facing: Option<Vec3>,
     /// Seconds left of `Recovering`, which follows the end of a move.
     pub recovery: f32,
+    /// Request gates resolved in the Cancel stage, before moves and jumps can start.
+    #[reflect(ignore)]
+    cancel_blocked: Vec<(CharacterAction, CharacterCondition)>,
+    #[reflect(ignore)]
+    cancel_target: Option<CharacterAction>,
 }
 
 impl CharacterMove {
+    pub(crate) fn allows_request(&self, action: CharacterAction) -> bool {
+        self.cancel_target.map_or_else(
+            || {
+                !self
+                    .cancel_blocked
+                    .iter()
+                    .any(|(blocked, source)| *blocked == action && self.active.contains(source))
+            },
+            |target| target == action,
+        )
+    }
+
     pub fn start(&mut self, condition: CharacterCondition) {
         if !self.active.contains(&condition) {
             self.active.push(condition);
@@ -327,7 +362,7 @@ pub enum CharacterCondition {
 pub enum CharacterSystems {
     /// Measures ground and water for this tick and counts down move recovery.
     Sense,
-    /// Running moves whose cancel window an asked-for action opens end, before anything starts.
+    /// Resolves timed request gates and eligible cancellations, before anything starts.
     Cancel,
     /// Extensors start, run and end timed moves (rolls, attacks) through [`CharacterMove`].
     Moves,
@@ -360,11 +395,7 @@ impl Plugin for CharacterControllerPlugin {
                     .owns::<CharacterController>()
                     .owns::<PlayerControlled>()
                     .requires("physics")
-                    .state("Grounded")
-                    .state("Walking")
-                    .state("Airborne")
-                    .state("Swimming")
-                    .state("Recovering"),
+                    .states(crate::states::controller_states(app)),
             )
             .configure_sets(
                 FixedPostUpdate,
@@ -387,6 +418,10 @@ impl Plugin for CharacterControllerPlugin {
             )
             .add_systems(
                 FixedPostUpdate,
+                cancel_moves.in_set(CharacterSystems::Cancel),
+            )
+            .add_systems(
+                FixedPostUpdate,
                 crate::states::apply_state_rules
                     .after(CharacterSystems::Moves)
                     .before(CharacterSystems::Control)
@@ -398,6 +433,113 @@ impl Plugin for CharacterControllerPlugin {
                     .chain()
                     .in_set(CharacterSystems::Control),
             );
+    }
+}
+
+type Cancelling<'a> = (
+    Entity,
+    &'a CharacterController,
+    &'a CharacterIntent,
+    &'a CharacterState,
+    &'a mut CharacterMove,
+    Option<&'a Roll>,
+    Option<&'a Rolling>,
+    Option<&'a Attack>,
+    Option<&'a Attacking>,
+);
+
+/// A cancellation and its replacement are one decision. Testing against the remaining moves
+/// keeps an unrelated blocker from ending a move without actually starting its replacement.
+fn cancel_moves(mut commands: Commands, mut characters: Query<Cancelling>) {
+    for (entity, controller, intent, state, mut moving, roll, rolling, attack, attacking) in
+        &mut characters
+    {
+        moving.cancel_blocked.clear();
+        moving.cancel_target = None;
+        let sources = [
+            rolling.map(|r| {
+                (
+                    CharacterCondition::Rolling,
+                    r.tuning.cancel_into.as_slice(),
+                    r.elapsed,
+                )
+            }),
+            attacking.map(|a| {
+                (
+                    CharacterCondition::Attacking,
+                    a.tuning.cancel_into.as_slice(),
+                    a.elapsed,
+                )
+            }),
+        ];
+        // Match the existing move-start priority: roll, attack, then the controller's jump.
+        for action in [
+            CharacterAction::Roll,
+            CharacterAction::Attack,
+            CharacterAction::Jump,
+        ] {
+            let windows = sources.map(|source| {
+                let (condition, windows, elapsed) = source?;
+                let after = windows
+                    .iter()
+                    .filter(|window| window.action == action)
+                    .map(|window| window.after)
+                    .reduce(f32::min)?;
+                Some((condition, elapsed >= after))
+            });
+            if windows.iter().all(Option::is_none) {
+                continue;
+            }
+            moving.cancel_blocked.extend(
+                windows
+                    .iter()
+                    .flatten()
+                    .map(|(source, _)| (action, *source)),
+            );
+            if !intent.requests(action)
+                || moving.cancel_target.is_some()
+                || windows.iter().flatten().any(|(_, open)| !open)
+            {
+                continue;
+            }
+            let mut remaining = moving.clone();
+            for (condition, _) in windows.iter().flatten() {
+                remaining.end(*condition, 0.0);
+            }
+            let eligible = match action {
+                CharacterAction::Jump => {
+                    state.grounded
+                        && !state.swimming
+                        && !remaining.blocked(state, &controller.jump_blocked_while, None)
+                }
+                CharacterAction::Roll => roll.is_some_and(|tuning| {
+                    tuning.validate().is_ok()
+                        && !remaining.active.contains(&CharacterCondition::Rolling)
+                        && !remaining.blocked(state, &tuning.blocked_while, None)
+                }),
+                CharacterAction::Attack => attack.is_some_and(|tuning| {
+                    tuning.validate().is_ok()
+                        && !remaining.active.contains(&CharacterCondition::Attacking)
+                        && !remaining.blocked(state, &tuning.blocked_while, None)
+                }),
+            };
+            if !eligible {
+                continue;
+            }
+            moving.cancel_target = Some(action);
+            for (condition, _) in windows.into_iter().flatten() {
+                moving.end(condition, 0.0);
+                match condition {
+                    CharacterCondition::Rolling => {
+                        commands.entity(entity).remove::<Rolling>();
+                    }
+                    CharacterCondition::Attacking => {
+                        commands.entity(entity).remove::<Attacking>();
+                    }
+                    _ => unreachable!("only timed moves provide cancel windows"),
+                }
+            }
+        }
     }
 }
 
@@ -604,6 +746,7 @@ fn control_characters(
         }
 
         if intent.jump_requested
+            && moving.allows_request(CharacterAction::Jump)
             && !moving.blocked(&state, &controller.jump_blocked_while, None)
             && state.grounded
             && !swimming

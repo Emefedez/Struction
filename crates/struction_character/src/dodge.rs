@@ -6,9 +6,8 @@ use struction_core::{ActionAppExt, ActionCall, ActionMeta, ExtensorAppExt, Exten
 use struction_gravity::LocalUp;
 
 use crate::{
-    CancelInto, CharacterCondition, CharacterController, CharacterIntent, CharacterLook,
-    CharacterMove, CharacterState, CharacterSystems,
-    controller::{cancel_opened, transport},
+    CancelInto, CharacterAction, CharacterCondition, CharacterController, CharacterIntent,
+    CharacterLook, CharacterMove, CharacterState, CharacterSystems, controller::transport,
 };
 
 /// Roll tuning; its presence is the capability.
@@ -60,6 +59,9 @@ impl Roll {
         if !self.recovery.is_finite() || self.recovery < 0.0 {
             return Err("Roll.recovery must be finite and nonnegative");
         }
+        for window in &self.cancel_into {
+            window.validate()?;
+        }
         Ok(())
     }
 }
@@ -108,7 +110,7 @@ impl Plugin for DodgePlugin {
                     .doc("Ground roll in the movement direction (Left Shift, `dodge/roll`)")
                     .supplies::<Roll>()
                     .requires("character")
-                    .state("Rolling"),
+                    .state(crate::states::state(app, "Rolling")),
             )
             .register_action(
                 ActionMeta::new("dodge/roll")
@@ -119,30 +121,14 @@ impl Plugin for DodgePlugin {
             )
             .add_systems(
                 FixedPostUpdate,
-                (
-                    cancel_roll.in_set(CharacterSystems::Cancel),
-                    roll.in_set(CharacterSystems::Moves),
-                ),
+                roll.in_set(CharacterSystems::Moves),
             );
-    }
-}
-
-/// Ends rolls an asked-for action may cut short, without recovery.
-fn cancel_roll(
-    mut commands: Commands,
-    mut characters: Query<(Entity, &CharacterIntent, &Rolling, &mut CharacterMove)>,
-) {
-    for (entity, intent, rolling, mut moving) in &mut characters {
-        if cancel_opened(intent, &rolling.tuning.cancel_into, rolling.elapsed) {
-            moving.end(CharacterCondition::Rolling, 0.0);
-            commands.entity(entity).remove::<Rolling>();
-        }
     }
 }
 
 fn request_roll(In(call): In<ActionCall>, mut characters: Query<&mut CharacterIntent>) {
     if let Ok(mut intent) = characters.get_mut(call.target) {
-        intent.roll_requested = true;
+        intent.request(CharacterAction::Roll);
     }
 }
 
@@ -168,7 +154,7 @@ pub(crate) fn roll(mut commands: Commands, time: Res<Time>, mut characters: Quer
         if tuning.is_none() {
             intent.roll_requested = false;
         }
-        let requested = intent.roll_requested;
+        let requested = intent.roll_requested && moving.allows_request(CharacterAction::Roll);
         let mut active = match rolling {
             Some(rolling)
                 if rolling.phase() >= 1.0
@@ -291,5 +277,17 @@ mod tests {
             .validate()
             .is_ok()
         );
+        for after in [-0.1, f32::INFINITY, f32::NAN] {
+            assert!(
+                invalid(Roll {
+                    cancel_into: vec![CancelInto {
+                        action: CharacterAction::Jump,
+                        after
+                    }],
+                    ..default()
+                })
+                .contains("cancel_into.after")
+            );
+        }
     }
 }

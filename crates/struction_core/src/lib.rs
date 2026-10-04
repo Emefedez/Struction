@@ -22,7 +22,8 @@ pub use dispatch::{
     ReactionHook, ReactionSource, Reactions, invoke_action, notify_wards, order_wards,
 };
 pub use extensors::{
-    ExtensorAppExt, ExtensorMeta, ExtensorRegistry, OwnedComponent, Participation,
+    ContributedState, ExtensorAppExt, ExtensorMeta, ExtensorRegistry, OwnedComponent,
+    Participation, documented_state, documented_states,
 };
 pub use grants::{ActionSet, GrantRecord, GrantRule, GrantsToWards, RefusesGrants};
 pub use identity::{Definition, DefinitionPath, IdentityError, StableId, StableIdGenerator};

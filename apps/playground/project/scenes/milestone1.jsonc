@@ -101,7 +101,12 @@
       "spawns": {
         "player": {
           "definition": "characters/player",
-          "offset": [0, 0.9, 0]
+          "offset": [1.2599530220031738, 0.8999999761581421, -0.19558143615722656],
+          "overrides": {
+            "components": {
+              "Attack": {}
+            }
+          }
         }
       }
     },
