@@ -687,7 +687,7 @@ mod tests {
         text_position(&output, "Jump");
         text_position(&output, "Roll");
         let output = click(text_position(&output, "Attack"));
-        let output = click(text_position(&output, "after"));
+        let output = click(text_position(&output, "0.0"));
         text_position(&output, "after");
         click(text_position(&output, "Add"));
         assert_eq!(added, Some(json!({"action":"Attack","after":0})));
