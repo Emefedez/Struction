@@ -355,7 +355,14 @@ impl PoseSolver {
             pose.locals[self.rig.root].scale = Vec3::ONE.lerp(loco.scale, w);
         }
         if let Some(looping) = frame.looping {
-            looping.apply(&self.rig, frame.base_poses, frame.root, frame.up, &mut pose)?;
+            looping.apply(
+                &self.rig,
+                frame.base_poses,
+                frame.locomotion.map(|output| output.gait_phase),
+                frame.root,
+                frame.up,
+                &mut pose,
+            )?;
         }
         if let Some(moving) = frame.moving {
             moving.apply(&self.rig, frame.base_poses, frame.root, frame.up, &mut pose)?;

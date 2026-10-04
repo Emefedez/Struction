@@ -23,6 +23,10 @@ pub struct PoseSequence {
     /// Repeats every `seconds`, wrapping from the last key to the first, until stopped.
     #[serde(skip_serializing_if = "is_false")]
     pub looping: bool,
+    /// A loop paced by the legs instead of `seconds`: one cycle per two steps, at 0 when the
+    /// left foot lifts and 0.5 when the right one does, holding while they stand.
+    #[serde(skip_serializing_if = "is_false")]
+    pub gait: bool,
     /// Length of a looping cycle. Moves stretch one-shots over their own duration; tools preview
     /// them at this length.
     pub seconds: f32,
@@ -46,6 +50,7 @@ impl Default for PoseSequence {
             doc: String::new(),
             keys: Vec::new(),
             looping: false,
+            gait: false,
             seconds: 1.0,
             takeover: 0.0,
             fade_in: 0.1,
@@ -130,6 +135,9 @@ impl PoseSequence {
             if index > 0 && key.at < self.keys[index - 1].at {
                 return invalid(format!("key {index} comes before the key preceding it"));
             }
+        }
+        if self.gait && !self.looping {
+            return invalid("only looping sequences can follow the gait".into());
         }
         if !self.seconds.is_finite() || self.seconds <= 0.0 {
             return invalid("seconds must be finite and greater than zero".into());

@@ -1049,7 +1049,9 @@ pub fn timeline(ui: &mut Ui, draft: &mut PoseDraft) {
             .on_hover_text("Show the selected pose by itself instead of the sequence");
         ui.checkbox(&mut draft.ghosts, "Ghosts")
             .on_hover_text("Faint skeletons of the keys the playhead is between");
-        let source = if sequence.looping {
+        let source = if sequence.gait {
+            "per cycle, steps pace it in game".to_owned()
+        } else if sequence.looping {
             "per cycle".to_owned()
         } else {
             draft
@@ -1645,6 +1647,13 @@ fn settings_section(ui: &mut Ui, draft: &mut PoseDraft) {
     ui.checkbox(&mut edited.looping, "Loop").on_hover_text(
         "Repeat while the state playing it holds; one-shots last their move's duration",
     );
+    if edited.looping {
+        ui.checkbox(&mut edited.gait, "Paced by the legs").on_hover_text(
+            "One cycle per two steps in game: 0 when the left foot lifts, 0.5 when the right one does",
+        );
+    } else {
+        edited.gait = false;
+    }
     ui.horizontal(|ui| {
         ui.add(
             egui::DragValue::new(&mut edited.seconds)
@@ -1652,7 +1661,9 @@ fn settings_section(ui: &mut Ui, draft: &mut PoseDraft) {
                 .range(0.05..=30.0)
                 .suffix(" s"),
         );
-        ui.label(if edited.looping {
+        ui.label(if edited.gait {
+            "per cycle in this preview"
+        } else if edited.looping {
             "per cycle"
         } else {
             "preview length without a move"

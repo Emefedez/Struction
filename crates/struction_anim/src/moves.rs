@@ -70,10 +70,13 @@ impl LoopPose {
         })
     }
 
+    /// Plays at `gait_phase` (the legs' [`GaitCycle`](crate::locomotion::GaitCycle)) when the
+    /// sequence follows the gait and the rig has legs, otherwise on its own clock.
     pub(crate) fn apply(
         &self,
         rig: &Rig,
         poses: &BasePoseSet,
+        gait_phase: Option<f32>,
         root: Transform,
         up: Vec3,
         pose: &mut Pose,
@@ -82,7 +85,9 @@ impl LoopPose {
             return Ok(());
         }
         let sequence = poses.sequence(&self.sequence)?;
-        let phase = sequence.phase_at(self.time);
+        let phase = gait_phase
+            .filter(|_| sequence.gait)
+            .unwrap_or_else(|| sequence.phase_at(self.time));
         let weight = self.weight.clamp(0.0, 1.0);
         play(
             sequence,
@@ -329,7 +334,7 @@ mod tests {
             looping.follow(Some("arm_swing"), 1.0 / 60.0);
             let mut pose = standing();
             looping
-                .apply(&rig, &poses, Transform::IDENTITY, Vec3::Y, &mut pose)
+                .apply(&rig, &poses, None, Transform::IDENTITY, Vec3::Y, &mut pose)
                 .unwrap();
             angles.push(pose.locals[arm].rotation.to_euler(EulerRot::XYZ).0);
         }
@@ -345,9 +350,36 @@ mod tests {
         assert_eq!(looping.weight, 0.0);
         let mut pose = standing();
         looping
-            .apply(&rig, &poses, Transform::IDENTITY, Vec3::Y, &mut pose)
+            .apply(&rig, &poses, None, Transform::IDENTITY, Vec3::Y, &mut pose)
             .unwrap();
         assert_eq!(pose, standing());
+    }
+
+    #[test]
+    fn a_gait_loop_follows_the_legs_instead_of_its_clock() {
+        let rig = humanoid::rig();
+        let poses = humanoid::base_poses();
+        assert!(poses.sequence("arm_swing").unwrap().gait);
+        let arm = rig.skeleton.joint_id("upper_arm_l").unwrap();
+        let angle = |time: f32, gait: Option<f32>| {
+            let looping = LoopPose {
+                sequence: "arm_swing".into(),
+                time,
+                weight: 1.0,
+            };
+            let mut pose = standing();
+            looping
+                .apply(&rig, &poses, gait, Transform::IDENTITY, Vec3::Y, &mut pose)
+                .unwrap();
+            pose.locals[arm].rotation.to_euler(EulerRot::XYZ).0
+        };
+        // The left arm is forward when the left foot lifts and back when the right one does,
+        // whatever the clock says; without legs the clock paces it.
+        for time in [0.0, 0.3, 0.55, 0.8] {
+            assert!(angle(time, Some(0.0)) > 0.3);
+            assert!(angle(time, Some(0.5)) < -0.2);
+        }
+        assert!((angle(0.55, None) - angle(0.0, Some(0.5))).abs() < 1e-5);
     }
 
     #[test]

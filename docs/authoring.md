@@ -283,8 +283,8 @@ model, from the list, or by walking the skeleton (`↑` parent, `↓` child, `Ta
 chosen joint glows, joints the pose sets are marked, and three rings turn it about its own
 axes by dragging, beside exact XYZ angles in degrees. **Mirror** copies the pose's joints on
 the selected side to the other, mirrored. Keys can also be added at the playhead, removed and
-reordered, and looping, length, takeover, fades, events and the pelvis tumble edited under
-Sequence settings. Apply checks the overrides against the rig, then writes sparse
+reordered, and looping (on a clock or paced by the legs), length, takeover, fades, events and
+the pelvis tumble edited under Sequence settings. Apply checks the overrides against the rig, then writes sparse
 `PoseTargets { poses, sequences }` as one validated, undoable source edit (the JSONL `edit`
 command does the same); engine definitions get project overrides. Runtime rigs merge them with
 the library when they change, and the swing's `strike` event times its hit.

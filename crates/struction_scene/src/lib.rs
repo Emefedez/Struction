@@ -201,7 +201,8 @@ impl Plugin for ScenePlugin {
         .register_type::<ColliderDensity>()
         .register_type::<Shape>()
         .register_type::<Look>()
-        .register_type::<struction_anim::base_pose::PoseTargets>();
+        .register_type::<struction_anim::base_pose::PoseTargets>()
+        .register_type::<struction_anim::moves::PlaySequence>();
     }
 }
 

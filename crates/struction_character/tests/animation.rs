@@ -127,6 +127,25 @@ fn a_played_sequence_loops_while_walking_and_blends_out_when_removed() {
         (looping.sequence.as_str(), looping.weight),
         ("arm_swing", 1.0)
     );
+    // The arm swing is paced by the legs: the left arm is forward as the left foot lifts.
+    let arm = humanoid::rig().skeleton.joint_id("upper_arm_l").unwrap();
+    let mut planted = [true, true];
+    let mut lifts = [Vec::new(), Vec::new()];
+    for _ in 0..120 {
+        step(&mut app, 1);
+        let pose = &app.world().get::<SolvedPose>(rig).unwrap().0;
+        let angle = pose.locals[arm].rotation.to_euler(EulerRot::XYZ).0;
+        for foot in feet(&app, rig) {
+            let side = usize::from(foot.limb == struction_anim::rig::Limb::RightFoot);
+            if planted[side] && !foot.planted {
+                lifts[side].push(angle);
+            }
+            planted[side] = foot.planted;
+        }
+    }
+    assert!(lifts.iter().all(|side| !side.is_empty()), "{lifts:?}");
+    assert!(lifts[0].iter().all(|&angle| angle > 0.3), "{lifts:?}");
+    assert!(lifts[1].iter().all(|&angle| angle < -0.2), "{lifts:?}");
     app.world_mut().entity_mut(body).remove::<PlaySequence>();
     step(&mut app, 30);
     assert_eq!(app.world().get::<LoopPose>(rig).unwrap().weight, 0.0);

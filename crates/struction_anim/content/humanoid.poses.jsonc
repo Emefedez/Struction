@@ -7,7 +7,9 @@
 // A sequence plays key poses in order. Each key reaches its pose at `at`, a fraction of the
 // sequence, easing from the previous key. A one-shot sequence is stretched over the move that
 // plays it (a roll's or an attack's `duration`); a `looping` one repeats every `seconds`,
-// wrapping from its last key back to its first, until the state that plays it ends.
+// wrapping from its last key back to its first, until the state that plays it ends; a looping
+// one with `gait` is paced by the legs instead, one cycle per two steps (0 when the left foot
+// lifts, 0.5 when the right one does), and `seconds` is only how tools preview it.
 //   takeover   fraction of locomotion, feet and constraints it replaces: 1 for the whole body,
 //              0 to leave walking legs alone
 //   fade_in    fraction of a one-shot sequence spent blending in, `fade_out` blending out
@@ -189,12 +191,13 @@
       "events": { "strike": 0.45 }
     },
     "arm_swing": {
-      "doc": "Arms swinging against the legs while walking; loop it from a `Walking` state",
+      "doc": "Arms swinging against the legs while walking; humanoids loop it in their `Walking` state",
       "keys": [
         { "pose": "arm_swing_left", "at": 0 },
         { "pose": "arm_swing_right", "at": 0.5 }
       ],
       "looping": true,
+      "gait": true,
       "seconds": 1.1
     }
   }

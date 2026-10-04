@@ -1,11 +1,15 @@
 // Anything that walks on two legs: a character capsule drawn as a procedurally animated humanoid
 // rig. It can do nothing beyond moving until a descendant names the extensors for it.
 // `CharacterController` fields tune movement (speeds, jump height, slopes); a walker with another
-// skeleton descends from `Actor` the same way and names another `rig`.
+// skeleton descends from `Actor` the same way and names another `rig`. While walking, the arms
+// swing in step with the legs.
 {
   "descendsFrom": "Actor",
   "components": {
     "CharacterController": {},
     "Shape": { "Rigged": { "rig": "humanoid" } }
+  },
+  "states": {
+    "Walking": { "enable": { "PlaySequence": { "sequence": "arm_swing" } } }
   }
 }

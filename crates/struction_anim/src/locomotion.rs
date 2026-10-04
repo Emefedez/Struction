@@ -196,6 +196,8 @@ pub struct LocomotionOutput {
     /// Fall speed of a touchdown that happened this update.
     pub landed: Option<f32>,
     pub footfalls: u32,
+    /// Where the legs are in their two-step cycle, see [`GaitCycle`].
+    pub gait_phase: f32,
 }
 
 #[derive(Clone, Debug, Reflect)]
@@ -208,8 +210,54 @@ pub struct LocomotionState {
     previous_velocity: Option<Vec3>,
     was_grounded: bool,
     initialized: bool,
+    cycle: GaitCycle,
     #[reflect(ignore)]
     output: LocomotionOutput,
+}
+
+/// The legs' two-step cycle as a phase: 0 when a leg of the first group (the left foot) lifts
+/// off, 0.5 when one of the other does, advancing in between at the pace of the last half cycle.
+/// It holds while the legs stand still, so sequences paced by it pause with them.
+#[derive(Clone, Copy, Debug, PartialEq, Reflect)]
+pub struct GaitCycle {
+    /// 0 or 0.5: which group lifted last.
+    start: f32,
+    since: f32,
+    /// Seconds between the last two lifts of different groups.
+    half: f32,
+}
+
+impl Default for GaitCycle {
+    fn default() -> Self {
+        Self {
+            start: 0.5,
+            since: f32::INFINITY,
+            half: 0.5,
+        }
+    }
+}
+
+impl GaitCycle {
+    pub fn phase(&self) -> f32 {
+        (self.start + 0.5 * (self.since / self.half).min(1.0)).rem_euclid(1.0)
+    }
+
+    fn advance(&mut self, dt: f32) {
+        self.since += dt;
+    }
+
+    /// A leg of `group` lifted off; the other group's lifts do not restart the half cycle.
+    fn lift(&mut self, group: u8, first: u8) {
+        let start = if group == first { 0.0 } else { 0.5 };
+        if start == self.start && self.since.is_finite() {
+            return;
+        }
+        if self.since.is_finite() {
+            self.half = self.since.clamp(0.1, 2.0);
+        }
+        self.start = start;
+        self.since = 0.0;
+    }
 }
 
 fn project(
@@ -262,6 +310,7 @@ impl LocomotionState {
             previous_velocity: None,
             was_grounded: true,
             initialized: false,
+            cycle: GaitCycle::default(),
             output: LocomotionOutput::default(),
         }
     }
@@ -419,6 +468,7 @@ impl LocomotionState {
             landing,
             landed,
             footfalls,
+            gait_phase: self.cycle.phase(),
         };
         &self.output
     }
@@ -491,6 +541,7 @@ impl LocomotionState {
             ..
         } = *gait;
         let mut footfalls = 0;
+        self.cycle.advance(dt);
 
         for i in 0..self.legs.len() {
             let leg = self.legs[i];
@@ -587,6 +638,8 @@ impl LocomotionState {
             if (blocked && !urgent) || planted <= 1 {
                 continue;
             }
+            let first = self.legs[0].spec.group;
+            self.cycle.lift(group, first);
             let leg = &mut self.legs[i];
             leg.phase = LegPhase::Swing {
                 from: leg.foot,
@@ -759,5 +812,59 @@ mod tests {
             min_stretch = min_stretch.min(state.update(&input, &ground, 1.0 / 60.0).scale.y - 1.0);
         }
         assert!(min_stretch < -0.03, "landing squashes");
+    }
+
+    #[test]
+    fn the_gait_phase_follows_the_lifts_and_holds_at_rest() {
+        let rig = humanoid::rig();
+        let mut state = LocomotionState::from_rig(&rig, LocomotionParams::default()).unwrap();
+        let ground = PlaneGround {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+        };
+        let velocity = Vec3::new(0.0, 0.0, -1.4);
+        let mut input = LocomotionInput {
+            root: Transform::IDENTITY,
+            velocity,
+            up: Vec3::Y,
+            grounded: true,
+            gravity: Vec3::NEG_Y * 9.81,
+        };
+        let dt = 1.0 / 60.0;
+        let mut planted = [true, true];
+        let (mut lifts, mut wraps) = (0, 0);
+        let mut previous = state.update(&input, &ground, dt).gait_phase;
+        for _ in 0..300 {
+            input.root.translation += velocity * dt;
+            let out = state.update(&input, &ground, dt);
+            for foot in &out.feet {
+                let side = usize::from(foot.limb == Limb::RightFoot);
+                if planted[side] && !foot.planted {
+                    lifts += 1;
+                    let expected = 0.5 * side as f32;
+                    assert!(
+                        (out.gait_phase - expected).abs() < 1e-5,
+                        "{side} lifts at {}",
+                        out.gait_phase
+                    );
+                }
+                planted[side] = foot.planted;
+            }
+            // Forward only, wrapping once per cycle.
+            let delta = (out.gait_phase - previous).rem_euclid(1.0);
+            assert!(delta < 0.5, "{previous} -> {}", out.gait_phase);
+            wraps += usize::from(out.gait_phase < previous);
+            previous = out.gait_phase;
+        }
+        assert!(lifts >= 6 && wraps >= 3, "{lifts} lifts, {wraps} cycles");
+
+        input.velocity = Vec3::ZERO;
+        for _ in 0..120 {
+            state.update(&input, &ground, dt);
+        }
+        let rest = state.output().gait_phase;
+        for _ in 0..60 {
+            assert_eq!(state.update(&input, &ground, dt).gait_phase, rest);
+        }
     }
 }

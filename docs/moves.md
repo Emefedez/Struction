@@ -136,9 +136,13 @@ the one before; `takeover` (0 to 1) is how much of locomotion, feet and constrai
 `fade_in`/`fade_out` bound one-shots; `events` name instants simulation acts on (`strike`); a
 `tumble` turns the pelvis over (the roll).
 
-A `looping` sequence repeats every `seconds`, wrapping from its last key to its first. A body
-plays one while it has a `PlaySequence` component, usually enabled by a state, so leaving the state
-interrupts it and it blends out over 0.2 seconds; it plays under any move:
+A `looping` sequence repeats every `seconds`, wrapping from its last key to its first. With
+`gait` it is paced by the legs instead: one cycle per two steps, at 0 when the left foot lifts
+and 0.5 when the right one does, advancing at the pace of the last step and holding while the
+feet stand (`seconds` is then only the tools' preview length). A body plays one while it has a
+`PlaySequence` component, usually enabled by a state, so leaving the state interrupts it and it
+blends out over 0.2 seconds; it plays under any move. Every `characters/humanoid` swings its
+arms against its legs this way:
 
 ```jsonc
 "states": {
