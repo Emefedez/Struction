@@ -104,7 +104,15 @@
           "offset": [1.2599530220031738, 0.8999999761581421, -0.19558143615722656],
           "overrides": {
             "components": {
-              "Attack": {}
+              "Attack": {},
+              "Roll": {
+                "cancel_into": [
+                  {
+                    "action": "Jump",
+                    "after": 0.33
+                  }
+                ]
+              }
             }
           }
         }

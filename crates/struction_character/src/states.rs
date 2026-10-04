@@ -5,8 +5,9 @@
 use std::any::TypeId;
 use std::sync::Arc;
 
-use bevy::ecs::reflect::{AppTypeRegistry, ReflectComponent};
+use bevy::ecs::reflect::ReflectComponent;
 use bevy::prelude::*;
+use bevy::reflect::TypeRegistry;
 use struction_core::{ContributedState, StateRule, StateRules, documented_state, documented_states};
 
 use crate::{CharacterCondition, CharacterMove, CharacterState};
@@ -26,33 +27,21 @@ impl CharacterCondition {
     }
 }
 
-/// The states the controller's own extensor contributes; the moves' are theirs to add.
-pub const CONTROLLER_STATES: [&str; 5] = [
-    "Grounded",
-    "Walking",
-    "Airborne",
-    "Swimming",
-    "Recovering",
-];
+/// The states the controller's own extensor contributes; a move's own state is its extensor's
+/// to add.
+pub const CONTROLLER_STATES: [&str; 5] =
+    ["Grounded", "Walking", "Airborne", "Swimming", "Recovering"];
 
-/// `name` as a contributed state, documented by the [`CharacterCondition`] that holds it: the
-/// state a definition switches on and the condition a move is refused in are the same rule, so
-/// both are described by one doc comment.
-pub fn state(app: &App, name: &str) -> ContributedState {
-    let registry = app
-        .world()
-        .get_resource_or_init::<AppTypeRegistry>()
-        .read();
-    documented_state::<CharacterCondition>(&registry, name)
+/// `name` as a state the `character` extensor documents by the [`CharacterCondition`] that holds
+/// it: the state a definition switches on and the condition a move is refused in are one rule, so
+/// both are described by a single doc comment.
+pub fn state(types: &TypeRegistry, name: &str) -> ContributedState {
+    documented_state::<CharacterCondition>(types, name)
 }
 
 /// The same for every state the controller contributes.
-pub fn controller_states(app: &App) -> Vec<ContributedState> {
-    let registry = app
-        .world()
-        .get_resource_or_init::<AppTypeRegistry>()
-        .read();
-    documented_states::<CharacterCondition>(&registry, &CONTROLLER_STATES)
+pub fn controller_states(types: &TypeRegistry) -> Vec<ContributedState> {
+    documented_states::<CharacterCondition>(types, &CONTROLLER_STATES)
 }
 
 /// A component a rule changed: the rule, the component and its value before (`None`: absent).

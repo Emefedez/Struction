@@ -3,7 +3,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::*;
-use struction_core::{ActionRegistry, ExtensorMeta, ExtensorRegistry};
+use struction_core::{ActionRegistry, ContributedState, ExtensorMeta, ExtensorRegistry};
 use struction_data::{
     DefinitionStore, DroppedExtensor, ExtensorReason, ExtensorUse, Suggestion, parse_jsonc,
 };
@@ -17,14 +17,14 @@ fn extensors() -> ExtensorRegistry {
         ExtensorMeta::inferred("living")
             .owns::<Health>()
             .requires("physics")
-            .state("Resting"),
+            .state(ContributedState::new("Resting", "Neither moving nor acting.")),
     );
     extensors.register(
         ExtensorMeta::opt_in("fire")
             .doc("Burns")
             .supplies::<Flammable>()
             .requires("living")
-            .state("Burning"),
+            .state(ContributedState::new("Burning", "On fire.")),
     );
     extensors.register(ExtensorMeta::opt_in("loot").owns::<Loot>());
     extensors

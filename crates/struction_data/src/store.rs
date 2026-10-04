@@ -284,7 +284,11 @@ impl DefinitionStore {
                     .iter()
                     .map(|e| (e.name.clone(), e.doc.clone()))
                     .collect(),
-                states: self.extensors.states().map(str::to_owned).collect(),
+                states: self
+                    .extensors
+                    .state_docs()
+                    .map(|(name, doc)| (name.to_owned(), doc.to_owned()))
+                    .collect(),
                 actions: actions
                     .descriptors()
                     .iter()

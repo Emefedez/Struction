@@ -23,8 +23,8 @@ pub struct SchemaOptions {
     pub extra_sections: Vec<String>,
     /// Registered extensors with their descriptions, offered as `extensors` completions.
     pub extensors: Vec<(String, String)>,
-    /// States extensors contribute, offered as `states` keys.
-    pub states: Vec<String>,
+    /// States extensors contribute with what holds each one, offered as `states` keys.
+    pub states: Vec<(String, String)>,
     /// Registered actions with their descriptions, offered wherever an action is named.
     pub actions: Vec<(String, String)>,
 }
@@ -96,10 +96,19 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
 
     let mut properties = Map::new();
     properties.insert("$schema".into(), json!({ "type": "string" }));
-    properties.insert("descendsFrom".into(), string_or_enum(&options.definitions));
+    properties.insert(
+        "descendsFrom".into(),
+        described(
+            string_or_enum(&options.definitions),
+            "Inherits this definition, its components and named extensors. Every lineage ends in a primordial type.",
+        ),
+    );
     properties.insert(
         "presets".into(),
-        json!({ "type": "array", "items": string_or_enum(&options.presets) }),
+        described(
+            json!({ "type": "array", "items": string_or_enum(&options.presets) }),
+            "Named reusable layers applied before this definition’s own overrides.",
+        ),
     );
     let extensor = if options.extensors.is_empty() {
         json!({ "type": "string" })
@@ -127,14 +136,23 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
             "description": "Packages extending this definition, added to those it inherits.",
         }),
     );
-    properties.insert("transform".into(), transform);
+    properties.insert(
+        "transform".into(),
+        described(
+            transform,
+            "Placement of every instance of this definition, folded in as its `Transform` component.",
+        ),
+    );
     properties.insert(
         "components".into(),
-        json!({
-            "type": "object",
-            "properties": component_props,
-            "additionalProperties": false,
-        }),
+        described(
+            json!({
+                "type": "object",
+                "properties": component_props,
+                "additionalProperties": false,
+            }),
+            "Registered Rust components. Omitted fields inherit; null removes an inherited component.",
+        ),
     );
     let components = properties["components"].clone();
     properties.insert(
@@ -142,7 +160,11 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
         json!({
             "type": "object",
             "description": "Components enabled and disabled while a state holds.",
-            "propertyNames": string_or_enum(&options.states),
+            "propertyNames": with_docs(
+                string_or_enum(&names(&options.states)),
+                &descriptions(&options.states),
+                "States packages contribute, each documented by what holds while it does.",
+            ),
             "additionalProperties": {
                 "type": "object",
                 "properties": {
@@ -154,7 +176,10 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
             },
         }),
     );
-    properties.insert("constraints".into(), json!({ "type": "array" }));
+    properties.insert(
+        "constraints".into(),
+        described(json!({ "type": "array" }), "Kept as authored; no package reads it yet."),
+    );
 
     // A reaction names two actions and hooks on one of them, so every name is an enum of the
     // registered actions rather than a free string.
@@ -181,7 +206,10 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
     });
     properties.insert(
         "reactions".into(),
-        json!({ "type": "array", "items": reaction }),
+        described(
+            json!({ "type": "array", "items": reaction }),
+            "Instantaneous action hooks: source is this, master or wards; choose after or before, then call with typed args.",
+        ),
     );
 
     let definitions = options.definitions.clone();
@@ -200,7 +228,10 @@ pub fn entity_schema(registry: &TypeRegistry, options: &SchemaOptions) -> Value 
     });
     properties.insert(
         "grantsToWards".into(),
-        json!({ "type": "array", "items": grant }),
+        described(
+            json!({ "type": "array", "items": grant }),
+            "Capabilities granted by a master to wards matching a definition lineage.",
+        ),
     );
     for section in &options.extra_sections {
         if properties.contains_key(section) {
@@ -322,12 +353,12 @@ impl Generator<'_> {
                     return json!({ "anyOf": [{ "type": "null" }, inner] });
                 }
                 self.define(info, |g| {
-                    let mut unit = Vec::new();
+                    let mut unit: Vec<(&'static str, Option<&str>)> = Vec::new();
                     let mut alternatives = Vec::new();
                     for variant in ei.iter() {
                         let payload = match variant {
                             VariantInfo::Unit(v) => {
-                                unit.push(v.name());
+                                unit.push((v.name(), v.docs().map(str::trim)));
                                 continue;
                             }
                             VariantInfo::Tuple(v) => {
@@ -365,7 +396,20 @@ impl Generator<'_> {
                         }));
                     }
                     if !unit.is_empty() {
-                        alternatives.insert(0, json!({ "enum": unit }));
+                        // Unit variants read as one set of values; a doc comment on any of them
+                        // documents the values, which is what a completion or hover shows.
+                        let names: Vec<&str> = unit.iter().map(|(name, _)| *name).collect();
+                        let documented = unit.iter().any(|(_, doc)| doc.is_some());
+                        let value = if documented {
+                            let docs: Vec<Value> = unit
+                                .iter()
+                                .map(|(_, doc)| doc.map_or(Value::Null, |doc| json!(doc)))
+                                .collect();
+                            json!({ "enum": names, "enumDescriptions": docs })
+                        } else {
+                            json!({ "enum": names })
+                        };
+                        alternatives.insert(0, value);
                     }
                     json!({ "oneOf": alternatives })
                 })
@@ -393,6 +437,14 @@ fn with_docs(mut schema: Value, docs: &[String], description: &str) -> Value {
             "enumDescriptions".into(),
             Value::Array(docs.iter().cloned().map(Value::String).collect()),
         );
+        object.insert("description".into(), json!(description));
+    }
+    schema
+}
+
+/// What a section means, which no registered type can say: this is the engine's own vocabulary.
+fn described(mut schema: Value, description: &str) -> Value {
+    if let Some(object) = schema.as_object_mut() {
         object.insert("description".into(), json!(description));
     }
     schema

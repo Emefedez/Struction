@@ -3,6 +3,7 @@
 //! the character through the `combat/hit` action, so definitions can react to being hit.
 
 use avian3d::prelude::*;
+use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
 use struction_anim::base_pose::{BasePoseSet, PoseTargets};
 use struction_core::{
@@ -121,14 +122,15 @@ impl Plugin for CombatPlugin {
         if !app.world().contains_resource::<BasePoseSet>() {
             app.insert_resource(struction_anim::humanoid::base_poses());
         }
-        app.register_type::<Attack>()
-            .register_type::<Attacking>()
-            .register_extensor(
+        app.register_type::<Attack>().register_type::<Attacking>();
+        let attacking =
+            crate::states::state(&app.world().resource::<AppTypeRegistry>().read(), "Attacking");
+        app.register_extensor(
                 ExtensorMeta::opt_in("combat")
                     .doc("Melee swing that knocks back what it hits (left mouse or F, `combat/attack`)")
                     .supplies::<Attack>()
                     .requires("character")
-                    .state(crate::states::state(app, "Attacking")),
+                    .state(attacking),
             )
             .register_action(
                 ActionMeta::new("combat/attack")

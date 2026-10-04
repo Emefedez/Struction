@@ -676,3 +676,27 @@ fn a_freely_orbiting_camera_turns_the_body_toward_its_movement() {
     );
     assert!(position(&app, hero).x > 1.0);
 }
+
+#[test]
+fn every_contributed_state_says_what_holds_it() {
+    let app = headless_app_with((CharacterPlugins, DodgePlugin, CombatPlugin));
+    let registry = app.world().resource::<struction_core::ExtensorRegistry>();
+    let docs: Vec<_> = registry.state_docs().collect();
+    let doc = |name: &str| {
+        docs.iter()
+            .find(|(state, _)| *state == name)
+            .map(|(_, doc)| *doc)
+    };
+    // The text comes from the condition's own doc comment, so a state a definition switches on
+    // and the condition a move is refused in describe themselves the same way.
+    assert!(
+        doc("Walking").is_some_and(|doc| doc.contains("moving along the ground")),
+        "{:?}",
+        doc("Walking")
+    );
+    assert!(doc("Rolling").is_some_and(|doc| doc.contains("ground roll")));
+    assert!(doc("Attacking").is_some_and(|doc| doc.contains("swing")));
+    for (state, doc) in docs {
+        assert!(!doc.trim().is_empty(), "{state} is undocumented");
+    }
+}

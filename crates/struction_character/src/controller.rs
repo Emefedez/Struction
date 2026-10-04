@@ -1,4 +1,5 @@
 use avian3d::{physics_transform::PhysicsTransformSystems, prelude::*};
+use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
 use struction_core::{ExtensorAppExt, ExtensorMeta};
 use struction_gravity::{LocalGravity, LocalUp};
@@ -350,8 +351,11 @@ pub enum CharacterCondition {
     Walking,
     /// Jumping or falling: neither on walkable ground nor swimming.
     Airborne,
+    /// In water or another buoyant volume.
     Swimming,
+    /// Tumbling in a ground roll, which steering and other actions are refused in.
     Rolling,
+    /// Mid-swing in a melee attack, from the request until the swing lands or is cancelled.
     Attacking,
     /// After a move ended, for its `recovery` seconds. Refuses starting a move, never cuts one
     /// short.
@@ -388,14 +392,17 @@ impl Plugin for CharacterControllerPlugin {
             .register_type::<Vec<CharacterCondition>>()
             .register_type::<CharacterAction>()
             .register_type::<CancelInto>()
-            .register_type::<Vec<CancelInto>>()
-            .register_extensor(
+            .register_type::<Vec<CancelInto>>();
+        // The states this extensor contributes are the conditions the controller holds itself,
+        // read from the reflected type now that it is registered.
+        let states = crate::states::controller_states(&app.world().resource::<AppTypeRegistry>().read());
+        app.register_extensor(
                 ExtensorMeta::inferred("character")
                     .doc("A capsule that walks, jumps and swims under local gravity")
                     .owns::<CharacterController>()
                     .owns::<PlayerControlled>()
                     .requires("physics")
-                    .states(crate::states::controller_states(app)),
+                    .states(states),
             )
             .configure_sets(
                 FixedPostUpdate,

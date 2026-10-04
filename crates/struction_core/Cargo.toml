@@ -9,6 +9,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-bevy = { workspace = true }
+# `reflect_documentation` puts doc comments on reflected types and their variants into the
+# registrations, which is where a contributed state's documentation is read from.
+bevy = { workspace = true, features = ["reflect_documentation"] }
 thiserror = { workspace = true }
 uuid = { workspace = true }

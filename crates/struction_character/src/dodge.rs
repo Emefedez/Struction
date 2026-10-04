@@ -1,6 +1,7 @@
 //! The `dodge` extensor: an optional ground roll. Requests are consumed in the fixed-step
 //! simulation, not by animation.
 
+use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::prelude::*;
 use struction_core::{ActionAppExt, ActionCall, ActionMeta, ExtensorAppExt, ExtensorMeta};
 use struction_gravity::LocalUp;
@@ -103,14 +104,14 @@ pub struct DodgePlugin;
 
 impl Plugin for DodgePlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<Roll>()
-            .register_type::<Rolling>()
-            .register_extensor(
+        app.register_type::<Roll>().register_type::<Rolling>();
+        let rolling = crate::states::state(&app.world().resource::<AppTypeRegistry>().read(), "Rolling");
+        app.register_extensor(
                 ExtensorMeta::opt_in("dodge")
                     .doc("Ground roll in the movement direction (Left Shift, `dodge/roll`)")
                     .supplies::<Roll>()
                     .requires("character")
-                    .state(crate::states::state(app, "Rolling")),
+                    .state(rolling),
             )
             .register_action(
                 ActionMeta::new("dodge/roll")

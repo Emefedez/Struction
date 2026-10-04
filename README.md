@@ -2,7 +2,7 @@
 
 A data-driven game engine derived from Bevy, focused on fast authoring through composition, procedural animation, and small integrated tools.
 
-This describes the intended design. The workspace has headless engine packages, world integration tests and a native physics playground ([development setup](docs/development.md)); current implementation status is tracked in [AGENTS.md](AGENTS.md). Rationale and adopted decisions are in the [design review](docs/design-review.md). Scope is sized for a solo developer. The first version targets Linux only.
+This describes the design and current implementation direction. The workspace has headless engine packages, world integration tests, a native physics playground and an editor ([development setup](docs/development.md)); detailed implementation status is tracked in [AGENTS.md](AGENTS.md). Rationale and adopted decisions are in the [design review](docs/design-review.md). Scope is sized for a solo developer. Linux is the reference development platform; macOS development is supported, while Windows and web remain follow-up targets.
 
 ## Core model
 
@@ -42,8 +42,6 @@ Definitions are classes; spawned instances are objects. Primordial engine types 
 "grantsToWards": [
   { "to": "minions/ogre", "components": { "Follower": { "distance": 3 } }, "actions": ["fetch", "guard"] }
 ]
-
-//I prefer the master naming, but I am unsure of "newMasterIs", think about it.
 ```
 
 Groups (squads, encounters, fish schools) are master entities. Queries combine both relations: "wards of this player that descend from `minions/ogre`". Streaming residency is tracked separately, so crossing a streaming boundary never changes a relation.
@@ -177,9 +175,9 @@ or modified open-source tools.
 Keep the toolset narrow: reuse existing editor controls, add mini-programs only
 for concrete tasks, and leave vector editing and SVG support out of scope.
 
-Native editor, Linux first. Edits are recorded as undoable changes (file, field, previous and next value); continuous edits such as a gizmo drag form one transaction. Play mode runs on a copy of the world and is excluded from history. **Open in…** hands a source file to the full application; saving triggers reimport and hot reload. `.blend` files are converted through headless Blender and glTF; shipped games do not need Blender.
+The native editor is built with egui and is Linux-first. It opens a project, shows the scene and definition hierarchy, edits reflected fields and lists, provides toolbox workflows, and supports selection, spawn transforms, undo/redo and isolated Play mode. Edits are recorded as undoable changes (file, field, previous and next value); continuous edits such as a gizmo drag form one transaction. Play mode runs on a copy of the world and is excluded from history. **Open in…** hands a source file to the full application; saving triggers reimport and hot reload. `.blend` files are converted through headless Blender and glTF; shipped games do not need Blender.
 
-**AI authoring is a first-class requirement.** Inspection, validation and editing operations must be callable without a window, using structured data and the same headless APIs as the editor. Component schemas and action metadata make capabilities discoverable; edits preserve comments and stable identities, participate in undo/redo, and return actionable source errors. Command-line or tool-protocol adapters should expose those operations as they become available. An AI should be able to inspect a game, change its definitions or scene, and verify the result without automating mouse clicks.
+**AI authoring is a first-class requirement and is implemented through the same APIs.** Inspection, validation and editing operations are available without a window over structured JSONL and MCP transports. Component schemas, action metadata and extensor provenance make capabilities discoverable; edits preserve comments and stable identities, participate in undo/redo, and return actionable source errors. The editor can serve its open project over localhost MCP and includes an assistant integration for installed, signed-in coding agents. An AI can inspect a game, change its definitions or scene, and verify the result without automating mouse clicks.
 
 | Toolbox | Tasks | Version |
 | --- | --- | --- |

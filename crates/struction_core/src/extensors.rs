@@ -8,7 +8,7 @@ use std::any::TypeId;
 use std::collections::BTreeMap;
 
 use bevy::prelude::*;
-use bevy::reflect::enums::{EnumInfo, VariantInfo};
+use bevy::reflect::enums::VariantInfo;
 use bevy::reflect::{TypeInfo, TypePath, TypeRegistration, TypeRegistry};
 
 /// How a definition comes to use an extensor.
@@ -153,9 +153,15 @@ impl ExtensorMeta {
     }
 
     /// Contributes a state a definition's `states` section may name, documented by what holds
-    /// while it does. Read the text from the type that holds it with [`documented_states`].
+    /// while it does. Read the text from the type that holds it with [`documented_state`].
     pub fn state(mut self, state: ContributedState) -> Self {
         self.states.push(state);
+        self
+    }
+
+    /// Contributes several such states at once, as one package's conditions are registered.
+    pub fn states(mut self, states: impl IntoIterator<Item = ContributedState>) -> Self {
+        self.states.extend(states);
         self
     }
 }
