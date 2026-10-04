@@ -63,6 +63,10 @@ pub struct CharacterController {
     pub turn_speed: f32,
     /// Jumps are refused while any of these holds, besides needing ground and not swimming.
     pub jump_blocked_while: Vec<CharacterCondition>,
+    /// Seconds a jump, roll or attack press waits while something refuses it (a running move,
+    /// recovery, the air) before it is dropped, so a press just before a roll ends or before
+    /// landing still counts. 0 drops refused presses at once.
+    pub input_buffer: f32,
 }
 
 impl Default for CharacterController {
@@ -80,6 +84,7 @@ impl Default for CharacterController {
             align_rate: 12.0,
             turn_speed: 12.0,
             jump_blocked_while: vec![CharacterCondition::Rolling, CharacterCondition::Attacking],
+            input_buffer: 0.15,
         }
     }
 }
@@ -97,12 +102,15 @@ pub struct CharacterIntent {
     pub movement_forward: Option<Vec3>,
     /// Yaw and pitch change in radians since the last tick; cleared by the simulation.
     pub look: Vec2,
-    /// A jump was asked for since the last tick; cleared by the simulation.
+    /// A jump was asked for; cleared when it happens, or after waiting the controller's
+    /// `input_buffer` while refused.
     pub jump_requested: bool,
-    /// A roll was asked for since the last tick; consumed even when it cannot start.
+    /// A roll was asked for; cleared like `jump_requested`.
     pub roll_requested: bool,
-    /// An attack was asked for since the last tick; consumed even when it cannot start.
+    /// An attack was asked for; cleared like `jump_requested`.
     pub attack_requested: bool,
+    /// Seconds the jump, roll and attack requests have waited.
+    pub waited: [f32; 3],
     /// Jump is held: swims upward in water.
     pub jump_held: bool,
     /// Turn the heading toward the movement direction instead of keeping it, so a camera can
@@ -116,6 +124,10 @@ pub enum CharacterAction {
     Jump,
     Roll,
     Attack,
+}
+
+impl CharacterAction {
+    pub const ALL: [CharacterAction; 3] = [Self::Jump, Self::Roll, Self::Attack];
 }
 
 /// A move's cancel window: from `after` seconds into it, asking for `action` ends the move
@@ -141,6 +153,14 @@ impl CharacterIntent {
             CharacterAction::Jump => self.jump_requested,
             CharacterAction::Roll => self.roll_requested,
             CharacterAction::Attack => self.attack_requested,
+        }
+    }
+
+    fn request_mut(&mut self, action: CharacterAction) -> &mut bool {
+        match action {
+            CharacterAction::Jump => &mut self.jump_requested,
+            CharacterAction::Roll => &mut self.roll_requested,
+            CharacterAction::Attack => &mut self.attack_requested,
         }
     }
 
@@ -361,7 +381,7 @@ impl Plugin for CharacterControllerPlugin {
             )
             .add_systems(
                 FixedPostUpdate,
-                (probe_ground, sense_motion)
+                (age_requests, probe_ground, sense_motion)
                     .chain()
                     .in_set(CharacterSystems::Sense),
             )
@@ -378,6 +398,29 @@ impl Plugin for CharacterControllerPlugin {
                     .chain()
                     .in_set(CharacterSystems::Control),
             );
+    }
+}
+
+/// Drops requests that have waited longer than the controller's `input_buffer`; the rest wait
+/// one more tick for whatever refuses them.
+fn age_requests(
+    time: Res<Time>,
+    mut characters: Query<(&CharacterController, &mut CharacterIntent)>,
+) {
+    let dt = time.delta_secs();
+    for (controller, mut intent) in &mut characters {
+        for (index, action) in CharacterAction::ALL.into_iter().enumerate() {
+            let waited = intent.waited[index];
+            let request = intent.request_mut(action);
+            if !*request {
+                intent.waited[index] = 0.0;
+            } else if waited > controller.input_buffer {
+                *request = false;
+                intent.waited[index] = 0.0;
+            } else {
+                intent.waited[index] = waited + dt;
+            }
+        }
     }
 }
 
@@ -560,11 +603,12 @@ fn control_characters(
             tangent = step_toward(tangent, target, controller.air_acceleration * dt);
         }
 
-        if core::mem::take(&mut intent.jump_requested)
+        if intent.jump_requested
             && !moving.blocked(&state, &controller.jump_blocked_while, None)
             && state.grounded
             && !swimming
         {
+            intent.jump_requested = false;
             let gravity = gravity.0.length();
             let gravity = if gravity > struction_gravity::MIN_GRAVITY {
                 gravity

@@ -163,7 +163,12 @@ pub(crate) fn roll(mut commands: Commands, time: Res<Time>, mut characters: Quer
     let dt = time.delta_secs();
     for (entity, mut intent, state, look, mut moving, up, tuning, rolling) in &mut characters {
         let up = *up.0;
-        let requested = core::mem::take(&mut intent.roll_requested);
+        // A refused request waits in the intent for the controller's `input_buffer`, unless
+        // nothing could ever accept it.
+        if tuning.is_none() {
+            intent.roll_requested = false;
+        }
+        let requested = intent.roll_requested;
         let mut active = match rolling {
             Some(rolling)
                 if rolling.phase() >= 1.0
@@ -182,10 +187,12 @@ pub(crate) fn roll(mut commands: Commands, time: Res<Time>, mut characters: Quer
                 };
                 if let Err(error) = tuning.validate() {
                     warn!("{entity}: {error}");
+                    intent.roll_requested = false;
                     continue;
                 }
                 let forward = look.heading(up);
                 let direction = intent.wish(forward, up).try_normalize().unwrap_or(forward);
+                intent.roll_requested = false;
                 moving.start(CharacterCondition::Rolling);
                 // A roll moves from the tick it starts.
                 let mut first = Rolling {

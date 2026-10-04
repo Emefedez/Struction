@@ -62,7 +62,13 @@ Jumps have the same list on the controller, `CharacterController.jump_blocked_wh
 a roll lets a jump end it from 0.3 s in; `[{ "action": "Roll", "after": 0.1 }]` on an attack is an
 attack cancel into a roll. Actions are `Jump`, `Roll` and `Attack`. A cancelled move ends without
 recovery, in the `Cancel` stage before any move starts, so the action happens in the same tick,
-still subject to its own `blocked_while`. Requests outside a window are refused as usual.
+still subject to its own `blocked_while`.
+
+A refused press is not lost at once: jump, roll and attack requests wait up to
+`CharacterController.input_buffer` seconds (0.15 by default; 0 drops them immediately) for
+whatever refuses them to end, so a jump pressed just before a roll ends, before its cancel window
+opens or before landing still happens. Presses a character has no move for, or whose tuning is
+invalid, are dropped at once.
 
 `validate()` on either component reports the invalid field: durations must be finite and
 positive, everything else finite and nonnegative. Invalid tuning refuses the move and logs why.

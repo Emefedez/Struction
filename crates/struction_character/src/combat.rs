@@ -229,7 +229,12 @@ fn attack(
         &mut characters
     {
         let up = *up.0;
-        let requested = core::mem::take(&mut intent.attack_requested);
+        // A refused request waits in the intent for the controller's `input_buffer`, unless
+        // nothing could ever accept it.
+        if tuning.is_none() {
+            intent.attack_requested = false;
+        }
+        let requested = intent.attack_requested;
         let mut swing = match attacking {
             Some(swing)
                 if swing.phase() >= 1.0
@@ -249,9 +254,11 @@ fn attack(
                 };
                 if let Err(error) = tuning.validate() {
                     warn!("{entity}: {error}");
+                    intent.attack_requested = false;
                     continue;
                 }
                 let forward = look.heading(up);
+                intent.attack_requested = false;
                 moving.start(CharacterCondition::Attacking);
                 Attacking {
                     elapsed: 0.0,

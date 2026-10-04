@@ -329,3 +329,86 @@ fn render_frame_rate_does_not_change_roll_distance() {
         "{distances:?}"
     );
 }
+
+#[test]
+fn a_jump_pressed_late_in_a_roll_waits_for_it_to_end() {
+    let (mut app, body, _) = scene();
+    app.world_mut().get_mut::<Roll>(body).unwrap().recovery = 0.0;
+    request(&mut app, body);
+    step(&mut app, 1);
+    let duration = Roll::default().duration;
+    while app.world().get::<Rolling>(body).unwrap().elapsed < duration - 0.1 {
+        step(&mut app, 1);
+    }
+    // One press, a tenth of a second before the roll ends, is buffered and lands as a jump.
+    app.world_mut()
+        .get_mut::<CharacterIntent>(body)
+        .unwrap()
+        .jump_requested = true;
+    let mut rolled_out = false;
+    for _ in 0..20 {
+        step(&mut app, 1);
+        rolled_out |= app.world().get::<Rolling>(body).is_none();
+        if app.world().get::<LinearVelocity>(body).unwrap().0.y > 1.0 {
+            assert!(
+                rolled_out,
+                "the roll is not cut short without a cancel window"
+            );
+            return;
+        }
+    }
+    panic!("the buffered jump never happened");
+}
+
+#[test]
+fn a_cancel_window_turns_a_press_into_a_jump_that_keeps_the_rolls_speed() {
+    let (mut app, body, _) = scene();
+    app.world_mut().get_mut::<Roll>(body).unwrap().cancel_into = vec![CancelInto {
+        action: CharacterAction::Jump,
+        after: 0.4,
+    }];
+    request(&mut app, body);
+    step(&mut app, 1);
+    // Pressed before the window opens: buffered until it does.
+    while app.world().get::<Rolling>(body).unwrap().elapsed < 0.3 {
+        step(&mut app, 1);
+    }
+    app.world_mut()
+        .get_mut::<CharacterIntent>(body)
+        .unwrap()
+        .jump_requested = true;
+    for _ in 0..12 {
+        step(&mut app, 1);
+        let velocity = app.world().get::<LinearVelocity>(body).unwrap().0;
+        if velocity.y > 1.0 {
+            assert!(app.world().get::<Rolling>(body).is_none());
+            assert!(
+                Vec2::new(velocity.x, velocity.z).length() > 3.0,
+                "{velocity}"
+            );
+            return;
+        }
+    }
+    panic!("the press never opened the cancel window");
+}
+
+#[test]
+fn a_refused_press_is_dropped_after_the_input_buffer() {
+    let (mut app, body, _) = scene();
+    request(&mut app, body);
+    step(&mut app, 1);
+    // Mid-roll, far from its end: the press expires instead of jumping later.
+    app.world_mut()
+        .get_mut::<CharacterIntent>(body)
+        .unwrap()
+        .jump_requested = true;
+    step(&mut app, 40);
+    assert!(app.world().get::<Rolling>(body).is_none());
+    assert!(app.world().get::<LinearVelocity>(body).unwrap().0.y.abs() < 0.5);
+    assert!(
+        !app.world()
+            .get::<CharacterIntent>(body)
+            .unwrap()
+            .jump_requested
+    );
+}
